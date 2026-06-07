@@ -21,6 +21,8 @@ import { BurningQuestionsModule } from './burning-questions/burning-questions.mo
 import { PosmModule } from './posm/posm.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { DigestModule } from './digest/digest.module';
+import { VoiceModule } from './voice/voice.module';
+import { EmbeddingsModule } from './embeddings/embeddings.module';
 
 import { User } from './database/entities/user.entity';
 import { Territory } from './database/entities/territory.entity';
@@ -47,6 +49,7 @@ import { VisitCompetitorPromo } from './database/entities/visit-competitor-promo
 import { VisitCompetitorPosm } from './database/entities/visit-competitor-posm.entity';
 import { VisitBurningQuestion } from './database/entities/visit-burning-question.entity';
 import { VisitSinyalToko } from './database/entities/visit-sinyal-toko.entity';
+import { FotoKatalog } from './invoices/foto-katalog.entity';
 
 @Module({
   imports: [
@@ -64,6 +67,7 @@ import { VisitSinyalToko } from './database/entities/visit-sinyal-toko.entity';
           Pic, VisitTacoSku, VisitStockLevel, VisitPosm,
           VisitCompetitor, VisitCompetitorSku, VisitCompetitorPromo,
           VisitCompetitorPosm, VisitBurningQuestion, VisitSinyalToko,
+          FotoKatalog,
         ],
         synchronize: true,
         logging: false,
@@ -95,6 +99,8 @@ import { VisitSinyalToko } from './database/entities/visit-sinyal-toko.entity';
     PosmModule,
     DashboardModule,
     DigestModule,
+    VoiceModule,
+    EmbeddingsModule,
   ],
 })
 export class AppModule {}

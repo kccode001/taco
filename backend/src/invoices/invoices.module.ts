@@ -7,19 +7,38 @@ import { Invoice } from '../database/entities/invoice.entity';
 import { InvoiceLineItem } from '../database/entities/invoice-line-item.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
 import { CompetitorSku } from '../database/entities/competitor-sku.entity';
-import { InvoicesService } from './invoices.service';
+import { CompetitorBrand } from '../database/entities/competitor-brand.entity';
+import { Visit } from '../database/entities/visit.entity';
+import { EmbeddingsModule } from '../embeddings/embeddings.module';
+import { FotoKatalog } from './foto-katalog.entity';
+import {
+  InvoicesService,
+  QUEUE_OCR_INVOICE,
+  QUEUE_OCR_FOTO_KATALOG,
+} from './invoices.service';
 import { InvoicesController } from './invoices.controller';
-import { OcrProcessor } from './ocr.processor';
+import { InvoiceOcrProcessor } from './invoice-ocr.processor';
+import { FotoKatalogProcessor } from './foto-katalog.processor';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Invoice, InvoiceLineItem, TacoSku, CompetitorSku]),
-    BullModule.registerQueue({ name: 'ocr' }),
-    MulterModule.register({
-      storage: memoryStorage(),
-    }),
+    TypeOrmModule.forFeature([
+      Invoice,
+      InvoiceLineItem,
+      TacoSku,
+      CompetitorSku,
+      CompetitorBrand,
+      Visit,
+      FotoKatalog,
+    ]),
+    BullModule.registerQueue(
+      { name: QUEUE_OCR_INVOICE },
+      { name: QUEUE_OCR_FOTO_KATALOG },
+    ),
+    MulterModule.register({ storage: memoryStorage() }),
+    EmbeddingsModule,
   ],
-  providers: [InvoicesService, OcrProcessor],
+  providers: [InvoicesService, InvoiceOcrProcessor, FotoKatalogProcessor],
   controllers: [InvoicesController],
   exports: [InvoicesService],
 })

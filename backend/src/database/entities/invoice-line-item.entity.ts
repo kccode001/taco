@@ -2,6 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDa
 import { Invoice } from './invoice.entity';
 import { TacoSku } from './taco-sku.entity';
 import { CompetitorSku } from './competitor-sku.entity';
+import { CompetitorBrand } from './competitor-brand.entity';
 
 @Entity('invoice_line_items')
 export class InvoiceLineItem {
@@ -27,6 +28,8 @@ export class InvoiceLineItem {
   @Column({ nullable: true })
   unit: string;
 
+  // OCR-extracted unit price. For competitor invoices this is interpreted as
+  // "Harga Beli" (the price the store paid the distributor) — see AUDIT-009 §03.
   @Column({ type: 'float', nullable: true })
   unit_price: number;
 
@@ -43,6 +46,19 @@ export class InvoiceLineItem {
   @ManyToOne(() => CompetitorSku, { nullable: true, eager: false })
   @JoinColumn({ name: 'competitor_sku_id' })
   competitor_sku: CompetitorSku;
+
+  // Per AUDIT-009 §03: brand chip per line item — detected by OCR from the
+  // 10-brand list, editable on tap. brand_id when matched to a known
+  // CompetitorBrand row; brand_name is the verbatim OCR text fallback.
+  @Column({ nullable: true })
+  brand_id: string;
+
+  @ManyToOne(() => CompetitorBrand, { nullable: true, eager: false })
+  @JoinColumn({ name: 'brand_id' })
+  brand: CompetitorBrand;
+
+  @Column({ nullable: true })
+  brand_name: string;
 
   @Column({ type: 'float', nullable: true })
   confidence: number;
