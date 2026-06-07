@@ -390,6 +390,8 @@ export const deletePosm = (id: string) => api.delete(`/posm/${id}`);
 export const getVisitObjectives = () => api.get("/visits/objectives");
 export const createVisitObjective = (data: Record<string, unknown>) =>
   api.post("/visits/objectives", data);
+export const updateVisitObjective = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/visits/objectives/${id}`, data);
 export const deleteVisitObjective = (id: string) =>
   api.delete(`/visits/objectives/${id}`);
 
@@ -397,11 +399,58 @@ export const deleteVisitObjective = (id: string) =>
 export const getVisitContexts = () => api.get("/visits/contexts");
 export const createVisitContext = (data: Record<string, unknown>) =>
   api.post("/visits/contexts", data);
+export const updateVisitContext = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/visits/contexts/${id}`, data);
 export const deleteVisitContext = (id: string) =>
   api.delete(`/visits/contexts/${id}`);
 
-// Territories
+// Admin - Wilayah (Territories)
 export const getTerritories = () => api.get("/territories");
+export const createTerritory = (data: Record<string, unknown>) =>
+  api.post("/territories", data);
+export const updateTerritory = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/territories/${id}`, data);
+export const deleteTerritory = (id: string) => api.delete(`/territories/${id}`);
+
+// Admin — TACO SKU CSV bulk import (dry-run + commit)
+export interface CsvImportPreviewRow {
+  row: number;
+  code?: string;
+  name?: string;
+  catalog_category?: string;
+  product_line?: string;
+  unit?: string;
+  min_price?: number;
+  max_price?: number;
+  status: "new" | "update" | "error";
+  errors?: string[];
+}
+
+export interface CsvImportPreview {
+  filename: string;
+  total_rows: number;
+  new_count: number;
+  update_count: number;
+  error_count: number;
+  rows: CsvImportPreviewRow[];
+}
+
+export const importTacoSkusCsv = (file: File, dryRun: boolean) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post<CsvImportPreview | { imported: number; failed: number }>(
+    `/taco-skus/bulk-import?dryRun=${dryRun ? "true" : "false"}`,
+    form,
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120_000,
+    }
+  );
+};
+
+// Mark a flagged competitor SKU as "new" (promote to library)
+export const promoteCompetitorSku = (id: string) =>
+  api.post(`/competitor-skus/${id}/promote`);
 
 // Voice (Forge - P2)
 export const uploadVoiceRecording = (
