@@ -108,7 +108,11 @@ export default function VisitNewPage() {
   useEffect(() => {
     if (visitId) {
       getVisitInvoices(visitId)
-        .then((r) => setInvoiceCount((r.data ?? []).length))
+        .then((r) => {
+          const raw = r.data;
+          const arr = Array.isArray(raw) ? raw : raw?.data ?? [];
+          setInvoiceCount(arr.length);
+        })
         .catch(() => {});
     }
   }, [visitId]);

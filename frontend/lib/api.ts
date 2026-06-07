@@ -66,26 +66,108 @@ export const updateVisitSection = (
 export const submitVisit = (visitId: string) =>
   api.post(`/visits/${visitId}/submit`);
 
-// Invoices
-export const uploadInvoice = (visitId: string, file: File) => {
+// Competitor (P1) — multi-brand per visit
+export interface VisitCompetitor {
+  id: string;
+  brand: string;
+  skus?: unknown[];
+  promos?: unknown[];
+  posms?: unknown[];
+  complete?: boolean;
+  updated_at?: string;
+}
+
+export const getVisitCompetitors = (visitId: string) =>
+  api.get<{ data?: VisitCompetitor[] } | VisitCompetitor[]>(
+    `/visits/${visitId}/competitors`
+  );
+
+export const createVisitCompetitor = (
+  visitId: string,
+  data: { brand: string }
+) => api.post(`/visits/${visitId}/competitors`, data);
+
+export const updateVisitCompetitor = (
+  visitId: string,
+  competitorId: string,
+  data: Record<string, unknown>
+) => api.patch(`/visits/${visitId}/competitors/${competitorId}`, data);
+
+export const deleteVisitCompetitor = (visitId: string, competitorId: string) =>
+  api.delete(`/visits/${visitId}/competitors/${competitorId}`);
+
+// Invoices (P2)
+export interface InvoiceLineItem {
+  id: string;
+  product_name: string;
+  brand?: string;
+  qty?: number | string;
+  uom?: string;
+  harga_beli?: number;
+  confidence?: number;
+  taco_sku_id?: string;
+  unclear?: boolean;
+  raw_text?: string;
+  notes?: string;
+  skipped?: boolean;
+}
+
+export interface InvoiceRecord {
+  id: string;
+  visit_id: string;
+  status: "pending" | "processing" | "done" | "failed";
+  brand?: string;
+  brands?: string[];
+  supplier_name?: string;
+  photo_url?: string;
+  photos?: string[];
+  line_items?: InvoiceLineItem[];
+  needs_review?: number;
+  product_count?: number;
+  created_at?: string;
+  mode?: "competitor" | "foto_katalog";
+}
+
+export const uploadInvoice = (
+  visitId: string,
+  file: File,
+  mode: "competitor" | "foto_katalog" = "competitor"
+) => {
   const form = new FormData();
   form.append("image", file);
   form.append("visit_id", visitId);
-  return api.post("/invoices/upload", form, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+  form.append("mode", mode);
+  return api.post<{ id: string } | InvoiceRecord>(
+    `/visits/${visitId}/invoices`,
+    form,
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120_000,
+    }
+  );
 };
 
-export const getInvoice = (id: string) => api.get(`/invoices/${id}`);
+export const getInvoice = (id: string) =>
+  api.get<InvoiceRecord>(`/invoices/${id}`);
+
+export const getInvoiceStatus = (id: string) =>
+  api.get<{ status: InvoiceRecord["status"]; progress?: number }>(
+    `/invoices/${id}/status`
+  );
 
 export const getVisitInvoices = (visitId: string) =>
-  api.get(`/invoices?visit_id=${visitId}`);
+  api.get<{ data?: InvoiceRecord[] } | InvoiceRecord[]>(
+    `/visits/${visitId}/invoices`
+  );
 
 export const updateLineItem = (
   invoiceId: string,
   lineItemId: string,
   data: Record<string, unknown>
 ) => api.patch(`/invoices/${invoiceId}/line-items/${lineItemId}`, data);
+
+export const retakeInvoice = (invoiceId: string) =>
+  api.post(`/invoices/${invoiceId}/retake`);
 
 // Dashboard
 export const getDashboardKpis = () => api.get("/dashboard/kpis");

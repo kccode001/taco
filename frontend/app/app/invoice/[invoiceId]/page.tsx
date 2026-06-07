@@ -43,7 +43,9 @@ export default function InvoicePage() {
   const fetchInvoices = useCallback(async () => {
     try {
       const res = await getVisitInvoices(visitId);
-      setInvoices(res.data ?? []);
+      const raw = res.data;
+      const arr = Array.isArray(raw) ? raw : raw?.data ?? [];
+      setInvoices(arr as unknown as Invoice[]);
     } catch {
       setInvoices([]);
     }
