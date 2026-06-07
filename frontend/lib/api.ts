@@ -1,0 +1,202 @@
+import axios, { AxiosError } from "axios";
+import { useAuthStore } from "./store";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
+
+export const api = axios.create({
+  baseURL: API_BASE,
+  headers: { "Content-Type": "application/json" },
+  timeout: 30000,
+});
+
+api.interceptors.request.use((config) => {
+  const token = useAuthStore.getState().token;
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  (error: AxiosError) => {
+    if (error.response?.status === 401) {
+      useAuthStore.getState().clearAuth();
+      if (typeof window !== "undefined") {
+        window.location.href = "/auth/login";
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+// Auth
+export const authLogin = (email: string, password: string) =>
+  api.post("/auth/login", { email, password });
+
+// Stores
+export const getStores = (params?: Record<string, string>) =>
+  api.get("/stores", { params });
+
+export const getStore = (id: string) => api.get(`/stores/${id}`);
+
+export const createStore = (data: Record<string, unknown>) =>
+  api.post("/stores", data);
+
+export const updateStore = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/stores/${id}`, data);
+
+export const deleteStore = (id: string) => api.delete(`/stores/${id}`);
+
+// Visits
+export const getVisits = (params?: Record<string, string>) =>
+  api.get("/visits", { params });
+
+export const getVisit = (id: string) => api.get(`/visits/${id}`);
+
+export const createVisit = (storeId: string) =>
+  api.post("/visits", { store_id: storeId });
+
+export const updateVisitSection = (
+  visitId: string,
+  sectionKey: string,
+  data: Record<string, unknown>
+) => api.patch(`/visits/${visitId}/sections/${sectionKey}`, { data });
+
+export const submitVisit = (visitId: string) =>
+  api.post(`/visits/${visitId}/submit`);
+
+// Invoices
+export const uploadInvoice = (visitId: string, file: File) => {
+  const form = new FormData();
+  form.append("image", file);
+  form.append("visit_id", visitId);
+  return api.post("/invoices/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
+export const getInvoice = (id: string) => api.get(`/invoices/${id}`);
+
+export const getVisitInvoices = (visitId: string) =>
+  api.get(`/invoices?visit_id=${visitId}`);
+
+export const updateLineItem = (
+  invoiceId: string,
+  lineItemId: string,
+  data: Record<string, unknown>
+) => api.patch(`/invoices/${invoiceId}/line-items/${lineItemId}`, data);
+
+// Dashboard
+export const getDashboardKpis = () => api.get("/dashboard/kpis");
+
+export const getLiveFeed = (params?: Record<string, string>) =>
+  api.get("/dashboard/feed", { params });
+
+// Analytics
+export const getCompetitorHub = (params?: Record<string, string>) =>
+  api.get("/dashboard/competitor-hub", { params });
+
+export const getPriceMovement = (params?: Record<string, string>) =>
+  api.get("/dashboard/price-movement", { params });
+
+export const getMarketDemand = () => api.get("/dashboard/market-demand");
+
+export const getAiDigest = () => api.get("/digest/latest");
+
+export const triggerAiDigest = () => api.post("/digest/generate");
+
+// Admin - Users / Staff
+export const getUsers = (params?: Record<string, string>) =>
+  api.get("/users", { params });
+
+export const createUser = (data: Record<string, unknown>) =>
+  api.post("/users", data);
+
+export const updateUser = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/users/${id}`, data);
+
+export const deleteUser = (id: string) => api.delete(`/users/${id}`);
+
+// Admin - TACO SKUs
+export const getTacoSkus = (params?: Record<string, string>) =>
+  api.get("/taco-skus", { params });
+
+export const createTacoSku = (data: Record<string, unknown>) =>
+  api.post("/taco-skus", data);
+
+export const updateTacoSku = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/taco-skus/${id}`, data);
+
+export const deleteTacoSku = (id: string) => api.delete(`/taco-skus/${id}`);
+
+// Admin - Competitor SKUs
+export const getCompetitorSkus = (params?: Record<string, string>) =>
+  api.get("/competitor-skus", { params });
+
+export const createCompetitorSku = (data: Record<string, unknown>) =>
+  api.post("/competitor-skus", data);
+
+export const updateCompetitorSku = (
+  id: string,
+  data: Record<string, unknown>
+) => api.patch(`/competitor-skus/${id}`, data);
+
+export const deleteCompetitorSku = (id: string) =>
+  api.delete(`/competitor-skus/${id}`);
+
+// Admin - Competitor Brands
+export const getCompetitorBrands = () => api.get("/competitor-brands");
+
+export const createCompetitorBrand = (data: Record<string, unknown>) =>
+  api.post("/competitor-brands", data);
+
+export const updateCompetitorBrand = (
+  id: string,
+  data: Record<string, unknown>
+) => api.patch(`/competitor-brands/${id}`, data);
+
+export const deleteCompetitorBrand = (id: string) =>
+  api.delete(`/competitor-brands/${id}`);
+
+// Admin - Burning Questions
+export const getBurningQuestions = () => api.get("/burning-questions");
+
+export const createBurningQuestion = (data: Record<string, unknown>) =>
+  api.post("/burning-questions", data);
+
+export const updateBurningQuestion = (
+  id: string,
+  data: Record<string, unknown>
+) => api.patch(`/burning-questions/${id}`, data);
+
+export const deleteBurningQuestion = (id: string) =>
+  api.delete(`/burning-questions/${id}`);
+
+// Admin - POSM
+export const getPosm = () => api.get("/posm");
+
+export const createPosm = (data: Record<string, unknown>) =>
+  api.post("/posm", data);
+
+export const updatePosm = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/posm/${id}`, data);
+
+export const deletePosm = (id: string) => api.delete(`/posm/${id}`);
+
+// Admin - Visit Objectives
+export const getVisitObjectives = () => api.get("/visits/objectives");
+export const createVisitObjective = (data: Record<string, unknown>) =>
+  api.post("/visits/objectives", data);
+export const deleteVisitObjective = (id: string) =>
+  api.delete(`/visits/objectives/${id}`);
+
+// Admin - Visit Contexts
+export const getVisitContexts = () => api.get("/visits/contexts");
+export const createVisitContext = (data: Record<string, unknown>) =>
+  api.post("/visits/contexts", data);
+export const deleteVisitContext = (id: string) =>
+  api.delete(`/visits/contexts/${id}`);
+
+// Territories
+export const getTerritories = () => api.get("/territories");

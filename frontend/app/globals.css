@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #F7F7F7;
+    --foreground: #1A1A1A;
+    --card: #FFFFFF;
+    --card-foreground: #1A1A1A;
+    --popover: #FFFFFF;
+    --popover-foreground: #1A1A1A;
+    --primary: #F04E23;
+    --primary-foreground: #FFFFFF;
+    --secondary: #F7F7F7;
+    --secondary-foreground: #1A1A1A;
+    --muted: #F7F7F7;
+    --muted-foreground: #717171;
+    --accent: #FEF3EF;
+    --accent-foreground: #F04E23;
+    --destructive: #D0342C;
+    --destructive-foreground: #FFFFFF;
+    --border: #E5E5E5;
+    --input: #E5E5E5;
+    --ring: #F04E23;
+    --radius: 0.625rem;
+  }
+
+  * {
+    border-color: #E5E5E5;
+  }
+
+  body {
+    background-color: #F7F7F7;
+    color: #1A1A1A;
+    font-family: var(--font-inter), Inter, -apple-system, sans-serif;
+  }
+}
+
+@layer utilities {
+  .phone-shell {
+    max-width: 390px;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
