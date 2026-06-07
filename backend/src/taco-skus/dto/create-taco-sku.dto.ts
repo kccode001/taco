@@ -8,8 +8,9 @@ export class CreateTacoSkuDto {
   @IsString()
   name: string;
 
+  @IsOptional()
   @IsEnum(TacoSkuCategory)
-  category: TacoSkuCategory;
+  category?: TacoSkuCategory;
 
   @IsNumber()
   @Min(0)

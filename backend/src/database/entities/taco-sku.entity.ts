@@ -1,5 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Index } from 'typeorm';
 
+// Sales survey grouping for D3 stock-level cards. KC's mapping
+// from SKU prefix → product_line is pending — leave nullable per SKU.
 export enum TacoSkuCategory {
   LAMINATE = 'LAMINATE',
   HPL = 'HPL',
@@ -10,6 +12,14 @@ export enum TacoSkuCategory {
   VINYL = 'VINYL',
   PLYWOOD = 'PLYWOOD',
   LAINNYA = 'LAINNYA',
+}
+
+// Real catalog grouping from taco-catalog.xlsx.
+export enum CatalogCategory {
+  LAMINATES = 'Laminates',
+  FLOORING = 'Flooring',
+  HARDWARE = 'Hardware',
+  FIDECO = 'FIDECO',
 }
 
 const CATEGORY_ALIASES: Record<string, TacoSkuCategory> = {
@@ -33,6 +43,8 @@ export function normalizeTacoSkuCategory(input: string): TacoSkuCategory | null 
 }
 
 @Entity('taco_skus')
+@Index(['catalog_category'])
+@Index(['sku_prefix'])
 export class TacoSku {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -43,9 +55,43 @@ export class TacoSku {
   @Column()
   name: string;
 
-  @Column({ type: 'enum', enum: TacoSkuCategory, default: TacoSkuCategory.LAINNYA })
-  category: TacoSkuCategory;
+  // Sales survey grouping (D3 stock-level). Nullable until KC confirms
+  // prefix → product_line mapping.
+  @Column({ type: 'enum', enum: TacoSkuCategory, nullable: true })
+  category: TacoSkuCategory | null;
 
+  // Real catalog grouping (xlsx column 1).
+  @Column({ type: 'text', nullable: true })
+  catalog_category: string | null;
+
+  // First whitespace token of SKU code (TH, TS, TE, TI, ES, FWP, ...).
+  // Used later to back-fill the 9-cat product_line enum.
+  @Column({ type: 'text', nullable: true })
+  sku_prefix: string | null;
+
+  // Comma-separated synonyms parsed into a string[] for embedding text.
+  @Column({ type: 'text', array: true, default: () => "'{}'::text[]" })
+  product_name_aliases: string[];
+
+  // Canonical unit from xlsx (e.g. PCS, SET, BTL).
+  @Column({ type: 'text', nullable: true })
+  unit: string | null;
+
+  @Column({ type: 'text', array: true, default: () => "'{}'::text[]" })
+  unit_aliases: string[];
+
+  // IDR, integer rupiah.
+  @Column({ type: 'int', default: 0 })
+  min_price: number;
+
+  @Column({ type: 'int', default: 0 })
+  max_price: number;
+
+  @Column({ type: 'int', default: 0 })
+  avg_price: number;
+
+  // Legacy single-price (kept for back-compat with existing pricing fields).
+  // Equals avg_price by default.
   @Column({ type: 'float', default: 0 })
   standard_price: number;
 

@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import * as fs from 'fs';
+import * as path from 'path';
 import { DataSource } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as dotenv from 'dotenv';
@@ -182,34 +184,39 @@ async function seed() {
   }
   console.log(`  PICs done: ${pics.length}`);
 
-  // TACO SKUs — 9-category enum
-  console.log('Seeding TACO SKUs...');
+  // TACO SKUs — full 965-row catalog from taco-catalog.md (xlsx export).
+  // Catalog columns:
+  //   Category | SKU | Product Name | Aliases | Unit | Unit Aliases | Min | Max | Avg
+  // The 9-category product_line enum stays nullable until KC confirms the
+  // SKU-prefix → product_line mapping; we capture sku_prefix for back-fill.
+  console.log('Seeding TACO SKUs from catalog...');
   const skuRepo = ds.getRepository(TacoSku);
-  const tacoSkus = await skuRepo.save(
-    skuRepo.create([
-      { code: 'TK-LAM-001', name: 'TACO Laminate Classic 8mm Oak', category: TacoSkuCategory.LAMINATE, standard_price: 95000, uom: 'lbr' },
-      { code: 'TK-LAM-002', name: 'TACO Laminate Classic 8mm Walnut', category: TacoSkuCategory.LAMINATE, standard_price: 95000, uom: 'lbr' },
-      { code: 'TK-LAM-003', name: 'TACO Laminate Premium 10mm Oak', category: TacoSkuCategory.LAMINATE, standard_price: 120000, uom: 'lbr' },
-      { code: 'TK-LAM-004', name: 'TACO Laminate Premium 10mm Walnut', category: TacoSkuCategory.LAMINATE, standard_price: 120000, uom: 'lbr' },
-      { code: 'TK-LAM-005', name: 'TACO Laminate Pro 12mm Oak', category: TacoSkuCategory.LAMINATE, standard_price: 145000, uom: 'lbr' },
-      { code: 'TK-HPL-001', name: 'TACO HPL Matte White 0.8mm', category: TacoSkuCategory.HPL, standard_price: 55000, uom: 'lbr' },
-      { code: 'TK-HPL-002', name: 'TACO HPL Glossy Teak 1.2mm', category: TacoSkuCategory.HPL, standard_price: 75000, uom: 'lbr' },
-      { code: 'TK-HPL-003', name: 'TACO HPL Walnut Premium 1.2mm', category: TacoSkuCategory.HPL, standard_price: 90000, uom: 'lbr' },
-      { code: 'TK-ECO-001', name: 'TACO ECO HPL White 0.7mm', category: TacoSkuCategory.ECO_HPL, standard_price: 38000, uom: 'lbr' },
-      { code: 'TK-ECO-002', name: 'TACO ECO HPL Sonokeling 0.7mm', category: TacoSkuCategory.ECO_HPL, standard_price: 42000, uom: 'lbr' },
-      { code: 'TK-SHT-001', name: 'TACO Sheet Deco Oak 18mm', category: TacoSkuCategory.SHEET, standard_price: 95000, uom: 'lbr' },
-      { code: 'TK-SHT-002', name: 'TACO Sheet Premium Marble 18mm', category: TacoSkuCategory.SHEET, standard_price: 108000, uom: 'lbr' },
-      { code: 'TK-EDG-001', name: 'TACO Edging PVC Oak 22mm', category: TacoSkuCategory.EDGING, standard_price: 8000, uom: 'mtr' },
-      { code: 'TK-EDG-002', name: 'TACO Edging ABS White 0.8mm', category: TacoSkuCategory.EDGING, standard_price: 11000, uom: 'mtr' },
-      { code: 'TK-HRD-001', name: 'TACO Hardware Engsel Soft Close 35mm', category: TacoSkuCategory.HARDWARE, standard_price: 32000, uom: 'pcs' },
-      { code: 'TK-HRD-002', name: 'TACO Hardware Laci Full Extension 45cm', category: TacoSkuCategory.HARDWARE, standard_price: 75000, uom: 'pcs' },
-      { code: 'TK-VNL-001', name: 'TACO Vinyl Plank Oak 3mm', category: TacoSkuCategory.VINYL, standard_price: 85000, uom: 'lbr' },
-      { code: 'TK-VNL-002', name: 'TACO Vinyl Plank Premium 5mm SPC', category: TacoSkuCategory.VINYL, standard_price: 115000, uom: 'lbr' },
-      { code: 'TK-PLY-001', name: 'TACO Plywood Sengon 12mm', category: TacoSkuCategory.PLYWOOD, standard_price: 220000, uom: 'lbr' },
-      { code: 'TK-PLY-002', name: 'TACO Plywood Marine BWP 18mm', category: TacoSkuCategory.PLYWOOD, standard_price: 345000, uom: 'lbr' },
-      { code: 'TK-LNY-001', name: 'TACO Aksesori Lainnya', category: TacoSkuCategory.LAINNYA, standard_price: 25000, uom: 'pcs' },
-    ]),
-  );
+  const catalogRows = parseTacoCatalog();
+  const skuPayload = catalogRows.map((r) => ({
+    code: r.sku,
+    name: r.productName,
+    catalog_category: r.category,
+    sku_prefix: r.skuPrefix,
+    product_name_aliases: r.aliases,
+    unit: r.unit,
+    unit_aliases: r.unitAliases,
+    min_price: r.minPrice,
+    max_price: r.maxPrice,
+    avg_price: r.avgPrice,
+    standard_price: r.avgPrice,
+    uom: r.unit?.toLowerCase() || 'pcs',
+    category: null as TacoSkuCategory | null,
+    is_active: true,
+  }));
+  // Chunk insert — TypeORM parameter limit safety on ~10-col rows.
+  const CHUNK = 100;
+  let inserted = 0;
+  for (let i = 0; i < skuPayload.length; i += CHUNK) {
+    const chunk = skuPayload.slice(i, i + CHUNK);
+    await skuRepo.save(skuRepo.create(chunk as Partial<TacoSku>[]));
+    inserted += chunk.length;
+  }
+  const tacoSkus = { length: inserted };
   console.log(`  TACO SKUs done: ${tacoSkus.length}`);
 
   // Competitor Brands — 10 per design 02 E
@@ -322,3 +329,90 @@ seed().catch((err) => {
   console.error('Seed failed:', err);
   process.exit(1);
 });
+
+interface CatalogRow {
+  category: string;
+  sku: string;
+  skuPrefix: string;
+  productName: string;
+  aliases: string[];
+  unit: string;
+  unitAliases: string[];
+  minPrice: number;
+  maxPrice: number;
+  avgPrice: number;
+}
+
+/**
+ * Parse the TACO catalog markdown table. Source of truth:
+ *   /Users/kc-testing/projects/taco/taco-catalog.md
+ * Resolved relative to this file so the seed works in any cwd.
+ */
+function parseTacoCatalog(): CatalogRow[] {
+  // backend/src/database/seeds/seed.ts → /Users/kc-testing/projects/taco
+  const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
+  const candidates = [
+    path.join(repoRoot, 'taco-catalog.md'),
+    process.env.TACO_CATALOG_PATH || '',
+  ].filter(Boolean);
+
+  let mdPath = candidates.find((p) => fs.existsSync(p));
+  if (!mdPath) {
+    throw new Error(
+      `taco-catalog.md not found. Tried: ${candidates.join(', ')}. ` +
+        `Set TACO_CATALOG_PATH to override.`,
+    );
+  }
+
+  const raw = fs.readFileSync(mdPath, 'utf8');
+  const lines = raw.split('\n');
+  const rows: CatalogRow[] = [];
+
+  for (const line of lines) {
+    if (!line.startsWith('|')) continue;
+    // Skip header + separator.
+    if (line.includes('---')) continue;
+    if (line.toLowerCase().includes('| category')) continue;
+
+    // Strip leading/trailing pipes, split.
+    const cells = line
+      .replace(/^\|/, '')
+      .replace(/\|\s*$/, '')
+      .split('|')
+      .map((c) => c.trim());
+
+    if (cells.length < 9) continue;
+
+    const [category, sku, productName, aliasStr, unit, unitAliasStr, minP, maxP, avgP] = cells;
+    if (!sku || !productName) continue;
+
+    const skuPrefix = sku.split(/\s+/)[0] || sku;
+    const aliases = aliasStr
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const unitAliases = unitAliasStr
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    rows.push({
+      category,
+      sku,
+      skuPrefix,
+      productName,
+      aliases,
+      unit,
+      unitAliases,
+      minPrice: parseInt(minP.replace(/[^0-9]/g, ''), 10) || 0,
+      maxPrice: parseInt(maxP.replace(/[^0-9]/g, ''), 10) || 0,
+      avgPrice: parseInt(avgP.replace(/[^0-9]/g, ''), 10) || 0,
+    });
+  }
+
+  if (rows.length === 0) {
+    throw new Error(`Parsed 0 SKUs from ${mdPath} — markdown table format may have changed.`);
+  }
+
+  return rows;
+}
