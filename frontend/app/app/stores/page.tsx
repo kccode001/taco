@@ -1,12 +1,39 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, LogOut, ChevronRight, MapPin } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { useAuthStore } from "@/lib/store";
 import { getStores, getTerritories } from "@/lib/api";
 import { Store } from "@/lib/types";
-import { HealthDot } from "@/components/HealthBadge";
+import {
+  StoreCard,
+  TerritoryFilterPills,
+  MobileBottomNav,
+  type StoreHealth,
+} from "@/components/mobile";
+
+function mapHealth(s: Store): StoreHealth {
+  if (s.health === "tidak_aktif") return "cek";
+  if (s.health === "perlu_update") return "lama";
+  if (s.health === "belum_dikunjungi" || s.last_visit_days_ago === undefined)
+    return "baru";
+  if (s.last_visit_days_ago !== undefined && s.last_visit_days_ago >= 10)
+    return "cek";
+  if (s.last_visit_days_ago !== undefined && s.last_visit_days_ago >= 6)
+    return "lama";
+  return "oke";
+}
+
+function sortStoresByOldestVisit(stores: Store[]): Store[] {
+  return [...stores].sort((a, b) => {
+    const aDays =
+      a.last_visit_days_ago === undefined ? Number.MAX_SAFE_INTEGER : a.last_visit_days_ago;
+    const bDays =
+      b.last_visit_days_ago === undefined ? Number.MAX_SAFE_INTEGER : b.last_visit_days_ago;
+    return bDays - aDays;
+  });
+}
 
 export default function StoresPage() {
   const router = useRouter();
@@ -23,7 +50,9 @@ export default function StoresPage() {
       if (search) params.search = search;
       if (territory) params.territory_id = territory;
       const res = await getStores(params);
-      setStores(res.data?.data ?? res.data ?? []);
+      const list: Store[] =
+        (res.data as { data?: Store[] })?.data ?? (res.data as Store[]) ?? [];
+      setStores(list);
     } catch {
       setStores([]);
     } finally {
@@ -36,7 +65,16 @@ export default function StoresPage() {
       router.replace("/auth/login");
       return;
     }
-    getTerritories().then((r) => setTerritories(r.data ?? [])).catch(() => {});
+    getTerritories()
+      .then((r) =>
+        setTerritories(
+          ((r.data as { id: string; name: string }[]) ?? []).map((t) => ({
+            id: t.id,
+            name: t.name,
+          }))
+        )
+      )
+      .catch(() => {});
     fetchStores();
   }, [user, router, fetchStores]);
 
@@ -45,6 +83,8 @@ export default function StoresPage() {
     return () => clearTimeout(t);
   }, [search, territory, fetchStores]);
 
+  const sortedStores = useMemo(() => sortStoresByOldestVisit(stores), [stores]);
+
   const handleLogout = () => {
     clearAuth();
     router.push("/auth/login");
@@ -52,106 +92,110 @@ export default function StoresPage() {
 
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
-      <div className="phone-shell flex flex-col min-h-screen">
-        {/* Header */}
+      <div className="phone-shell flex flex-col min-h-screen pb-[92px]">
+        {/* App header */}
         <div className="bg-white border-b border-taco-divider sticky top-0 z-10">
-          <div className="flex items-center justify-between px-5 py-4">
+          <div className="flex items-center justify-between px-5 pt-4 pb-3.5">
             <img
               src="https://manage.taco.co.id/asset-images/logo.svg"
               alt="TACO"
-              className="h-6"
+              className="h-[26px]"
             />
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-taco-page border border-taco-border flex items-center justify-center text-[13px] font-semibold text-taco-text">
+              <button
+                type="button"
+                onClick={() => router.push("/app/visit/new")}
+                className="text-[14px] font-medium text-taco-sub min-h-[44px] flex items-center"
+              >
+                + Tambah Kunjungan
+              </button>
+              <div className="w-9 h-9 rounded-full bg-taco-page border border-taco-border flex items-center justify-center text-[14px] font-semibold text-taco-sub">
                 {user?.name?.[0]?.toUpperCase() ?? "R"}
               </div>
               <button
                 onClick={handleLogout}
-                className="p-2 text-taco-muted hover:text-taco-text"
+                aria-label="Logout"
+                className="p-2 text-taco-muted hover:text-taco-text min-h-[44px] min-w-[44px]"
               >
                 <LogOut size={18} />
               </button>
             </div>
           </div>
 
-          <div className="px-5 pb-4 space-y-3">
-            <h1 className="text-[20px] font-semibold text-taco-text">
-              Daftar Toko
-            </h1>
-
-            {/* Search */}
-            <div className="relative">
-              <Search
-                size={16}
-                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-taco-muted"
-              />
+          {/* Search */}
+          <div className="px-5 pb-3">
+            <div className="flex items-center gap-2 h-12 bg-taco-page border-[1.5px] border-taco-border rounded-[10px] px-3.5">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-taco-muted flex-shrink-0"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
               <input
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Cari nama toko…"
-                className="w-full h-[44px] pl-10 pr-4 border border-taco-border rounded-lg text-[15px] text-taco-text bg-white placeholder:text-taco-muted outline-none focus:border-taco-accent"
+                placeholder="Cari toko…"
+                className="flex-1 bg-transparent text-[16px] text-taco-text outline-none placeholder:text-taco-muted"
+                aria-label="Cari toko"
               />
             </div>
-
-            {/* Territory filter */}
-            {territories.length > 0 && (
-              <select
-                value={territory}
-                onChange={(e) => setTerritory(e.target.value)}
-                className="w-full h-[44px] border border-taco-border rounded-lg px-3 text-[15px] text-taco-text bg-white outline-none"
-              >
-                <option value="">Semua Wilayah</option>
-                {territories.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            )}
           </div>
         </div>
 
+        {/* Territory filter pills (44px) */}
+        <TerritoryFilterPills
+          options={territories.map((t) => ({ id: t.id, label: t.name }))}
+          value={territory}
+          onChange={setTerritory}
+        />
+
+        {/* List header */}
+        <div className="px-5 pt-4 pb-2 flex items-center justify-between">
+          <span className="text-[16px] font-semibold text-taco-text">
+            Toko Saya
+          </span>
+          <span className="text-[14px] text-taco-sub">
+            {sortedStores.length} toko
+          </span>
+        </div>
+
         {/* Store list */}
-        <div className="flex-1 px-4 py-4 space-y-2.5">
+        <div className="flex-1 px-3 pb-6 flex flex-col gap-2">
           {loading ? (
-            <div className="text-center py-12 text-taco-muted text-[15px]">
+            <div className="text-center py-12 text-taco-muted text-[16px]">
               Memuat daftar toko…
             </div>
-          ) : stores.length === 0 ? (
+          ) : sortedStores.length === 0 ? (
             <div className="text-center py-12">
-              <MapPin size={32} className="text-taco-muted mx-auto mb-3" />
-              <p className="text-[15px] text-taco-sub">Tidak ada toko ditemukan</p>
+              <p className="text-[16px] text-taco-sub">
+                Tidak ada toko ditemukan
+              </p>
             </div>
           ) : (
-            stores.map((store) => (
-              <button
+            sortedStores.map((store) => (
+              <StoreCard
                 key={store.id}
-                onClick={() =>
-                  router.push(`/app/stores/${store.id}/visit/new`)
-                }
-                className="w-full flex items-center gap-3 bg-white border border-taco-border rounded-xl px-4 py-3.5 min-h-[72px] text-left hover:border-taco-accent transition-colors"
-              >
-                <HealthDot health={store.health ?? "belum_dikunjungi"} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[17px] font-medium text-taco-text truncate">
-                    {store.name}
-                  </div>
-                  <div className="text-[14px] text-taco-sub mt-0.5">
-                    {store.last_visit_days_ago !== undefined
-                      ? `${store.last_visit_days_ago} hari lalu · ${store.territory_name ?? ""}`
-                      : `Belum dikunjungi · ${store.territory_name ?? ""}`}
-                  </div>
-                </div>
-                <ChevronRight size={18} className="text-taco-muted flex-shrink-0" />
-              </button>
+                name={store.name}
+                health={mapHealth(store)}
+                territory={store.territory_name}
+                lastVisitDaysAgo={store.last_visit_days_ago}
+                onClick={() => router.push(`/app/stores/${store.id}`)}
+              />
             ))
           )}
         </div>
-
-        {/* Bottom padding */}
-        <div className="h-8" />
       </div>
+
+      <MobileBottomNav />
     </div>
   );
 }

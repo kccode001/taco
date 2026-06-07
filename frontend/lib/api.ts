@@ -200,3 +200,37 @@ export const deleteVisitContext = (id: string) =>
 
 // Territories
 export const getTerritories = () => api.get("/territories");
+
+// Voice (Forge - P2)
+export const uploadVoiceRecording = (visitId: string, blob: Blob) => {
+  const form = new FormData();
+  const ext = (blob.type.split(";")[0].split("/")[1] || "webm").replace(
+    /[^a-zA-Z0-9]/g,
+    ""
+  );
+  form.append("audio", blob, `recording.${ext || "webm"}`);
+  return api.post(`/visits/${visitId}/voice-recording`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 120_000,
+  });
+};
+
+export interface VoiceSummaryGroup {
+  key: "info" | "data_taco" | "kompetitor" | "sinyal";
+  status: "filled" | "needs_review" | "empty";
+  preview: string;
+}
+
+export interface VoiceSummaryResponse {
+  status: "pending" | "processing" | "done" | "failed";
+  step?: "transcript" | "context" | "mapping";
+  groups?: VoiceSummaryGroup[];
+  transcript?: string;
+}
+
+export const getVoiceSummary = (visitId: string) =>
+  api.get<VoiceSummaryResponse>(`/visits/${visitId}/voice-summary`);
+
+// Burning Questions scoped to a store
+export const getBurningQuestionsForStore = (storeId: string) =>
+  api.get(`/burning-questions`, { params: { store_id: storeId } });
