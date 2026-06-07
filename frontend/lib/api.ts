@@ -188,6 +188,126 @@ export const getAiDigest = () => api.get("/digest/latest");
 
 export const triggerAiDigest = () => api.post("/digest/generate");
 
+// Analytics — v9 panels (P1 endpoints)
+export type HeatmapMetric = "visits" | "taco_price" | "competitor_activity";
+
+export interface HeatmapRegion {
+  id: string;
+  name: string;
+  value: number;
+  unit?: string;
+}
+
+export const getHeatmap = (metric: HeatmapMetric) =>
+  api.get<{ data?: HeatmapRegion[] } | HeatmapRegion[]>(
+    "/analytics/heatmap",
+    { params: { metric } }
+  );
+
+export interface TacoPriceIndexRow {
+  sku_id: string;
+  sku_name: string;
+  category: string;
+  avg_harga_beli: number;
+  avg_harga_jual: number;
+  margin_pct: number;
+  dispersion: number;
+  store_count: number;
+  alert?: "low_margin" | "top_margin" | null;
+}
+
+export const getTacoPriceIndex = (params?: { category?: string }) =>
+  api.get<{ data?: TacoPriceIndexRow[] } | TacoPriceIndexRow[]>(
+    "/analytics/taco-price-index",
+    { params }
+  );
+
+export interface StockHealthRow {
+  category: string;
+  label: string;
+  sangat_minimum_pct: number;
+  cukup_pct: number;
+  sangat_besar_pct: number;
+  risk: "high" | "medium" | "low";
+  trend_pct: number;
+}
+
+export const getStockHealth = () =>
+  api.get<{ data?: StockHealthRow[] } | StockHealthRow[]>(
+    "/analytics/stock-health"
+  );
+
+export interface PosmComplianceRow {
+  asset: string;
+  baik_pct: number;
+  rusak_ringan_pct: number;
+  perlu_ganti_pct: number;
+  tidak_ada_pct: number;
+  score_pct: number;
+}
+
+export const getPosmCompliance = () =>
+  api.get<{ data?: PosmComplianceRow[] } | PosmComplianceRow[]>(
+    "/analytics/posm-compliance"
+  );
+
+export interface BurningQTheme {
+  q_id: string;
+  q_text: string;
+  q_kind: "ranked" | "yes_no" | "buckets";
+  items: { label: string; count: number; pct?: number }[];
+}
+
+export const getBurningQThemes = () =>
+  api.get<{ data?: BurningQTheme[] } | BurningQTheme[]>(
+    "/analytics/burning-q-themes"
+  );
+
+export interface DataQualityBreakdown {
+  owner_pic_pct: number;
+  owner_pic_count: number;
+  self_est_pct: number;
+  self_est_count: number;
+  tidak_tahu_pct: number;
+  tidak_tahu_count: number;
+  lainnya_pct: number;
+  lainnya_count: number;
+}
+
+export const getDataQuality = () =>
+  api.get<DataQualityBreakdown>("/analytics/data-quality");
+
+export interface ProjectOpportunity {
+  area: string;
+  tipe: "Perumahan" | "Apartemen" | "Komersial" | "Renovasi" | "Lainnya";
+  skala: "Kecil" | "Sedang" | "Besar";
+  description: string;
+  reporters: string[];
+  signal_count: number;
+}
+
+export const getProjectOpportunities = () =>
+  api.get<{ data?: ProjectOpportunity[] } | ProjectOpportunity[]>(
+    "/analytics/project-opportunities"
+  );
+
+// Daily Digest (P2)
+export interface DailyDigest {
+  date: string;
+  content_md: string;
+  generated_at: string;
+  brands?: string[];
+  recommended_action?: string;
+}
+
+export const getDailyDigest = (date?: string) =>
+  api.get<DailyDigest>("/digest/daily", {
+    params: date ? { date } : undefined,
+  });
+
+export const regenerateDailyDigest = () =>
+  api.post<DailyDigest>("/digest/daily/regenerate");
+
 // Admin - Users / Staff
 export const getUsers = (params?: Record<string, string>) =>
   api.get("/users", { params });
