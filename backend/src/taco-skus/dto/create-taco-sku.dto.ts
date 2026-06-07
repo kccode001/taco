@@ -1,4 +1,5 @@
-import { IsString, IsNumber, IsOptional, Min } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsEnum, Min } from 'class-validator';
+import { TacoSkuCategory } from '../../database/entities/taco-sku.entity';
 
 export class CreateTacoSkuDto {
   @IsString()
@@ -7,8 +8,8 @@ export class CreateTacoSkuDto {
   @IsString()
   name: string;
 
-  @IsString()
-  category: string;
+  @IsEnum(TacoSkuCategory)
+  category: TacoSkuCategory;
 
   @IsNumber()
   @Min(0)

@@ -1,28 +1,22 @@
-import { IsString, IsNumber, IsOptional, IsBoolean, Min } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsBoolean, IsEnum, Min } from 'class-validator';
+import { TacoSkuCategory } from '../../database/entities/taco-sku.entity';
 
 export class UpdateTacoSkuDto {
-  @IsOptional()
-  @IsString()
+  @IsOptional() @IsString()
   code?: string;
 
-  @IsOptional()
-  @IsString()
+  @IsOptional() @IsString()
   name?: string;
 
-  @IsOptional()
-  @IsString()
-  category?: string;
+  @IsOptional() @IsEnum(TacoSkuCategory)
+  category?: TacoSkuCategory;
 
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
+  @IsOptional() @IsNumber() @Min(0)
   standard_price?: number;
 
-  @IsOptional()
-  @IsString()
+  @IsOptional() @IsString()
   uom?: string;
 
-  @IsOptional()
-  @IsBoolean()
+  @IsOptional() @IsBoolean()
   is_active?: boolean;
 }

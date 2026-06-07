@@ -8,6 +8,9 @@ import {
   Query,
   UseGuards,
   Request,
+  Headers,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { VisitsService } from './visits.service';
@@ -26,8 +29,13 @@ export class VisitsController {
   }
 
   @Post()
-  create(@Body() dto: CreateVisitDto, @Request() req: any) {
-    return this.visitsService.create(dto, req.user.id);
+  @HttpCode(HttpStatus.CREATED)
+  create(
+    @Body() dto: CreateVisitDto,
+    @Request() req: any,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.visitsService.create(dto, req.user.id, idempotencyKey);
   }
 
   @Get(':id')

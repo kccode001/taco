@@ -10,8 +10,13 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  BadRequestException,
+  HttpCode,
+  HttpStatus,
+  ParseUUIDPipe,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { TacoSkusService } from './taco-skus.service';
@@ -22,13 +27,18 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../database/entities/user.entity';
 
 @Controller('taco-skus')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class TacoSkusController {
   constructor(private readonly tacoSkusService: TacoSkusService) {}
 
   @Get()
   findAll(@Query() query: SkuQueryDto) {
     return this.tacoSkusService.findAll(query);
+  }
+
+  @Get(':id')
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.tacoSkusService.findOne(id);
   }
 
   @Post()
@@ -39,25 +49,29 @@ export class TacoSkusController {
 
   @Post('bulk-import')
   @Roles(UserRole.ADMIN)
-  @UseInterceptors(
-    FileInterceptor('file', {
-      storage: memoryStorage(),
-    }),
-  )
-  bulkImport(@UploadedFile() file: Express.Multer.File) {
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  bulkImport(
+    @UploadedFile() file: Express.Multer.File,
+    @Query('dryRun') dryRunFlag?: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('CSV file is required (multipart field "file")');
+    }
+    const dryRun = dryRunFlag !== 'false';
     const csvContent = file.buffer.toString('utf-8');
-    return this.tacoSkusService.bulkImport(csvContent);
+    return this.tacoSkusService.bulkImport(csvContent, dryRun);
   }
 
   @Patch(':id')
   @Roles(UserRole.ADMIN)
-  update(@Param('id') id: string, @Body() dto: UpdateTacoSkuDto) {
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateTacoSkuDto) {
     return this.tacoSkusService.update(id, dto);
   }
 
   @Delete(':id')
   @Roles(UserRole.ADMIN)
-  remove(@Param('id') id: string) {
+  remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.tacoSkusService.remove(id);
   }
 }

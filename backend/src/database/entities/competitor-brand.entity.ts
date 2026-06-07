@@ -8,6 +8,12 @@ export class CompetitorBrand {
   @Column({ unique: true })
   name: string;
 
+  @Column({ nullable: true })
+  country: string;
+
+  @Column({ nullable: true })
+  logo_url: string;
+
   @Column({ default: true })
   is_active: boolean;
 

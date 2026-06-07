@@ -7,8 +7,12 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { TerritoriesModule } from './territories/territories.module';
+import { WilayahModule } from './wilayah/wilayah.module';
 import { StoresModule } from './stores/stores.module';
+import { PicsModule } from './pics/pics.module';
 import { VisitsModule } from './visits/visits.module';
+import { VisitObjectivesModule } from './visit-objectives/visit-objectives.module';
+import { VisitContextsModule } from './visit-contexts/visit-contexts.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { TacoSkusModule } from './taco-skus/taco-skus.module';
 import { CompetitorSkusModule } from './competitor-skus/competitor-skus.module';
@@ -33,6 +37,16 @@ import { PosmAsset } from './database/entities/posm-asset.entity';
 import { VisitObjective } from './database/entities/visit-objective.entity';
 import { VisitContext } from './database/entities/visit-context.entity';
 import { MarketDigest } from './database/entities/market-digest.entity';
+import { Pic } from './database/entities/pic.entity';
+import { VisitTacoSku } from './database/entities/visit-taco-sku.entity';
+import { VisitStockLevel } from './database/entities/visit-stock-level.entity';
+import { VisitPosm } from './database/entities/visit-posm.entity';
+import { VisitCompetitor } from './database/entities/visit-competitor.entity';
+import { VisitCompetitorSku } from './database/entities/visit-competitor-sku.entity';
+import { VisitCompetitorPromo } from './database/entities/visit-competitor-promo.entity';
+import { VisitCompetitorPosm } from './database/entities/visit-competitor-posm.entity';
+import { VisitBurningQuestion } from './database/entities/visit-burning-question.entity';
+import { VisitSinyalToko } from './database/entities/visit-sinyal-toko.entity';
 
 @Module({
   imports: [
@@ -47,6 +61,9 @@ import { MarketDigest } from './database/entities/market-digest.entity';
           Invoice, InvoiceLineItem, TacoSku, CompetitorSku,
           CompetitorBrand, BurningQuestion, PosmAsset,
           VisitObjective, VisitContext, MarketDigest,
+          Pic, VisitTacoSku, VisitStockLevel, VisitPosm,
+          VisitCompetitor, VisitCompetitorSku, VisitCompetitorPromo,
+          VisitCompetitorPosm, VisitBurningQuestion, VisitSinyalToko,
         ],
         synchronize: true,
         logging: false,
@@ -64,8 +81,12 @@ import { MarketDigest } from './database/entities/market-digest.entity';
     AuthModule,
     UsersModule,
     TerritoriesModule,
+    WilayahModule,
     StoresModule,
+    PicsModule,
     VisitsModule,
+    VisitObjectivesModule,
+    VisitContextsModule,
     InvoicesModule,
     TacoSkusModule,
     CompetitorSkusModule,

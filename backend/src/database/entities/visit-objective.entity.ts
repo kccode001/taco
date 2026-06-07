@@ -14,6 +14,9 @@ export class VisitObjective {
   @Column({ default: true })
   is_active: boolean;
 
+  @Column({ type: 'int', default: 0 })
+  sort_order: number;
+
   @CreateDateColumn()
   created_at: Date;
 

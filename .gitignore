@@ -3,3 +3,6 @@ backend/dist/
 backend/.env
 backend/uploads/
 backend/*.tsbuildinfo
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local

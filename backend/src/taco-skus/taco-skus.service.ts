@@ -1,67 +1,75 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like, ILike } from 'typeorm';
+import { Repository, ILike } from 'typeorm';
+import { parse } from 'csv-parse/sync';
 import OpenAI from 'openai';
-import { TacoSku } from '../database/entities/taco-sku.entity';
+import {
+  TacoSku,
+  TacoSkuCategory,
+  normalizeTacoSkuCategory,
+} from '../database/entities/taco-sku.entity';
 import { CreateTacoSkuDto } from './dto/create-taco-sku.dto';
 import { UpdateTacoSkuDto } from './dto/update-taco-sku.dto';
 import { SkuQueryDto } from './dto/sku-query.dto';
 
-interface CsvRow {
-  code: string;
-  name: string;
-  category: string;
-  standard_price: string;
-  uom: string;
+export interface BulkImportRowResult {
+  row: number;
+  ok: boolean;
+  action?: 'insert' | 'update' | 'skip';
+  code?: string;
+  name?: string;
+  category?: TacoSkuCategory;
+  standard_price?: number;
+  uom?: string;
+  errors?: string[];
+}
+
+export interface BulkImportResult {
+  dryRun: boolean;
+  totalRows: number;
+  validRows: number;
+  invalidRows: number;
+  inserted: number;
+  updated: number;
+  rows: BulkImportRowResult[];
 }
 
 @Injectable()
 export class TacoSkusService {
-  private readonly openai: OpenAI;
+  private readonly openai?: OpenAI;
 
   constructor(
     @InjectRepository(TacoSku)
     private readonly tacoSkusRepo: Repository<TacoSku>,
   ) {
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    if (process.env.OPENAI_API_KEY) {
+      this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    }
   }
 
   async findAll(query: SkuQueryDto): Promise<TacoSku[]> {
-    const where: any = { is_active: true };
+    const qb = this.tacoSkusRepo
+      .createQueryBuilder('sku')
+      .where('sku.is_active = :active', { active: true });
 
     if (query.category) {
-      where.category = ILike(`%${query.category}%`);
+      const norm = normalizeTacoSkuCategory(query.category) ?? query.category;
+      qb.andWhere('sku.category = :cat', { cat: norm });
     }
 
     if (query.search) {
-      // Use query builder for OR search across name and code
-      return this.tacoSkusRepo
-        .createQueryBuilder('sku')
-        .where('sku.is_active = :active', { active: true })
-        .andWhere(
-          '(sku.name ILIKE :search OR sku.code ILIKE :search OR sku.category ILIKE :search)',
-          { search: `%${query.search}%` },
-        )
-        .andWhere(query.category ? 'sku.category ILIKE :category' : '1=1', {
-          category: query.category ? `%${query.category}%` : '',
-        })
-        .orderBy('sku.name', 'ASC')
-        .getMany();
+      qb.andWhere(
+        '(sku.name ILIKE :search OR sku.code ILIKE :search OR sku.category::text ILIKE :search)',
+        { search: `%${query.search}%` },
+      );
     }
 
-    return this.tacoSkusRepo.find({
-      where,
-      order: { name: 'ASC' },
-    });
+    return qb.orderBy('sku.name', 'ASC').getMany();
   }
 
   async findOne(id: string): Promise<TacoSku> {
     const sku = await this.tacoSkusRepo.findOne({ where: { id } });
-    if (!sku) {
-      throw new NotFoundException(`TacoSku ${id} not found`);
-    }
+    if (!sku) throw new NotFoundException(`TacoSku ${id} not found`);
     return sku;
   }
 
@@ -75,81 +83,144 @@ export class TacoSkusService {
     });
 
     const saved = await this.tacoSkusRepo.save(sku);
-
-    // Generate embedding in background (non-blocking)
     this.generateEmbedding(saved).catch((err) =>
       console.error(`Failed to generate embedding for SKU ${saved.id}:`, err),
     );
-
     return saved;
   }
 
-  async bulkImport(csvContent: string): Promise<{ created: number; errors: string[] }> {
-    const lines = csvContent.split('\n').filter((l) => l.trim());
-    if (lines.length < 2) {
-      return { created: 0, errors: ['CSV must have header row and at least one data row'] };
-    }
-
-    const header = lines[0].split(',').map((h) => h.trim().toLowerCase());
-    const requiredColumns = ['code', 'name', 'category', 'standard_price'];
-    const missingColumns = requiredColumns.filter((col) => !header.includes(col));
-
-    if (missingColumns.length > 0) {
-      return { created: 0, errors: [`Missing required columns: ${missingColumns.join(', ')}`] };
-    }
-
-    const errors: string[] = [];
-    const skus: TacoSku[] = [];
-
-    for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map((v) => v.trim());
-      if (values.length < requiredColumns.length) {
-        errors.push(`Row ${i + 1}: insufficient columns`);
-        continue;
-      }
-
-      const row: CsvRow = {
-        code: values[header.indexOf('code')] || '',
-        name: values[header.indexOf('name')] || '',
-        category: values[header.indexOf('category')] || '',
-        standard_price: values[header.indexOf('standard_price')] || '0',
-        uom: header.includes('uom') ? values[header.indexOf('uom')] || 'pcs' : 'pcs',
+  /**
+   * Bulk import TACO SKUs from CSV. AC-21 — TACO SKU master drives OCR matching.
+   * Modes:
+   *   dryRun=true  — validate every row, return per-row report, no DB writes
+   *   dryRun=false — validate + upsert by `code`, return per-row report + counts
+   *
+   * Required columns: code, name, category, standard_price
+   * Optional:        uom
+   *
+   * Category is normalized against the 9-category enum (LAMINATE, HPL, ECO_HPL,
+   * SHEET, EDGING, HARDWARE, VINYL, PLYWOOD, LAINNYA). Aliases like "Eco HPL"
+   * and "eco-hpl" map to ECO_HPL.
+   */
+  async bulkImport(csvContent: string, dryRun: boolean): Promise<BulkImportResult> {
+    let records: Record<string, string>[];
+    try {
+      records = parse(csvContent, {
+        columns: (header: string[]) => header.map((h) => h.trim().toLowerCase()),
+        skip_empty_lines: true,
+        trim: true,
+      }) as Record<string, string>[];
+    } catch (err) {
+      return {
+        dryRun,
+        totalRows: 0,
+        validRows: 0,
+        invalidRows: 0,
+        inserted: 0,
+        updated: 0,
+        rows: [
+          {
+            row: 0,
+            ok: false,
+            errors: [`CSV parse failed: ${err instanceof Error ? err.message : 'unknown'}`],
+          },
+        ],
       };
+    }
 
-      if (!row.code || !row.name || !row.category) {
-        errors.push(`Row ${i + 1}: code, name, and category are required`);
-        continue;
-      }
+    const rows: BulkImportRowResult[] = [];
+    let inserted = 0;
+    let updated = 0;
 
-      const price = parseFloat(row.standard_price);
-      if (isNaN(price)) {
-        errors.push(`Row ${i + 1}: invalid standard_price "${row.standard_price}"`);
-        continue;
-      }
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      const rowNum = i + 2; // header on row 1
+      const errors: string[] = [];
 
-      try {
-        const sku = this.tacoSkusRepo.create({
-          code: row.code,
-          name: row.name,
-          category: row.category,
-          standard_price: price,
-          uom: row.uom,
-        });
-        const saved = await this.tacoSkusRepo.save(sku);
-        skus.push(saved);
-      } catch (err) {
+      const code = (r.code || '').trim();
+      const name = (r.name || '').trim();
+      const rawCategory = (r.category || '').trim();
+      const rawPrice = (r.standard_price || '').trim();
+      const uom = (r.uom || 'pcs').trim();
+
+      if (!code) errors.push('code is required');
+      if (!name) errors.push('name is required');
+      if (!rawCategory) errors.push('category is required');
+
+      const category = normalizeTacoSkuCategory(rawCategory);
+      if (rawCategory && !category) {
         errors.push(
-          `Row ${i + 1}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          `category "${rawCategory}" is not one of the 9 supported categories`,
         );
       }
+
+      const price = parseFloat(rawPrice);
+      if (!rawPrice || Number.isNaN(price)) {
+        errors.push(`standard_price "${rawPrice}" is not a valid number`);
+      }
+
+      if (errors.length > 0) {
+        rows.push({ row: rowNum, ok: false, code, name, errors });
+        continue;
+      }
+
+      let action: 'insert' | 'update' = 'insert';
+      if (!dryRun) {
+        const existing = await this.tacoSkusRepo.findOne({ where: { code } });
+        if (existing) {
+          existing.name = name;
+          existing.category = category!;
+          existing.standard_price = price;
+          existing.uom = uom;
+          const saved = await this.tacoSkusRepo.save(existing);
+          action = 'update';
+          updated++;
+          this.generateEmbedding(saved).catch((err) =>
+            console.error(`Embedding refresh failed for ${saved.code}:`, err),
+          );
+        } else {
+          const sku = this.tacoSkusRepo.create({
+            code,
+            name,
+            category: category!,
+            standard_price: price,
+            uom,
+          });
+          const saved = await this.tacoSkusRepo.save(sku);
+          action = 'insert';
+          inserted++;
+          this.generateEmbedding(saved).catch((err) =>
+            console.error(`Embedding failed for ${saved.code}:`, err),
+          );
+        }
+      } else {
+        const existing = await this.tacoSkusRepo.findOne({ where: { code } });
+        action = existing ? 'update' : 'insert';
+      }
+
+      rows.push({
+        row: rowNum,
+        ok: true,
+        action,
+        code,
+        name,
+        category: category!,
+        standard_price: price,
+        uom,
+      });
     }
 
-    // Generate embeddings for all created SKUs in background
-    Promise.allSettled(skus.map((sku) => this.generateEmbedding(sku))).catch((err) =>
-      console.error('Bulk embedding generation error:', err),
-    );
+    const validRows = rows.filter((r) => r.ok).length;
 
-    return { created: skus.length, errors };
+    return {
+      dryRun,
+      totalRows: records.length,
+      validRows,
+      invalidRows: rows.length - validRows,
+      inserted,
+      updated,
+      rows,
+    };
   }
 
   async update(id: string, dto: UpdateTacoSkuDto): Promise<TacoSku> {
@@ -161,7 +232,6 @@ export class TacoSkusService {
     Object.assign(sku, dto);
     const saved = await this.tacoSkusRepo.save(sku);
 
-    // Regenerate embedding if name or category changed
     if (nameChanged || categoryChanged) {
       this.generateEmbedding(saved).catch((err) =>
         console.error(`Failed to regenerate embedding for SKU ${saved.id}:`, err),
@@ -177,6 +247,7 @@ export class TacoSkusService {
   }
 
   async generateEmbedding(sku: TacoSku): Promise<void> {
+    if (!this.openai) return; // OPENAI_API_KEY not configured — skip silently.
     const text = `${sku.code} ${sku.name} ${sku.category}`;
 
     const response = await this.openai.embeddings.create({

@@ -1,6 +1,16 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  OneToMany,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { Territory } from './territory.entity';
 import { User } from './user.entity';
+import { Pic } from './pic.entity';
 
 export enum StoreType {
   DISTRIBUTOR = 'distributor',
@@ -42,8 +52,14 @@ export class Store {
   @JoinColumn({ name: 'assigned_user_id' })
   assigned_user: User;
 
+  @Column({ type: 'int', default: 0 })
+  assigned_pic_count: number;
+
   @Column({ default: true })
   is_active: boolean;
+
+  @OneToMany(() => Pic, (p) => p.store, { cascade: false, eager: false })
+  pics: Pic[];
 
   @CreateDateColumn()
   created_at: Date;
