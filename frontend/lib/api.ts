@@ -202,7 +202,11 @@ export const deleteVisitContext = (id: string) =>
 export const getTerritories = () => api.get("/territories");
 
 // Voice (Forge - P2)
-export const uploadVoiceRecording = (visitId: string, blob: Blob) => {
+export const uploadVoiceRecording = (
+  visitId: string,
+  blob: Blob,
+  section?: string
+) => {
   const form = new FormData();
   const ext = (blob.type.split(";")[0].split("/")[1] || "webm").replace(
     /[^a-zA-Z0-9]/g,
@@ -211,9 +215,68 @@ export const uploadVoiceRecording = (visitId: string, blob: Blob) => {
   form.append("audio", blob, `recording.${ext || "webm"}`);
   return api.post(`/visits/${visitId}/voice-recording`, form, {
     headers: { "Content-Type": "multipart/form-data" },
+    params: section ? { section } : undefined,
     timeout: 120_000,
   });
 };
+
+// Foto Katalog OCR (Forge - P2)
+export const uploadFotoKatalog = (visitId: string, file: File) => {
+  const form = new FormData();
+  form.append("image", file);
+  return api.post(`/visits/${visitId}/foto-katalog`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 120_000,
+  });
+};
+
+export interface FotoKatalogResult {
+  status: "pending" | "processing" | "done" | "failed";
+  matches?: {
+    taco_sku_id: string;
+    harga_beli?: number;
+    harga_jual?: number;
+    confidence?: number;
+  }[];
+}
+
+export const getFotoKatalogResult = (visitId: string, jobId: string) =>
+  api.get<FotoKatalogResult>(
+    `/visits/${visitId}/foto-katalog/${jobId}`
+  );
+
+// Generic mobile photo upload (POSM)
+export const uploadPhoto = (visitId: string, file: File, label?: string) => {
+  const form = new FormData();
+  form.append("image", file);
+  if (label) form.append("label", label);
+  return api.post<{ url: string }>(
+    `/visits/${visitId}/photos`,
+    form,
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120_000,
+    }
+  );
+};
+
+// Paginated TACO SKUs for D1 search
+export interface TacoSkuPage {
+  data: {
+    id: string;
+    code: string;
+    name: string;
+    category: string;
+    standard_price?: number;
+  }[];
+  meta?: { page: number; per_page: number; total: number; has_more: boolean };
+}
+export const getTacoSkusPaginated = (params: {
+  search?: string;
+  category?: string;
+  page?: number;
+  per_page?: number;
+}) => api.get<TacoSkuPage>("/taco-skus", { params });
 
 export interface VoiceSummaryGroup {
   key: "info" | "data_taco" | "kompetitor" | "sinyal";
