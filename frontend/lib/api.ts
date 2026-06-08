@@ -188,6 +188,126 @@ export const getAiDigest = () => api.get("/digest/latest");
 
 export const triggerAiDigest = () => api.post("/digest/generate");
 
+// Analytics — v9 panels (P1 endpoints)
+export type HeatmapMetric = "visits" | "taco_price" | "competitor_activity";
+
+export interface HeatmapRegion {
+  id: string;
+  name: string;
+  value: number;
+  unit?: string;
+}
+
+export const getHeatmap = (metric: HeatmapMetric) =>
+  api.get<{ data?: HeatmapRegion[] } | HeatmapRegion[]>(
+    "/analytics/heatmap",
+    { params: { metric } }
+  );
+
+export interface TacoPriceIndexRow {
+  sku_id: string;
+  sku_name: string;
+  category: string;
+  avg_harga_beli: number;
+  avg_harga_jual: number;
+  margin_pct: number;
+  dispersion: number;
+  store_count: number;
+  alert?: "low_margin" | "top_margin" | null;
+}
+
+export const getTacoPriceIndex = (params?: { category?: string }) =>
+  api.get<{ data?: TacoPriceIndexRow[] } | TacoPriceIndexRow[]>(
+    "/analytics/taco-price-index",
+    { params }
+  );
+
+export interface StockHealthRow {
+  category: string;
+  label: string;
+  sangat_minimum_pct: number;
+  cukup_pct: number;
+  sangat_besar_pct: number;
+  risk: "high" | "medium" | "low";
+  trend_pct: number;
+}
+
+export const getStockHealth = () =>
+  api.get<{ data?: StockHealthRow[] } | StockHealthRow[]>(
+    "/analytics/stock-health"
+  );
+
+export interface PosmComplianceRow {
+  asset: string;
+  baik_pct: number;
+  rusak_ringan_pct: number;
+  perlu_ganti_pct: number;
+  tidak_ada_pct: number;
+  score_pct: number;
+}
+
+export const getPosmCompliance = () =>
+  api.get<{ data?: PosmComplianceRow[] } | PosmComplianceRow[]>(
+    "/analytics/posm-compliance"
+  );
+
+export interface BurningQTheme {
+  q_id: string;
+  q_text: string;
+  q_kind: "ranked" | "yes_no" | "buckets";
+  items: { label: string; count: number; pct?: number }[];
+}
+
+export const getBurningQThemes = () =>
+  api.get<{ data?: BurningQTheme[] } | BurningQTheme[]>(
+    "/analytics/burning-q-themes"
+  );
+
+export interface DataQualityBreakdown {
+  owner_pic_pct: number;
+  owner_pic_count: number;
+  self_est_pct: number;
+  self_est_count: number;
+  tidak_tahu_pct: number;
+  tidak_tahu_count: number;
+  lainnya_pct: number;
+  lainnya_count: number;
+}
+
+export const getDataQuality = () =>
+  api.get<DataQualityBreakdown>("/analytics/data-quality");
+
+export interface ProjectOpportunity {
+  area: string;
+  tipe: "Perumahan" | "Apartemen" | "Komersial" | "Renovasi" | "Lainnya";
+  skala: "Kecil" | "Sedang" | "Besar";
+  description: string;
+  reporters: string[];
+  signal_count: number;
+}
+
+export const getProjectOpportunities = () =>
+  api.get<{ data?: ProjectOpportunity[] } | ProjectOpportunity[]>(
+    "/analytics/project-opportunities"
+  );
+
+// Daily Digest (P2)
+export interface DailyDigest {
+  date: string;
+  content_md: string;
+  generated_at: string;
+  brands?: string[];
+  recommended_action?: string;
+}
+
+export const getDailyDigest = (date?: string) =>
+  api.get<DailyDigest>("/digest/daily", {
+    params: date ? { date } : undefined,
+  });
+
+export const regenerateDailyDigest = () =>
+  api.post<DailyDigest>("/digest/daily/regenerate");
+
 // Admin - Users / Staff
 export const getUsers = (params?: Record<string, string>) =>
   api.get("/users", { params });
@@ -270,6 +390,8 @@ export const deletePosm = (id: string) => api.delete(`/posm/${id}`);
 export const getVisitObjectives = () => api.get("/visits/objectives");
 export const createVisitObjective = (data: Record<string, unknown>) =>
   api.post("/visits/objectives", data);
+export const updateVisitObjective = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/visits/objectives/${id}`, data);
 export const deleteVisitObjective = (id: string) =>
   api.delete(`/visits/objectives/${id}`);
 
@@ -277,11 +399,58 @@ export const deleteVisitObjective = (id: string) =>
 export const getVisitContexts = () => api.get("/visits/contexts");
 export const createVisitContext = (data: Record<string, unknown>) =>
   api.post("/visits/contexts", data);
+export const updateVisitContext = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/visits/contexts/${id}`, data);
 export const deleteVisitContext = (id: string) =>
   api.delete(`/visits/contexts/${id}`);
 
-// Territories
+// Admin - Wilayah (Territories)
 export const getTerritories = () => api.get("/territories");
+export const createTerritory = (data: Record<string, unknown>) =>
+  api.post("/territories", data);
+export const updateTerritory = (id: string, data: Record<string, unknown>) =>
+  api.patch(`/territories/${id}`, data);
+export const deleteTerritory = (id: string) => api.delete(`/territories/${id}`);
+
+// Admin — TACO SKU CSV bulk import (dry-run + commit)
+export interface CsvImportPreviewRow {
+  row: number;
+  code?: string;
+  name?: string;
+  catalog_category?: string;
+  product_line?: string;
+  unit?: string;
+  min_price?: number;
+  max_price?: number;
+  status: "new" | "update" | "error";
+  errors?: string[];
+}
+
+export interface CsvImportPreview {
+  filename: string;
+  total_rows: number;
+  new_count: number;
+  update_count: number;
+  error_count: number;
+  rows: CsvImportPreviewRow[];
+}
+
+export const importTacoSkusCsv = (file: File, dryRun: boolean) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post<CsvImportPreview | { imported: number; failed: number }>(
+    `/taco-skus/bulk-import?dryRun=${dryRun ? "true" : "false"}`,
+    form,
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120_000,
+    }
+  );
+};
+
+// Mark a flagged competitor SKU as "new" (promote to library)
+export const promoteCompetitorSku = (id: string) =>
+  api.post(`/competitor-skus/${id}/promote`);
 
 // Voice (Forge - P2)
 export const uploadVoiceRecording = (
