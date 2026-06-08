@@ -534,11 +534,17 @@ function AgentEditModal({
     setResetPwOk(null);
     try {
       const r = await api.post(`/taro-sales-agents/${initial.id}/reset-password`);
-      const j = (r.data ?? {}) as { temporary_password?: string };
-      setResetPwOk(j.temporary_password ?? "Password baru sudah dikirim.");
+      // BE returns `{ id, password }`; older shape used `temporary_password`.
+      // Accept either so the real key is surfaced instead of the random
+      // local fallback that used to fire when neither was present.
+      const j = (r.data ?? {}) as {
+        password?: string;
+        temporary_password?: string;
+      };
+      const pw = j.password ?? j.temporary_password;
+      setResetPwOk(pw ?? "Password baru sudah dikirim.");
     } catch {
-      const temp = Math.random().toString(36).slice(2, 10);
-      setResetPwOk(temp);
+      setResetPwOk("Gagal reset password. Coba lagi.");
     } finally {
       setResetPwBusy(false);
     }

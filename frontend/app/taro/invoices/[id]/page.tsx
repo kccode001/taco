@@ -80,20 +80,19 @@ export default function TaroInvoiceDetailPage() {
         setInvoice(FallbackInvoice(id));
         return;
       }
+      // `getTaroInvoice` already maps `raw_image_url`, `confidence_score`,
+      // `total_price`, nested `matched_sku`, and `total_amount` into the FE
+      // shape. The only thing left to derive is `region_id` from the nested
+      // `region` object — BE returns it under `region.id`.
       const regionObj = raw.region as
         | { id?: string; display_path?: string }
         | null
         | undefined;
       const region_id =
         regionObj?.id ?? (raw.region_id as string | null | undefined) ?? null;
-      const region_display =
-        regionObj?.display_path ??
-        (raw.region_display as string | null | undefined) ??
-        null;
       const normalized = {
         ...(raw as object),
         region_id,
-        region_display,
       } as TaroInvoiceDetail;
       setInvoice(normalized);
     } catch {

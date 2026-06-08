@@ -115,9 +115,16 @@ export default function TaroInvoiceListPage() {
           (r.supplier_name as string | undefined) ??
           (r.supplier as string | undefined) ??
           null;
+        // Prefer BE-supplied `short_id`. Otherwise use `file_name` (without
+        // extension) so the list shows a human-readable identifier rather
+        // than the first 12 chars of a UUID. Last fallback is the UUID slice.
+        const fileName = (r.file_name as string | undefined) ?? "";
+        const short_id =
+          (r.short_id as string | undefined) ??
+          (fileName ? fileName.replace(/\.[^.]+$/, "") : id.slice(0, 8));
         return {
           id,
-          short_id: String(r.short_id ?? id).slice(0, 12),
+          short_id,
           uploaded_at: String(r.uploaded_at ?? r.created_at ?? ""),
           region_id: regionId,
           region_display: regionDisplay,

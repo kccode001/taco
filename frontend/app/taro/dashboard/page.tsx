@@ -115,9 +115,36 @@ export default function TaroDashboardOverviewPage() {
     (async () => {
       try {
         const res = await getTaroAnalytics();
-        const data = (res.data ?? {}) as TaroAnalytics;
-        const merged: TaroAnalytics = { ...MOCK_ANALYTICS, ...data };
-        setAnalytics(merged);
+        const data = (res.data ?? {}) as TaroAnalytics &
+          Record<string, unknown>;
+        // BE emits `processed_count` / `needs_review_count` while the FE
+        // historically read `processed` / `needs_review`. Normalize here so
+        // KPI tiles display real backend totals (not mock fallbacks bleeding
+        // through a naive shallow merge).
+        const normalized: TaroAnalytics = {
+          ...data,
+          total_invoices: (data.total_invoices as number | undefined) ?? 0,
+          processed:
+            (data.processed as number | undefined) ??
+            (data.processed_count as number | undefined) ??
+            0,
+          needs_review:
+            (data.needs_review as number | undefined) ??
+            (data.needs_review_count as number | undefined) ??
+            0,
+          avg_confidence: (data.avg_confidence as number | undefined) ?? 0,
+          monthly_volume:
+            (data.monthly_volume as TaroAnalytics["monthly_volume"]) ?? [],
+          top_uploaded_skus:
+            (data.top_uploaded_skus as TaroAnalytics["top_uploaded_skus"]) ?? [],
+          low_confidence_skus:
+            (data.low_confidence_skus as TaroAnalytics["low_confidence_skus"]) ?? [],
+        };
+        const hasRealAnalytics =
+          (normalized.total_invoices ?? 0) > 0 ||
+          (normalized.processed ?? 0) > 0 ||
+          (normalized.needs_review ?? 0) > 0;
+        setAnalytics(hasRealAnalytics ? normalized : MOCK_ANALYTICS);
 
         // BE is shipping these in parallel — auto-resolve when arrays are
         // present and non-empty, otherwise fall back to representative mocks
