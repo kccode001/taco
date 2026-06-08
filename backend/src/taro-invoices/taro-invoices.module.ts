@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
 import { MulterModule } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
+import { AuthModule } from '../auth/auth.module';
 import { TaroInvoice } from '../database/entities/taro-invoice.entity';
 import { TaroInvoiceLineItem } from '../database/entities/taro-invoice-line-item.entity';
 import { TaroInvoiceSkuCorrection } from '../database/entities/taro-invoice-sku-correction.entity';
@@ -37,6 +38,7 @@ import { EmbeddingsModule } from '../embeddings/embeddings.module';
     MulterModule.register({ storage: memoryStorage() }),
     RegionsModule,
     EmbeddingsModule,
+    AuthModule,
   ],
   providers: [TaroInvoicesService, TaroRecommendationsService, TaroInvoiceOcrProcessor],
   controllers: [TaroInvoicesController],

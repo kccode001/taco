@@ -144,15 +144,34 @@ export class TaroInvoicesController {
   }
 
   @Patch('line-items/:id')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
   patchLineItem(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchTaroLineItemDto,
     @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: UserRole,
   ) {
-    return this.invoices.patchLineItem(id, userId, body);
+    return this.invoices.patchLineItem(id, userId, body, { id: userId, role });
+  }
+
+  @Get(':id/image-url')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
+  async getImageUrl(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('email') email: string,
+    @CurrentUser('role') role: UserRole,
+  ): Promise<{ url: string }> {
+    // taro_agent → auto-scope: 404 if they don't own the invoice (matches
+    // findOne()'s probing-resistant behaviour).
+    const scopeUploaderId = role === UserRole.TARO_AGENT ? userId : null;
+    await this.invoices.findOne(id, scopeUploaderId);
+    const url = await this.invoices.signImageUrl(id, { id: userId, email, role });
+    return { url };
   }
 
   @Get(':id/image')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
   async getImage(
     @Param('id', ParseUUIDPipe) id: string,
     @Res({ passthrough: true }) res: Response,
@@ -198,9 +217,12 @@ export class TaroInvoicesController {
     const region_id = typeof query.region_id === 'string' && query.region_id.trim()
       ? query.region_id.trim()
       : undefined;
+    const search = typeof query.search === 'string' && query.search.trim()
+      ? query.search.trim()
+      : undefined;
     // taro_agent → auto-scope to their own uploads. Filter derived from JWT
     // sub, never from query params, so the agent can't peek at others.
     const uploaded_by = role === UserRole.TARO_AGENT ? userId : undefined;
-    return this.invoices.list({ status, needs_review, region_id, page, limit, uploaded_by });
+    return this.invoices.list({ status, needs_review, region_id, page, limit, uploaded_by, search });
   }
 }

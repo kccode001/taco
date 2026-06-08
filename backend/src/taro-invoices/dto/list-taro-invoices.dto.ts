@@ -21,4 +21,8 @@ export class ListTaroInvoicesDto {
   @IsOptional()
   @IsNumberString()
   limit?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
 }

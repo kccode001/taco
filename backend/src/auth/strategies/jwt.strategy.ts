@@ -11,7 +11,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private usersService: UsersService,
   ) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      // Browsers can't attach an Authorization header to <img src>, so we
+      // also accept the token as `?token=` query param (used by the
+      // taro-invoice image preview signed-URL flow). Bearer header still
+      // takes precedence when both are present.
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        ExtractJwt.fromUrlQueryParameter('token'),
+      ]),
       ignoreExpiration: false,
       secretOrKey: configService.get<string>('JWT_SECRET') as string,
     });

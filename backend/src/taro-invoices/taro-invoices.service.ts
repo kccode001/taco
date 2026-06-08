@@ -8,6 +8,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import * as path from 'path';
 import * as fs from 'fs';
 import { TaroInvoice, TaroInvoiceStatus } from '../database/entities/taro-invoice.entity';
@@ -55,8 +57,41 @@ export class TaroInvoicesService {
     private readonly usersRepo: Repository<User>,
     @InjectQueue(QUEUE_TARO_OCR) private readonly ocrQueue: Queue,
     private readonly regions: RegionsService,
+    private readonly jwt: JwtService,
+    private readonly config: ConfigService,
   ) {
     fs.mkdirSync(this.uploadDir, { recursive: true });
+  }
+
+  // ---- Signed image URL ----
+
+  /**
+   * Build a short-lived signed URL for `GET /api/taro-invoices/:id/image`
+   * that the FE can stuff into an `<img src>` tag. Browsers can't attach
+   * an Authorization header to image GETs, so we instead embed a 15-minute
+   * JWT in `?token=` — the JwtStrategy accepts both header and query-param
+   * extraction so the existing guard chain stays in force.
+   *
+   * Caller is expected to have already gone through the normal scope check
+   * (i.e. `findOne(id, scopeUploaderId)` for taro_agent).
+   */
+  async signImageUrl(id: string, user: { id: string; email: string; role: string }): Promise<string> {
+    // Confirm the file exists so we don't hand out a token for a 404.
+    this.imagePath(id);
+    const token = await this.jwt.signAsync(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        scope: 'taro_invoice_image',
+        invoice_id: id,
+      },
+      {
+        secret: this.config.get<string>('JWT_SECRET'),
+        expiresIn: '15m',
+      },
+    );
+    return `/api/taro-invoices/${id}/image?token=${encodeURIComponent(token)}`;
   }
 
   // ---- Upload ----
@@ -286,6 +321,12 @@ export class TaroInvoicesService {
      * controller derives this from the JWT, never from a query param.
      */
     uploaded_by?: string;
+    /**
+     * Free-text search across store_name, id (UUID), file_name, region
+     * name/display_path, and uploader name. Each field uses ILIKE '%q%' and
+     * the fields are OR'd together so any one hit qualifies.
+     */
+    search?: string;
   }): Promise<{
     data: Array<{
       id: string;
@@ -306,8 +347,10 @@ export class TaroInvoicesService {
     page: number;
     limit: number;
   }> {
-    const { status, needs_review, region_id, page, limit, uploaded_by } = params;
+    const { status, needs_review, region_id, page, limit, uploaded_by, search } = params;
     const offset = (page - 1) * limit;
+    const trimmedSearch = typeof search === 'string' ? search.trim() : '';
+    const hasSearch = trimmedSearch.length > 0;
 
     const qb = this.invoicesRepo
       .createQueryBuilder('inv')
@@ -343,11 +386,47 @@ export class TaroInvoicesService {
       qb.andHaving('COUNT(li.id) FILTER (WHERE li.needs_review = true) = 0');
     }
 
+    // Search filter — case-insensitive ILIKE across store_name, id (UUID),
+    // file_name, region (name + display_path), uploader name. Region + user
+    // joins are added only when search is active so the default list query
+    // stays cheap.
+    if (hasSearch) {
+      qb.leftJoin('inv.region', 'region_s')
+        .leftJoin('inv.uploaded_by_user', 'uploader_s')
+        .andWhere(
+          `(
+            inv.store_name ILIKE :q
+            OR inv.id::text ILIKE :q
+            OR inv.file_name ILIKE :q
+            OR region_s.name ILIKE :q
+            OR region_s.display_path ILIKE :q
+            OR uploader_s.name ILIKE :q
+          )`,
+          { q: `%${trimmedSearch}%` },
+        );
+    }
+
     // Total — separate count query so the GROUP BY doesn't break pagination math.
     const totalQb = this.invoicesRepo.createQueryBuilder('inv');
     if (status) totalQb.andWhere('inv.status = :status', { status });
     if (region_id) totalQb.andWhere('inv.region_id = :rid', { rid: region_id });
     if (uploaded_by) totalQb.andWhere('inv.uploaded_by = :uid', { uid: uploaded_by });
+    if (hasSearch) {
+      totalQb
+        .leftJoin('inv.region', 'region_s')
+        .leftJoin('inv.uploaded_by_user', 'uploader_s')
+        .andWhere(
+          `(
+            inv.store_name ILIKE :q
+            OR inv.id::text ILIKE :q
+            OR inv.file_name ILIKE :q
+            OR region_s.name ILIKE :q
+            OR region_s.display_path ILIKE :q
+            OR uploader_s.name ILIKE :q
+          )`,
+          { q: `%${trimmedSearch}%` },
+        );
+    }
     const total = await totalQb.getCount();
 
     const raw = await qb.offset(offset).limit(limit).getRawMany();
@@ -465,9 +544,24 @@ export class TaroInvoicesService {
     lineItemId: string,
     correctedBy: string | null,
     body: { matched_sku_id?: string | null; reason?: string },
+    actor: { id: string; role: UserRole } | null = null,
   ): Promise<TaroInvoiceLineItem> {
     const li = await this.lineItemsRepo.findOne({ where: { id: lineItemId } });
     if (!li) throw new NotFoundException(`TaroInvoiceLineItem ${lineItemId} not found`);
+
+    // taro_agent → can only edit lines on invoices they themselves uploaded.
+    // Derived from JWT (never trust query/body); admin/manager bypass.
+    if (actor && actor.role === UserRole.TARO_AGENT) {
+      const inv = await this.invoicesRepo.findOne({
+        where: { id: li.invoice_id },
+        select: { id: true, uploaded_by: true },
+      });
+      if (!inv || inv.uploaded_by !== actor.id) {
+        throw new ForbiddenException(
+          'Taro agents can only edit line items on invoices they uploaded',
+        );
+      }
+    }
 
     const skuChanged =
       body.matched_sku_id !== undefined && body.matched_sku_id !== li.matched_sku_id;
