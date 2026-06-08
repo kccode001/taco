@@ -752,9 +752,10 @@ export const getTaroInvoices = (params?: Record<string, string>) =>
 export const getTaroInvoice = (id: string) =>
   api.get<TaroInvoiceDetail>(`/taro-invoices/${id}`);
 
-export const bulkUploadTaroInvoices = (files: File[]) => {
+export const bulkUploadTaroInvoices = (files: File[], regionId?: string) => {
   const form = new FormData();
   files.forEach((f) => form.append("files", f));
+  if (regionId) form.append("region_id", regionId);
   return api.post<{ uploaded: number; invoice_ids?: string[] }>(
     "/taro-invoices/bulk-upload",
     form,
@@ -764,6 +765,47 @@ export const bulkUploadTaroInvoices = (files: File[]) => {
     }
   );
 };
+
+// Regions / hierarchical ASM areas. Core ships GET /api/regions/areas
+// returning leaf-level ASM areas with their full display path.
+export interface RegionArea {
+  id: string;
+  code: string;
+  name: string;
+  display_path: string;
+  type: "area";
+}
+
+export const getRegionAreas = () =>
+  api.get<{ data?: RegionArea[] } | RegionArea[]>("/regions/areas");
+
+// In-progress invoice uploads for the current user. Core ships
+// GET /api/taro-invoices/uploads/in-progress returning rows the BE is still
+// OCRing/mapping.  Used by the upload page to survive page refresh.
+export type TaroProgressStage =
+  | "queued"
+  | "processing"
+  | "ocr"
+  | "mapping"
+  | "done"
+  | "failed";
+
+export interface TaroInProgressUpload {
+  id: string;
+  file_name: string;
+  region_id?: string | null;
+  region_display?: string | null;
+  status: TaroProgressStage;
+  progress_percent: number;
+  stage_label?: string;
+  uploaded_at: string;
+  error_message?: string | null;
+}
+
+export const getTaroUploadsInProgress = () =>
+  api.get<{ data?: TaroInProgressUpload[] } | TaroInProgressUpload[]>(
+    "/taro-invoices/uploads/in-progress"
+  );
 
 export const updateTaroLineItem = (
   lineId: string,

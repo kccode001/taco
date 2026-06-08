@@ -1,11 +1,21 @@
 "use client";
 
-import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
-import { bulkUploadTaroInvoices } from "@/lib/api";
-import { UploadIcon, CheckIcon, CloseIcon } from "../../_components/icons";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  bulkUploadTaroInvoices,
+  getRegionAreas,
+  type RegionArea,
+} from "@/lib/api";
+import { UploadIcon, CloseIcon } from "../../_components/icons";
+import { RegionSelector } from "../_components/RegionSelector";
+import {
+  InProgressPanel,
+  pushLocalUploads,
+  type LocalUpload,
+} from "../_components/InProgressPanel";
+import { MOCK_REGION_AREAS } from "../_components/mockData";
 
-type FileStatus = "pending" | "uploading" | "processing" | "done" | "failed";
+type FileStatus = "pending" | "uploading" | "failed";
 
 interface QueueItem {
   id: string;
@@ -18,41 +28,40 @@ interface QueueItem {
 const ACCEPTED = ["image/jpeg", "image/png", "image/jpg", "application/pdf"];
 const ACCEPT_ATTR = "image/jpeg,image/png,application/pdf";
 
-function statusLabel(s: FileStatus) {
-  switch (s) {
-    case "pending":
-      return "Menunggu";
-    case "uploading":
-      return "Mengunggah…";
-    case "processing":
-      return "Memproses OCR…";
-    case "done":
-      return "Selesai";
-    case "failed":
-      return "Gagal";
-  }
-}
-
-function statusClass(s: FileStatus) {
-  switch (s) {
-    case "done":
-      return "text-taco-success";
-    case "failed":
-      return "text-taco-error";
-    case "uploading":
-    case "processing":
-      return "text-taco-info";
-    default:
-      return "text-taco-muted";
-  }
-}
-
 export default function TaroInvoiceUploadPage() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [completedCount, setCompletedCount] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [regionAreas, setRegionAreas] = useState<RegionArea[]>([]);
+  const [regionsLoading, setRegionsLoading] = useState(true);
+  const [regionId, setRegionId] = useState<string | null>(null);
+  const [regionDisplay, setRegionDisplay] = useState<string | null>(null);
+  const [progressNonce, setProgressNonce] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Load regions from BE, fall back to seed when /api/regions/areas is missing.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await getRegionAreas();
+        const data =
+          ((res.data as { data?: RegionArea[] })?.data ??
+            (res.data as RegionArea[])) ?? [];
+        if (!alive) return;
+        setRegionAreas(data.length ? data : MOCK_REGION_AREAS);
+      } catch {
+        if (!alive) return;
+        setRegionAreas(MOCK_REGION_AREAS);
+      } finally {
+        if (alive) setRegionsLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const list = Array.from(files).filter((f) => ACCEPTED.includes(f.type));
@@ -63,12 +72,16 @@ export default function TaroInvoiceUploadPage() {
       thumbnail: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
     }));
     setQueue((q) => [...q, ...items]);
-    setCompletedCount(0);
+    setError(null);
   }, []);
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
+    if (!regionId) {
+      setError("Pilih wilayah dulu sebelum melepas file.");
+      return;
+    }
     if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   };
 
@@ -76,45 +89,64 @@ export default function TaroInvoiceUploadPage() {
     setQueue((q) => q.filter((i) => i.id !== id));
 
   const handleSubmit = async () => {
+    if (!regionId) {
+      setError("Pilih wilayah ASM dulu — invoice harus terikat ke satu area.");
+      return;
+    }
     const pending = queue.filter((q) => q.status === "pending");
     if (!pending.length) return;
     setSubmitting(true);
+    setError(null);
     setQueue((q) =>
       q.map((i) => (i.status === "pending" ? { ...i, status: "uploading" } : i))
     );
+
+    let invoiceIds: string[] = [];
+    let liveBackend = true;
     try {
-      await bulkUploadTaroInvoices(pending.map((p) => p.file));
-      // Live BE responded — flip all to done.
-      setQueue((q) =>
-        q.map((i) =>
-          i.status === "uploading" ? { ...i, status: "done" } : i
-        )
+      const res = await bulkUploadTaroInvoices(
+        pending.map((p) => p.file),
+        regionId
       );
-      setCompletedCount(pending.length);
+      invoiceIds = res.data?.invoice_ids ?? [];
     } catch {
-      // BE unavailable — simulate the processing pipeline so the demo flow
-      // is still visible. Staggered per-file transitions for realism.
-      for (let idx = 0; idx < pending.length; idx++) {
-        await new Promise((r) => setTimeout(r, 350));
-        const item = pending[idx];
-        setQueue((q) =>
-          q.map((i) =>
-            i.id === item.id ? { ...i, status: "processing" } : i
-          )
-        );
-        await new Promise((r) => setTimeout(r, 600));
-        setQueue((q) =>
-          q.map((i) => (i.id === item.id ? { ...i, status: "done" } : i))
-        );
-      }
-      setCompletedCount(pending.length);
-    } finally {
-      setSubmitting(false);
+      liveBackend = false;
+      // BE bulk-upload not ready — mint client-side ids so progress cards still
+      // appear; InProgressPanel will simulate the OCR pipeline against them.
+      invoiceIds = pending.map(
+        (p) => `local-${p.id}`
+      );
+    }
+
+    // If BE returned fewer ids than files (eg. only `uploaded` count), synth
+    // the missing ones so every queued file gets a progress row.
+    if (invoiceIds.length < pending.length) {
+      const extra = pending
+        .slice(invoiceIds.length)
+        .map((p) => `local-${p.id}`);
+      invoiceIds = [...invoiceIds, ...extra];
+    }
+
+    const local: LocalUpload[] = pending.map((p, idx) => ({
+      id: invoiceIds[idx],
+      file_name: p.file.name,
+      uploaded_at: new Date().toISOString(),
+      region_display: regionDisplay ?? undefined,
+    }));
+    pushLocalUploads(local);
+
+    // Wipe queue — files are now tracked by the in-progress panel.
+    setQueue([]);
+    setProgressNonce((n) => n + 1);
+    setSubmitting(false);
+
+    if (!liveBackend) {
+      // Quiet — the in-progress panel will show simulated progress.
     }
   };
 
   const pendingCount = queue.filter((q) => q.status === "pending").length;
-  const allDone = queue.length > 0 && queue.every((q) => q.status === "done");
+  const canSubmit = !!regionId && pendingCount > 0 && !submitting;
 
   return (
     <div className="space-y-5 max-w-[1100px]">
@@ -128,25 +160,72 @@ export default function TaroInvoiceUploadPage() {
         </p>
       </div>
 
+      <div className="bg-white border border-taco-border rounded-xl p-5">
+        <RegionSelector
+          value={regionId}
+          areas={regionAreas}
+          loading={regionsLoading}
+          onChange={(id, area) => {
+            setRegionId(id);
+            setRegionDisplay(area.display_path);
+            setError(null);
+          }}
+        />
+        {regionId && regionDisplay && (
+          <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 bg-taco-page border border-taco-border rounded-full text-[12px] text-taco-text">
+            <span className="w-1.5 h-1.5 rounded-full bg-taco-success" />
+            <span className="font-medium">Wilayah:</span>
+            <span>{regionDisplay}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setRegionId(null);
+                setRegionDisplay(null);
+              }}
+              className="ml-1 text-taco-info hover:underline text-[12px] font-medium"
+            >
+              Ubah
+            </button>
+          </div>
+        )}
+        {!regionId && (
+          <p className="mt-2 text-[12px] text-taco-muted">
+            Setiap invoice harus terikat ke satu wilayah ASM. Upload terbuka setelah wilayah dipilih.
+          </p>
+        )}
+      </div>
+
       <div
         onDragOver={(e) => {
+          if (!regionId) return;
           e.preventDefault();
           setDragOver(true);
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
-        className={`min-h-[320px] border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-center cursor-pointer transition-colors px-6 py-12 ${
-          dragOver
-            ? "border-taco-accent bg-taco-accent-tint"
-            : "border-taco-border bg-white hover:border-taco-sub hover:bg-taco-page"
+        onClick={() => {
+          if (!regionId) {
+            setError("Pilih wilayah ASM dulu sebelum mengunggah file.");
+            return;
+          }
+          inputRef.current?.click();
+        }}
+        className={`min-h-[260px] border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-center transition-colors px-6 py-10 ${
+          !regionId
+            ? "border-taco-border bg-taco-page/40 cursor-not-allowed opacity-70"
+            : dragOver
+            ? "border-taco-text bg-taco-page cursor-pointer"
+            : "border-taco-border bg-white hover:border-taco-sub hover:bg-taco-page cursor-pointer"
         }`}
+        aria-disabled={!regionId}
       >
         <div className="w-14 h-14 rounded-full bg-taco-page flex items-center justify-center text-taco-sub mb-4">
           <UploadIcon size={26} />
         </div>
         <div className="text-[16px] font-semibold text-taco-text mb-1">
-          Letakkan gambar invoice di sini, atau klik untuk pilih file
+          {regionId
+            ? "Letakkan gambar invoice di sini, atau klik untuk pilih file"
+            : "Pilih wilayah ASM dulu untuk membuka upload"}
         </div>
         <div className="text-[13px] text-taco-sub max-w-[480px]">
           Mendukung JPG, PNG, dan PDF. Bisa banyak file sekaligus.
@@ -164,6 +243,12 @@ export default function TaroInvoiceUploadPage() {
         />
       </div>
 
+      {error && (
+        <div className="bg-[#FEE2E2] border border-taco-error/30 text-taco-error text-[12px] rounded-lg px-4 py-2.5">
+          {error}
+        </div>
+      )}
+
       {queue.length > 0 && (
         <div className="bg-white border border-taco-border rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-taco-divider flex items-center gap-3">
@@ -171,17 +256,17 @@ export default function TaroInvoiceUploadPage() {
               Antrian Upload ({queue.length})
             </div>
             <div className="text-[12px] text-taco-muted">
-              {pendingCount} menunggu · {queue.filter((q) => q.status === "done").length} selesai
+              {pendingCount} menunggu unggah
             </div>
             {pendingCount > 0 && (
               <button
                 onClick={handleSubmit}
-                disabled={submitting}
-                className="ml-auto h-[36px] px-4 bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-60"
+                disabled={!canSubmit}
+                className="ml-auto h-[40px] px-4 bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {submitting
-                  ? "Memproses…"
-                  : `Mulai Proses (${pendingCount})`}
+                  ? "Mengunggah…"
+                  : `Mulai Upload (${pendingCount})`}
               </button>
             )}
           </div>
@@ -211,8 +296,8 @@ export default function TaroInvoiceUploadPage() {
                     {(item.file.size / 1024).toFixed(0)} KB · {item.file.type || "file"}
                   </div>
                 </div>
-                <div className={`text-[12px] font-medium ${statusClass(item.status)}`}>
-                  {statusLabel(item.status)}
+                <div className="text-[12px] font-medium text-taco-muted">
+                  {item.status === "uploading" ? "Mengunggah…" : "Menunggu"}
                 </div>
                 {item.status === "pending" && (
                   <button
@@ -223,38 +308,21 @@ export default function TaroInvoiceUploadPage() {
                     <CloseIcon size={14} />
                   </button>
                 )}
-                {item.status === "done" && (
-                  <span className="text-taco-success">
-                    <CheckIcon size={16} />
-                  </span>
-                )}
               </li>
             ))}
           </ul>
         </div>
       )}
 
-      {allDone && completedCount > 0 && (
-        <div className="bg-[#E6F7F2] border border-taco-success/30 rounded-xl px-5 py-4 flex items-center gap-4">
-          <span className="text-taco-success">
-            <CheckIcon size={20} />
-          </span>
-          <div className="flex-1">
-            <div className="text-[14px] font-semibold text-taco-text">
-              {completedCount} invoice berhasil diunggah
-            </div>
-            <div className="text-[12px] text-taco-sub">
-              OCR + pencocokan SKU sedang berjalan. Hasil muncul di Daftar Invoice.
-            </div>
-          </div>
-          <Link
-            href="/admin/taro-invoices"
-            className="h-[36px] px-4 inline-flex items-center border border-taco-border rounded-lg text-[13px] font-semibold text-taco-text bg-white hover:border-taco-text"
-          >
-            Lihat Daftar Invoice
-          </Link>
-        </div>
-      )}
+      <InProgressPanel
+        refreshNonce={progressNonce}
+        onRetry={() => {
+          // Re-uploads happen via the file picker — surface an instruction.
+          setError(
+            "Untuk mencoba ulang, pilih ulang file dari Antrian Upload di atas."
+          );
+        }}
+      />
     </div>
   );
 }

@@ -1,9 +1,39 @@
 import type {
+  RegionArea,
   TaroAnalytics,
   TaroInvoiceDetail,
   TaroInvoiceSummary,
   TaroRecommendation,
 } from "@/lib/api";
+
+/** 18 leaf-level ASM areas across 5 parent regions (C / E / N / S / W).
+ *  Mirrors KC's hierarchical structure `C - BU1 - ASM Cirebon`. Used when
+ *  Core's GET /api/regions/areas 404s so the upload page still works. */
+export const MOCK_REGION_AREAS: RegionArea[] = [
+  // Central — BU1
+  { id: "area-c-bdg", code: "C-BU1-BDG", name: "ASM Bandung", display_path: "C - BU1 - ASM Bandung", type: "area" },
+  { id: "area-c-cbn", code: "C-BU1-CBN", name: "ASM Cirebon", display_path: "C - BU1 - ASM Cirebon", type: "area" },
+  { id: "area-c-pwk", code: "C-BU1-PWK", name: "ASM PWK", display_path: "C - BU1 - ASM PWK", type: "area" },
+  { id: "area-c-smg", code: "C-BU1-SMG", name: "ASM Semarang", display_path: "C - BU1 - ASM Semarang", type: "area" },
+  { id: "area-c-yog", code: "C-BU1-YOG", name: "ASM Yogyakarta", display_path: "C - BU1 - ASM Yogyakarta", type: "area" },
+  // East — BU1
+  { id: "area-e-bnt", code: "E-BU1-BNT", name: "ASM BNT", display_path: "E - BU1 - ASM BNT", type: "area" },
+  { id: "area-e-mlg", code: "E-BU1-MLG", name: "ASM Malang", display_path: "E - BU1 - ASM Malang", type: "area" },
+  { id: "area-e-sby", code: "E-BU1-SBY", name: "ASM Surabaya", display_path: "E - BU1 - ASM Surabaya", type: "area" },
+  { id: "area-e-bli", code: "E-BU1-BLI", name: "ASM Bali", display_path: "E - BU1 - ASM Bali", type: "area" },
+  // North — BU1
+  { id: "area-n-mdn", code: "N-BU1-MDN", name: "ASM Medan", display_path: "N - BU1 - ASM Medan", type: "area" },
+  { id: "area-n-pkb", code: "N-BU1-PKB", name: "ASM Pekanbaru", display_path: "N - BU1 - ASM Pekanbaru", type: "area" },
+  { id: "area-n-bth", code: "N-BU1-BTH", name: "ASM Batam", display_path: "N - BU1 - ASM Batam", type: "area" },
+  // South — BU1
+  { id: "area-s-plg", code: "S-BU1-PLG", name: "ASM Palembang", display_path: "S - BU1 - ASM Palembang", type: "area" },
+  { id: "area-s-lpg", code: "S-BU1-LPG", name: "ASM Lampung", display_path: "S - BU1 - ASM Lampung", type: "area" },
+  { id: "area-s-jbi", code: "S-BU1-JBI", name: "ASM Jambi", display_path: "S - BU1 - ASM Jambi", type: "area" },
+  // West Metro — BU2
+  { id: "area-w-jkt-b", code: "W-BU2-JKB", name: "ASM Jakarta Barat", display_path: "W - BU2 - ASM Jakarta Barat", type: "area" },
+  { id: "area-w-jkt-s", code: "W-BU2-JKS", name: "ASM Jakarta Selatan", display_path: "W - BU2 - ASM Jakarta Selatan", type: "area" },
+  { id: "area-w-tgr", code: "W-BU2-TGR", name: "ASM Tangerang", display_path: "W - BU2 - ASM Tangerang", type: "area" },
+];
 
 /** Fallback mock data while Core ships /api/taro-invoices/*. Every list/detail
  *  page renders these when the BE returns 404 — same shape as the real API
@@ -252,6 +282,22 @@ export const MOCK_RECOMMENDATIONS: TaroRecommendation[] = [
     body: "Singkatan PRM konsisten dikoreksi menjadi Premium di SKU TIero. Otomatisasi rendah-risiko.",
     status: "pending",
     created_at: "2026-06-07T09:30:00Z",
+  },
+  {
+    id: "rec_7",
+    type: "synonym",
+    title: "Tambah sinonim \"Hpl\" untuk HPL",
+    body: "Variasi penulisan kecil-besar otomatis dinormalisasi. Diterapkan minggu lalu.",
+    status: "applied",
+    created_at: "2026-06-03T10:00:00Z",
+  },
+  {
+    id: "rec_8",
+    type: "new_sku",
+    title: "Buat SKU baru: Paku Beton 5cm",
+    body: "Hanya 2 invoice memuat item ini — terlalu jarang untuk dijadikan SKU. Ditolak.",
+    status: "rejected",
+    created_at: "2026-06-04T14:20:00Z",
   },
 ];
 

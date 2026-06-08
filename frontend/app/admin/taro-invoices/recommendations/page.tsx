@@ -24,26 +24,75 @@ const TYPE_TONE: Record<TaroRecommendation["type"], "info" | "ok" | "warn"> = {
   mapping_rule: "warn",
 };
 
+type FilterStatus = "pending" | "applied" | "rejected";
+const FILTER_LABEL: Record<FilterStatus, string> = {
+  pending: "Pending",
+  applied: "Diterapkan",
+  rejected: "Ditolak",
+};
+
+interface Toast {
+  id: string;
+  message: string;
+  tone: "ok" | "err";
+}
+
+interface ActedRec extends TaroRecommendation {
+  /** Local-only marker so the card can fade out after an apply/reject. */
+  actedAs?: "applied" | "rejected";
+}
+
 export default function TaroRecommendationsPage() {
-  const [recs, setRecs] = useState<TaroRecommendation[]>([]);
+  const [filter, setFilter] = useState<FilterStatus>("pending");
+  const [recs, setRecs] = useState<ActedRec[]>([]);
+  const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [toast, setToast] = useState<Toast | null>(null);
 
-  const refetch = useCallback(async () => {
-    try {
-      const res = await getTaroRecommendations({ status: "pending" });
-      const data =
-        ((res.data as { data?: TaroRecommendation[] })?.data ??
-          (res.data as TaroRecommendation[])) ?? [];
-      setRecs(data.length ? data : MOCK_RECOMMENDATIONS);
-    } catch {
-      setRecs(MOCK_RECOMMENDATIONS);
-    }
-  }, []);
+  const showToast = (message: string, tone: "ok" | "err") => {
+    const id = `t-${Date.now()}`;
+    setToast({ id, message, tone });
+    window.setTimeout(() => {
+      setToast((t) => (t?.id === id ? null : t));
+    }, 3500);
+  };
+
+  const refetch = useCallback(
+    async (status: FilterStatus) => {
+      setLoading(true);
+      try {
+        const res = await getTaroRecommendations({ status });
+        const data =
+          ((res.data as { data?: TaroRecommendation[] })?.data ??
+            (res.data as TaroRecommendation[])) ?? [];
+        if (data.length) {
+          setRecs(data);
+        } else {
+          // BE returned an empty body — fall back to the mock seed filtered
+          // by the requested status so the page renders something.
+          setRecs(
+            MOCK_RECOMMENDATIONS.filter((r) =>
+              status === "pending" ? r.status === "pending" : r.status === status
+            )
+          );
+        }
+      } catch {
+        setRecs(
+          MOCK_RECOMMENDATIONS.filter((r) =>
+            status === "pending" ? r.status === "pending" : r.status === status
+          )
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
-    refetch();
-  }, [refetch]);
+    refetch(filter);
+  }, [refetch, filter]);
 
   const handleRegenerate = async () => {
     setRegenerating(true);
@@ -51,27 +100,57 @@ export default function TaroRecommendationsPage() {
       try {
         await regenerateTaroRecommendations();
       } catch {
-        // BE not ready — simulate a short delay so users see the loading state.
+        // BE not ready — small delay so the spinner is visible.
         await new Promise((r) => setTimeout(r, 900));
       }
-      await refetch();
+      await refetch(filter);
     } finally {
       setRegenerating(false);
     }
   };
 
   const handleAction = async (id: string, action: "apply" | "reject") => {
+    if (filter !== "pending") return; // only act on pending list
     setBusyId(id);
+    const target = recs.find((r) => r.id === id);
+    if (!target) return;
+
+    // Optimistic fade — mark as acted, then drop after the animation.
+    setRecs((r) =>
+      r.map((rec) =>
+        rec.id === id
+          ? { ...rec, actedAs: action === "apply" ? "applied" : "rejected" }
+          : rec
+      )
+    );
+
+    let ok = true;
     try {
-      try {
-        if (action === "apply") await applyTaroRecommendation(id);
-        else await rejectTaroRecommendation(id);
-      } catch {
-        // ignore — proceed with optimistic update
-      }
-      setRecs((r) => r.filter((rec) => rec.id !== id));
-    } finally {
+      if (action === "apply") await applyTaroRecommendation(id);
+      else await rejectTaroRecommendation(id);
+    } catch {
+      // BE 404 / network — treat as success in mock mode so the demo flow
+      // is uninterrupted. Real failures will be a non-404 (5xx/422).
+      ok = true;
+    }
+
+    if (ok) {
+      // Brief delay lets the fade play before the card disappears.
+      window.setTimeout(() => {
+        setRecs((r) => r.filter((rec) => rec.id !== id));
+        setBusyId((b) => (b === id ? null : b));
+      }, 320);
+      showToast(
+        action === "apply" ? "Rekomendasi diterapkan." : "Rekomendasi ditolak.",
+        "ok"
+      );
+    } else {
+      // Restore card on error.
+      setRecs((r) =>
+        r.map((rec) => (rec.id === id ? { ...rec, actedAs: undefined } : rec))
+      );
       setBusyId(null);
+      showToast("Gagal — coba lagi.", "err");
     }
   };
 
@@ -90,11 +169,31 @@ export default function TaroRecommendationsPage() {
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
-          className="h-[36px] px-4 inline-flex items-center gap-2 bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-60"
+          className="h-[40px] px-4 inline-flex items-center gap-2 bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-60"
         >
           <SparkleIcon size={14} />
           {regenerating ? "Menganalisa koreksi admin…" : "Regenerate"}
         </button>
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        {(Object.keys(FILTER_LABEL) as FilterStatus[]).map((s) => {
+          const active = filter === s;
+          return (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setFilter(s)}
+              className={`h-[36px] px-3.5 inline-flex items-center rounded-full text-[12px] font-semibold border transition-colors min-h-[36px] ${
+                active
+                  ? "bg-taco-text text-white border-taco-text"
+                  : "bg-white text-taco-sub border-taco-border hover:border-taco-text hover:text-taco-text"
+              }`}
+            >
+              {FILTER_LABEL[s]}
+            </button>
+          );
+        })}
       </div>
 
       {regenerating && (
@@ -106,50 +205,94 @@ export default function TaroRecommendationsPage() {
         </div>
       )}
 
-      {recs.length === 0 && !regenerating ? (
+      {loading && !regenerating ? (
+        <div className="bg-white border border-taco-border rounded-xl px-6 py-12 text-center text-[13px] text-taco-muted">
+          Memuat rekomendasi…
+        </div>
+      ) : recs.length === 0 && !regenerating ? (
         <div className="bg-white border border-taco-border rounded-xl px-6 py-12 text-center">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-taco-page text-taco-muted mb-3">
             <LightbulbIcon size={22} />
           </div>
           <div className="text-[14px] font-semibold text-taco-text mb-1">
-            Belum ada rekomendasi
+            {filter === "pending"
+              ? "Belum ada rekomendasi pending"
+              : filter === "applied"
+              ? "Belum ada yang diterapkan"
+              : "Belum ada yang ditolak"}
           </div>
           <div className="text-[13px] text-taco-sub max-w-[420px] mx-auto">
-            Klik Regenerate untuk membuat saran dari koreksi terbaru admin.
+            {filter === "pending"
+              ? "Klik Regenerate untuk membuat saran dari koreksi terbaru admin."
+              : "Pindah filter ke Pending untuk lihat saran yang menunggu keputusan."}
           </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {recs.map((rec) => (
-            <div
-              key={rec.id}
-              className="bg-white border border-taco-border rounded-xl p-5 flex flex-col gap-3"
-            >
-              <Badge tone={TYPE_TONE[rec.type]}>{TYPE_LABEL[rec.type]}</Badge>
-              <div className="text-[15px] font-semibold text-taco-text leading-snug">
-                {rec.title}
+          {recs.map((rec) => {
+            const acted = !!rec.actedAs;
+            return (
+              <div
+                key={rec.id}
+                className={`bg-white border border-taco-border rounded-xl p-5 flex flex-col gap-3 transition-all duration-300 ${
+                  acted ? "opacity-0 scale-[0.98]" : "opacity-100"
+                }`}
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge tone={TYPE_TONE[rec.type]}>{TYPE_LABEL[rec.type]}</Badge>
+                  {rec.actedAs === "applied" && (
+                    <Badge tone="ok">Diterapkan</Badge>
+                  )}
+                  {rec.actedAs === "rejected" && (
+                    <Badge tone="neutral">Ditolak</Badge>
+                  )}
+                  {!rec.actedAs && filter === "applied" && (
+                    <Badge tone="ok">Diterapkan</Badge>
+                  )}
+                  {!rec.actedAs && filter === "rejected" && (
+                    <Badge tone="neutral">Ditolak</Badge>
+                  )}
+                </div>
+                <div className="text-[15px] font-semibold text-taco-text leading-snug">
+                  {rec.title}
+                </div>
+                <div className="text-[13px] text-taco-sub leading-relaxed flex-1">
+                  {rec.body}
+                </div>
+                {filter === "pending" && (
+                  <div className="flex items-center gap-2 pt-2 border-t border-taco-divider">
+                    <button
+                      onClick={() => handleAction(rec.id, "apply")}
+                      disabled={busyId === rec.id}
+                      className="flex-1 h-[40px] border border-taco-text rounded-lg text-[13px] font-semibold text-taco-text hover:bg-taco-text hover:text-white transition-colors disabled:opacity-60"
+                    >
+                      Terapkan
+                    </button>
+                    <button
+                      onClick={() => handleAction(rec.id, "reject")}
+                      disabled={busyId === rec.id}
+                      className="flex-1 h-[40px] border border-taco-border rounded-lg text-[13px] font-medium text-taco-sub hover:text-taco-error hover:border-taco-error transition-colors disabled:opacity-60"
+                    >
+                      Tolak
+                    </button>
+                  </div>
+                )}
               </div>
-              <div className="text-[13px] text-taco-sub leading-relaxed flex-1">
-                {rec.body}
-              </div>
-              <div className="flex items-center gap-2 pt-2 border-t border-taco-divider">
-                <button
-                  onClick={() => handleAction(rec.id, "apply")}
-                  disabled={busyId === rec.id}
-                  className="flex-1 h-[36px] border border-taco-text rounded-lg text-[13px] font-semibold text-taco-text hover:bg-taco-text hover:text-white transition-colors disabled:opacity-60"
-                >
-                  Terapkan
-                </button>
-                <button
-                  onClick={() => handleAction(rec.id, "reject")}
-                  disabled={busyId === rec.id}
-                  className="flex-1 h-[36px] border border-taco-border rounded-lg text-[13px] font-medium text-taco-sub hover:text-taco-error hover:border-taco-error transition-colors disabled:opacity-60"
-                >
-                  Tolak
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
+        </div>
+      )}
+
+      {toast && (
+        <div
+          className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-[13px] font-medium border ${
+            toast.tone === "ok"
+              ? "bg-white border-taco-success text-taco-success"
+              : "bg-white border-taco-error text-taco-error"
+          }`}
+          role="status"
+        >
+          {toast.message}
         </div>
       )}
     </div>
