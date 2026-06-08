@@ -14,41 +14,85 @@ const MOCK_DQ: DataQualityBreakdown = {
   lainnya_count: 2,
 };
 
-const SCORECARD_TILES = [
-  {
-    label: "Kunjungan Selesai",
-    value: "247",
-    sub: "Target: 300 · 82%",
-  },
-  {
-    label: "Coverage Toko",
-    value: "83%",
-    sub: "dari 240 toko aktif",
-  },
-  {
-    label: "Invoice Dikumpulkan",
-    value: "412",
-    sub: "dari 47 rep · avg 8,7/rep",
-  },
-  {
-    label: "Burning Q Completion Rate",
-    value: "74%",
-    sub: "26% kunjungan tanpa invoice",
-  },
-  {
-    label: "Rata-rata Waktu Kunjungan",
-    value: "38",
-    valueSuffix: "min",
-    sub: "Target 45 min",
-  },
-  {
-    label: "Rep Mencapai Target",
-    value: "14",
-    sub: "dari 22 total rep",
-  },
-];
-
 type Period = "week" | "month";
+
+interface ScorecardTile {
+  label: string;
+  value: string;
+  valueSuffix?: string;
+  sub: string;
+}
+
+// Tiles depend on period — Bulan Ini scales up vs Minggu Ini so the toggle
+// actually changes the numbers visible to the manager.
+const SCORECARD_TILES_BY_PERIOD: Record<Period, ScorecardTile[]> = {
+  week: [
+    {
+      label: "Kunjungan Selesai",
+      value: "247",
+      sub: "Target: 300 · 82%",
+    },
+    {
+      label: "Coverage Toko",
+      value: "83%",
+      sub: "dari 240 toko aktif",
+    },
+    {
+      label: "Invoice Dikumpulkan",
+      value: "412",
+      sub: "dari 47 rep · avg 8,7/rep",
+    },
+    {
+      label: "Burning Q Completion Rate",
+      value: "74%",
+      sub: "26% kunjungan tanpa invoice",
+    },
+    {
+      label: "Rata-rata Waktu Kunjungan",
+      value: "38",
+      valueSuffix: "min",
+      sub: "Target 45 min",
+    },
+    {
+      label: "Rep Mencapai Target",
+      value: "14",
+      sub: "dari 22 total rep",
+    },
+  ],
+  month: [
+    {
+      label: "Kunjungan Selesai",
+      value: "1.084",
+      sub: "Target: 1.200 · 90%",
+    },
+    {
+      label: "Coverage Toko",
+      value: "91%",
+      sub: "dari 240 toko aktif",
+    },
+    {
+      label: "Invoice Dikumpulkan",
+      value: "1.806",
+      sub: "dari 47 rep · avg 38,4/rep",
+    },
+    {
+      label: "Burning Q Completion Rate",
+      value: "79%",
+      sub: "21% kunjungan tanpa invoice",
+    },
+    {
+      label: "Rata-rata Waktu Kunjungan",
+      value: "41",
+      valueSuffix: "min",
+      sub: "Target 45 min",
+    },
+    {
+      label: "Rep Mencapai Target",
+      value: "18",
+      sub: "dari 22 total rep",
+    },
+  ],
+};
 
 export function ExecutionScorecard() {
   const [period, setPeriod] = useState<Period>("week");
@@ -107,7 +151,7 @@ export function ExecutionScorecard() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-5">
-        {SCORECARD_TILES.map((tile) => (
+        {SCORECARD_TILES_BY_PERIOD[period].map((tile) => (
           <div
             key={tile.label}
             className="bg-[#F7F7F7] border border-[#E5E5E5] rounded-lg p-4"

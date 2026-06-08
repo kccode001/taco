@@ -67,6 +67,34 @@ const REGIONS = [
   { id: "bandung", label: "Bandung" },
 ];
 
+// Map a row's region string to a coarse region slug for client-side filtering.
+function regionSlug(region?: string): string {
+  if (!region) return "";
+  const r = region.toLowerCase();
+  if (r.includes("jakarta")) return "jakarta";
+  if (r.includes("tangerang")) return "tangerang";
+  if (r.includes("bekasi")) return "bekasi";
+  if (r.includes("bogor")) return "bogor";
+  if (r.includes("bandung")) return "bandung";
+  return "";
+}
+
+// Map a competitor SKU string to a product line slug for client-side filtering.
+function skuCategorySlug(sku: string): string {
+  const s = sku.toLowerCase();
+  if (s.includes("hpl")) return "taco_hpl";
+  if (s.includes("edging")) return "taco_edging";
+  if (s.includes("vinyl")) return "vinyl";
+  if (s.includes("sheet")) return "taco_sheet";
+  if (s.includes("hardware")) return "taco_hardware";
+  if (s.includes("tiero")) return "tiero";
+  if (s.includes("fideco")) return "fideco";
+  if (s.includes("eco")) return "eco_hpl";
+  // Laminate -> grouped with TACO Sheet as a coarse approximation for demo.
+  if (s.includes("laminate")) return "taco_sheet";
+  return "";
+}
+
 const formatRp = (v: number) =>
   new Intl.NumberFormat("id-ID", {
     style: "currency",
@@ -109,6 +137,14 @@ export function CompetitorHubTable() {
   const [filter, setFilter] = useState<string>("all");
   const [region, setRegion] = useState<string>("");
   const [rows, setRows] = useState<CompetitorRow[]>(MOCK);
+
+  // Apply client-side filtering on top of whatever rows came back (live or mock).
+  // BE may ignore params or 401/404 → we still want the UI to react to filters.
+  const visibleRows = rows.filter((r) => {
+    if (region && regionSlug(r.region) !== region) return false;
+    if (filter !== "all" && skuCategorySlug(r.sku) !== filter) return false;
+    return true;
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -190,7 +226,17 @@ export function CompetitorHubTable() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => {
+            {!visibleRows.length && (
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-5 py-10 text-center text-[14px] text-[#717171]"
+                >
+                  Tidak ada SKU kompetitor untuk filter ini.
+                </td>
+              </tr>
+            )}
+            {visibleRows.map((r, i) => {
               const tone =
                 r.gap_pct > 5 ? "up" : r.gap_pct < -5 ? "down" : "flat";
               return (

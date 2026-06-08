@@ -4,6 +4,22 @@ import { useEffect, useState } from "react";
 import { getTacoPriceIndex, TacoPriceIndexRow } from "@/lib/api";
 import { PRODUCT_LINES } from "./categories";
 
+// Display category strings (e.g. "TACO HPL") -> product line slug.
+const CATEGORY_LABEL_TO_SLUG: Record<string, string> = PRODUCT_LINES.reduce(
+  (acc, c) => {
+    acc[c.label.toLowerCase()] = c.slug;
+    return acc;
+  },
+  {} as Record<string, string>
+);
+
+function categorySlug(category: string): string {
+  const direct = CATEGORY_LABEL_TO_SLUG[category.toLowerCase()];
+  if (direct) return direct;
+  // Fallback: row may already store the slug.
+  return category.toLowerCase().replace(/\s+/g, "_");
+}
+
 const MOCK: TacoPriceIndexRow[] = [
   {
     sku_id: "TH-001",
@@ -100,6 +116,13 @@ export function IndeksHargaTaco() {
   const [filter, setFilter] = useState<string>("all");
   const [rows, setRows] = useState<TacoPriceIndexRow[]>(MOCK);
 
+  // Client-side filter on top of whatever rows are loaded so the UI reacts even
+  // if BE ignores the category param (or hasn't shipped it yet).
+  const visibleRows =
+    filter === "all"
+      ? rows
+      : rows.filter((r) => categorySlug(r.category) === filter);
+
   useEffect(() => {
     let cancelled = false;
     const params = filter === "all" ? undefined : { category: filter };
@@ -163,7 +186,7 @@ export function IndeksHargaTaco() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {visibleRows.map((r) => (
               <tr
                 key={r.sku_id}
                 className="border-b border-[#F0F0F0] last:border-0 hover:bg-[#FAFAFA]"
@@ -198,7 +221,7 @@ export function IndeksHargaTaco() {
                 </td>
               </tr>
             ))}
-            {!rows.length && (
+            {!visibleRows.length && (
               <tr>
                 <td
                   colSpan={7}
