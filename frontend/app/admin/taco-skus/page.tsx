@@ -20,14 +20,14 @@ import { CsvImportModal } from "./_components/CsvImportModal";
 /** Mock fallback when the BE isn't reachable. Real data comes from the 965-row
  *  catalog at /Users/kc-testing/projects/taco/taco-catalog.xlsx, seeded by P1. */
 const MOCK_SKUS: TacoSkuRow[] = [
-  { id: "1", code: "TH-001-12-MAP", name: "TACO HPL Maple Solid 12mm", catalog_category: "Laminates", product_line: "taco_hpl", unit: "lembar", min_price: 215000, max_price: 245000, embedded: true },
-  { id: "2", code: "TI-008-3-WAL", name: "TIero HPL Walnut Premium 3mm", catalog_category: "Laminates", product_line: "tiero", unit: "lembar", min_price: 380000, max_price: 420000, embedded: true },
-  { id: "3", code: "ES-002-3-NTR", name: "ECO HPL Natural Oak 3mm", catalog_category: "Laminates", product_line: "eco_hpl", unit: "lembar", min_price: 165000, max_price: 185000, embedded: true },
-  { id: "4", code: "TS-101-1220", name: "TACO Sheet Beech 1220mm", catalog_category: "Laminates", product_line: "taco_sheet", unit: "lembar", min_price: 295000, max_price: 320000, embedded: true },
-  { id: "5", code: "TE-2MM-W", name: "TACO Edging ABS 2mm Walnut", catalog_category: "Laminates", product_line: "taco_edging", unit: "meter", min_price: 14000, max_price: 17500, embedded: true },
-  { id: "6", code: "HW-HNG-01", name: "TACO Hardware Hinge SoftClose", catalog_category: "Hardware", product_line: "taco_hardware", unit: "pcs", min_price: 28000, max_price: 35000, embedded: true },
-  { id: "7", code: "TV-LUX-405", name: "Vinyl Luxury Plank 4mm Oak", catalog_category: "Flooring", product_line: "vinyl", unit: "m²", min_price: 95000, max_price: 115000, embedded: true },
-  { id: "8", code: "FD-MDF-9MM", name: "FIDECO MDF 9mm 1220x2440", catalog_category: "FIDECO", product_line: "fideco", unit: "lembar", min_price: 145000, max_price: 165000, embedding_status: "pending" },
+  { id: "1", code: "TH-001-12-MAP", name: "TACO HPL Maple Solid 12mm", catalog_category: "Laminates", product_line: "taco_hpl", unit: "lembar", min_price: 215000, max_price: 245000, average_price: 230000, synonyms: ["HPL Maple", "TC Maple 12", "Maple Solid"], unit_synonyms: ["lbr", "sheet"], embedded: true },
+  { id: "2", code: "TI-008-3-WAL", name: "TIero HPL Walnut Premium 3mm", catalog_category: "Laminates", product_line: "tiero", unit: "lembar", min_price: 380000, max_price: 420000, average_price: 400000, synonyms: ["TIero Walnut", "Walnut PRM", "WLN Premium"], unit_synonyms: ["lbr"], embedded: true },
+  { id: "3", code: "ES-002-3-NTR", name: "ECO HPL Natural Oak 3mm", catalog_category: "Laminates", product_line: "eco_hpl", unit: "lembar", min_price: 165000, max_price: 185000, average_price: 175000, synonyms: ["ECO Oak", "Nat Oak 3mm"], embedded: true },
+  { id: "4", code: "TS-101-1220", name: "TACO Sheet Beech 1220mm", catalog_category: "Laminates", product_line: "taco_sheet", unit: "lembar", min_price: 295000, max_price: 320000, average_price: 308000, synonyms: ["TC Sheet Beech"], embedded: true },
+  { id: "5", code: "TE-2MM-W", name: "TACO Edging ABS 2mm Walnut", catalog_category: "Laminates", product_line: "taco_edging", unit: "meter", min_price: 14000, max_price: 17500, average_price: 15500, synonyms: ["TC Edging 2mm", "Edging WLN"], unit_synonyms: ["m"], embedded: true },
+  { id: "6", code: "HW-HNG-01", name: "TACO Hardware Hinge SoftClose", catalog_category: "Hardware", product_line: "taco_hardware", unit: "pcs", min_price: 28000, max_price: 35000, average_price: 31500, synonyms: ["Engsel SoftClose"], embedded: true },
+  { id: "7", code: "TV-LUX-405", name: "Vinyl Luxury Plank 4mm Oak", catalog_category: "Flooring", product_line: "vinyl", unit: "m²", min_price: 95000, max_price: 115000, average_price: 105000, synonyms: ["Vinyl Lux Plank", "LVP Oak 4mm"], embedded: true },
+  { id: "8", code: "FD-MDF-9MM", name: "FIDECO MDF 9mm 1220x2440", catalog_category: "FIDECO", product_line: "fideco", unit: "lembar", min_price: 145000, max_price: 165000, average_price: 155000, synonyms: ["MDF Fideco", "Fideco 9mm"], embedding_status: "pending" },
 ];
 
 export default function TacoSkusPage() {
@@ -62,9 +62,18 @@ export default function TacoSkusPage() {
     return skus.filter((s) => {
       if (search.trim()) {
         const q = search.toLowerCase();
+        const syns = Array.isArray(s.synonyms)
+          ? s.synonyms
+          : typeof s.synonyms === "string"
+            ? s.synonyms.split(/[,\n]/g)
+            : [];
+        const synMatch = syns.some((syn) =>
+          syn.trim().toLowerCase().includes(q)
+        );
         if (
           !s.name.toLowerCase().includes(q) &&
-          !s.code.toLowerCase().includes(q)
+          !s.code.toLowerCase().includes(q) &&
+          !synMatch
         )
           return false;
       }
@@ -113,7 +122,7 @@ export default function TacoSkusPage() {
         description={`${skus.length} SKU · Drives OCR matching dan voice extraction`}
         addLabel="+ Tambah SKU"
         onAdd={() => setModal({ open: true })}
-        searchPlaceholder="Cari kode atau nama SKU…"
+        searchPlaceholder="Cari kode, nama, atau sinonim…"
         searchValue={search}
         onSearchChange={setSearch}
         extraActions={

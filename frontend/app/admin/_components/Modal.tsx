@@ -10,6 +10,7 @@ export function Modal({
   saveLabel = "Simpan",
   size = "default",
   busy,
+  saveDisabled,
   children,
   footer,
 }: {
@@ -19,6 +20,9 @@ export function Modal({
   saveLabel?: string;
   size?: "default" | "wide";
   busy?: boolean;
+  /** Disable Save without showing the "Menyimpan…" spinner label.
+   *  Use when the form is invalid but no async action is in flight. */
+  saveDisabled?: boolean;
   children: React.ReactNode;
   footer?: React.ReactNode;
 }) {
@@ -64,7 +68,7 @@ export function Modal({
               {onSave && (
                 <button
                   onClick={onSave}
-                  disabled={busy}
+                  disabled={busy || saveDisabled}
                   className="flex-1 h-[44px] bg-taco-accent text-white rounded-lg text-[14px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {busy ? "Menyimpan…" : saveLabel}

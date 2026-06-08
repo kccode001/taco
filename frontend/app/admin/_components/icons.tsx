@@ -133,3 +133,35 @@ export const CheckIcon = ({ size, className }: IconProps) => (
     <polyline points="20 6 9 17 4 12" />
   </svg>
 );
+
+export const LightbulbIcon = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M9 18h6" />
+    <path d="M10 22h4" />
+    <path d="M12 2a7 7 0 00-4 12.7c.7.6 1 1.5 1 2.3v1h6v-1c0-.8.3-1.7 1-2.3A7 7 0 0012 2z" />
+  </svg>
+);
+
+export const BarChart2Icon = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <line x1="18" y1="20" x2="18" y2="10" />
+    <line x1="12" y1="20" x2="12" y2="4" />
+    <line x1="6" y1="20" x2="6" y2="14" />
+  </svg>
+);
+
+export const SparkleIcon = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M12 3l1.7 4.7L18 9.4l-4.3 1.7L12 16l-1.7-4.9L6 9.4l4.3-1.7L12 3z" />
+    <path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z" />
+  </svg>
+);
+
+export const ZoomInIcon = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    <line x1="11" y1="8" x2="11" y2="14" />
+    <line x1="8" y1="11" x2="14" y2="11" />
+  </svg>
+);

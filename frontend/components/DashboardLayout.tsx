@@ -20,12 +20,18 @@ import {
   FlagIcon,
   FileTextIcon,
   MapIcon,
+  UploadIcon,
+  LightbulbIcon,
+  BarChart2Icon,
 } from "@/app/admin/_components/icons";
 
 type NavItem = {
   href: string;
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
+  /** When true the item is only highlighted on an EXACT pathname match
+   *  (used for list pages whose URL is a prefix of sibling routes). */
+  exact?: boolean;
 };
 
 type NavSection = { label?: string; items: NavItem[] };
@@ -50,6 +56,15 @@ const ADMIN_SECTIONS: NavSection[] = [
       { href: "/admin/taco-skus", label: "TACO SKU", icon: PackageIcon },
       { href: "/admin/competitor-skus", label: "SKU Kompetitor", icon: TagIcon },
       { href: "/admin/competitor-brands", label: "Brand Kompetitor", icon: TagIcon },
+    ],
+  },
+  {
+    label: "Taro Invoices",
+    items: [
+      { href: "/admin/taro-invoices/upload", label: "Upload Invoice", icon: UploadIcon },
+      { href: "/admin/taro-invoices", label: "Daftar Invoice", icon: FileTextIcon, exact: true },
+      { href: "/admin/taro-invoices/recommendations", label: "Rekomendasi", icon: LightbulbIcon },
+      { href: "/admin/taro-invoices/analytics", label: "Analitik", icon: BarChart2Icon },
     ],
   },
   {
@@ -99,8 +114,25 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   };
 
   const renderItem = (item: NavItem) => {
-    const { href, label, icon: Icon } = item;
-    const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href + "/")) || pathname === href;
+    const { href, label, icon: Icon, exact } = item;
+    let active = pathname === href;
+    if (!active && href !== "/dashboard") {
+      if (exact) {
+        // Exact-mode items (list pages with sibling routes) also light up on
+        // detail routes like `${href}/123` but NOT on sibling segments such as
+        // `${href}/upload`. Sibling segments are defined in ADMIN_SECTIONS.
+        if (pathname.startsWith(href + "/")) {
+          const nextSeg = pathname.slice(href.length + 1).split("/")[0];
+          const siblingPaths = ADMIN_SECTIONS.flatMap((s) =>
+            s.items.map((i) => i.href)
+          );
+          const isSibling = siblingPaths.includes(`${href}/${nextSeg}`);
+          if (!isSibling) active = true;
+        }
+      } else if (pathname.startsWith(href + "/")) {
+        active = true;
+      }
+    }
     return (
       <Link
         key={href}

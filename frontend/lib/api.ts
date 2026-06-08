@@ -548,3 +548,108 @@ export const getVoiceSummary = (visitId: string) =>
 // Burning Questions scoped to a store
 export const getBurningQuestionsForStore = (storeId: string) =>
   api.get(`/burning-questions`, { params: { store_id: storeId } });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Taro Invoices (admin)
+//
+// Admin-only feature: bulk OCR-extracted invoice ingestion + line-item review.
+// BE endpoints land under /api/taro-invoices/*. Until Core ships them every
+// caller falls back to mock data — the pages render fully with mocks.
+// ──────────────────────────────────────────────────────────────────────────
+
+export type TaroInvoiceStatus = "pending" | "processing" | "done" | "needs_review" | "failed";
+
+export interface TaroInvoiceLine {
+  id: string;
+  line_no: number;
+  raw_text: string;
+  matched_sku_id?: string | null;
+  matched_sku_code?: string | null;
+  matched_sku_name?: string | null;
+  confidence: number;
+  quantity: number;
+  unit: string;
+  unit_price: number;
+  total: number;
+}
+
+export interface TaroInvoiceSummary {
+  id: string;
+  short_id: string;
+  uploaded_at: string;
+  supplier: string;
+  line_count: number;
+  avg_confidence: number;
+  status: TaroInvoiceStatus;
+}
+
+export interface TaroInvoiceDetail extends TaroInvoiceSummary {
+  invoice_date?: string;
+  total_amount?: number;
+  image_url?: string;
+  line_items: TaroInvoiceLine[];
+}
+
+export interface TaroRecommendation {
+  id: string;
+  type: "synonym" | "new_sku" | "mapping_rule";
+  title: string;
+  body: string;
+  status: "pending" | "applied" | "rejected";
+  created_at: string;
+}
+
+export interface TaroAnalytics {
+  total_invoices: number;
+  processed: number;
+  needs_review: number;
+  avg_confidence: number;
+  monthly_volume: { month: string; count: number }[];
+  top_uploaded_skus: { sku_code: string; sku_name: string; count: number }[];
+  low_confidence_skus: { sku_code: string; sku_name: string; avg_confidence: number; samples: number }[];
+}
+
+export const getTaroInvoices = (params?: Record<string, string>) =>
+  api.get<{ data?: TaroInvoiceSummary[] } | TaroInvoiceSummary[]>(
+    "/taro-invoices",
+    { params }
+  );
+
+export const getTaroInvoice = (id: string) =>
+  api.get<TaroInvoiceDetail>(`/taro-invoices/${id}`);
+
+export const bulkUploadTaroInvoices = (files: File[]) => {
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f));
+  return api.post<{ uploaded: number; invoice_ids?: string[] }>(
+    "/taro-invoices/bulk-upload",
+    form,
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 180_000,
+    }
+  );
+};
+
+export const updateTaroLineItem = (
+  lineId: string,
+  data: { matched_sku_id: string; reason?: string }
+) => api.patch(`/taro-invoices/line-items/${lineId}`, data);
+
+export const getTaroRecommendations = (params?: { status?: string }) =>
+  api.get<{ data?: TaroRecommendation[] } | TaroRecommendation[]>(
+    "/taro-invoices/recommendations",
+    { params }
+  );
+
+export const regenerateTaroRecommendations = () =>
+  api.post<{ generated: number }>("/taro-invoices/recommendations/regenerate");
+
+export const applyTaroRecommendation = (id: string) =>
+  api.post(`/taro-invoices/recommendations/${id}/apply`);
+
+export const rejectTaroRecommendation = (id: string) =>
+  api.post(`/taro-invoices/recommendations/${id}/reject`);
+
+export const getTaroAnalytics = () =>
+  api.get<TaroAnalytics>("/taro-invoices/analytics");
