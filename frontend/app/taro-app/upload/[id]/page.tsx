@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AxiosError } from "axios";
 import {
+  getInvoiceImageUrl,
   getTacoSkus,
   getTaroInvoice,
   updateTaroLineItem,
@@ -81,6 +82,9 @@ export default function TaroUploadReviewPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<TaroInvoiceLine | null>(null);
+  // Signed image URL — fetched once invoice loads so the browser can render
+  // `<img>` without an Authorization header. See BE commit a1b3de77.
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
     if (!id) return;
@@ -105,6 +109,25 @@ export default function TaroUploadReviewPage() {
     if (!ready) return;
     refetch();
   }, [ready, refetch]);
+
+  // Fetch a fresh signed image URL once the invoice resolves. Token is valid
+  // for 15min — long enough for a review session.
+  useEffect(() => {
+    if (!invoice?.id) return;
+    let cancelled = false;
+    setImageUrl(null);
+    (async () => {
+      try {
+        const url = await getInvoiceImageUrl(invoice.id);
+        if (!cancelled) setImageUrl(url);
+      } catch (e) {
+        if (!cancelled) console.error("Failed to load signed image URL", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice?.id]);
 
   // Poll while invoice is still processing so the review page reveals lines
   // the moment the OCR worker finishes.
@@ -245,11 +268,11 @@ export default function TaroUploadReviewPage() {
         {/* Invoice meta */}
         <div className="bg-white border-b border-taco-divider px-4 py-3 mt-3">
           <div className="flex items-start gap-3">
-            <div className="w-14 h-14 rounded-lg bg-taco-page border border-taco-border flex items-center justify-center text-taco-muted flex-shrink-0">
-              {invoice.image_url ? (
+            <div className="w-14 h-14 rounded-lg bg-taco-page border border-taco-border flex items-center justify-center text-taco-muted flex-shrink-0 overflow-hidden">
+              {imageUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={invoice.image_url}
+                  src={imageUrl}
                   alt="Invoice"
                   className="w-full h-full object-cover rounded-lg"
                 />

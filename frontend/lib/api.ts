@@ -1041,6 +1041,24 @@ export const getTaroInvoice = async (id: string) => {
   return { ...res, data: normalizeTaroInvoiceDetail(res.data) };
 };
 
+// Signed image URL — BE returns `{ url: "/api/taro-invoices/:id/image?token=..." }`
+// with a 15-min JWT scoped to `taro_invoice_image`. The query param `?token=`
+// is read by JwtStrategy so the browser can render this in `<img src>` without
+// needing an Authorization header.
+//
+// The BE-returned URL is server-relative ("/api/..."). Since `API_BASE` ends in
+// "/api", we resolve against the *origin* (strip the trailing "/api") to avoid
+// "/api/api/..." double-prefix.
+export async function getInvoiceImageUrl(invoiceId: string): Promise<string> {
+  const res = await api.get<{ url: string }>(
+    `/taro-invoices/${invoiceId}/image-url`
+  );
+  const raw = res.data.url;
+  if (raw.startsWith("http")) return raw;
+  const apiOrigin = API_BASE.replace(/\/api\/?$/, "");
+  return `${apiOrigin}${raw}`;
+}
+
 export const bulkUploadTaroInvoices = (
   files: File[],
   regionId?: string,

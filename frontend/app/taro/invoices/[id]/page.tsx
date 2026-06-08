@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
+  getInvoiceImageUrl,
   getRegionAreas,
   getTacoSkus,
   getTaroInvoice,
@@ -53,6 +54,9 @@ export default function TaroInvoiceDetailPage() {
   const [editing, setEditing] = useState<TaroInvoiceLine | null>(null);
   const [zoom, setZoom] = useState(false);
   const [regions, setRegions] = useState<RegionArea[]>([]);
+  // Signed image URL — fetched separately so the browser can render `<img>`
+  // without an Authorization header. See BE commit a1b3de77 / lib/api.ts.
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -103,6 +107,26 @@ export default function TaroInvoiceDetailPage() {
   useEffect(() => {
     if (id) refetch();
   }, [id, refetch]);
+
+  // Fetch a fresh signed image URL once the invoice is loaded. The token is
+  // 15-min TTL — for this page we just grab it once on mount; if KC keeps the
+  // tab open longer than 15min the image will stop loading and they can refresh.
+  useEffect(() => {
+    if (!invoice?.id) return;
+    let cancelled = false;
+    setImageUrl(null);
+    (async () => {
+      try {
+        const url = await getInvoiceImageUrl(invoice.id);
+        if (!cancelled) setImageUrl(url);
+      } catch (e) {
+        if (!cancelled) console.error("Failed to load signed image URL", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice?.id]);
 
   const regionMap = useMemo(() => {
     const m = new Map<string, RegionArea>();
@@ -181,19 +205,19 @@ export default function TaroInvoiceDetailPage() {
             className="relative w-full h-[420px] lg:h-full bg-[#1A1A1A] border border-taco-border rounded-xl overflow-hidden group flex items-center justify-center"
             aria-label="Klik untuk perbesar"
           >
-            {invoice.image_url ? (
+            {imageUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={invoice.image_url}
+                src={imageUrl}
                 alt={`Invoice ${invoice.short_id}`}
                 className="max-w-full max-h-full object-contain"
               />
             ) : (
-              <div className="flex flex-col items-center gap-3 text-taco-page/60">
+              <div className="flex flex-col items-center gap-3 text-taco-page/60 animate-pulse">
                 <div className="w-16 h-16 rounded-full border border-taco-page/30 flex items-center justify-center">
                   <ZoomInIcon size={28} />
                 </div>
-                <div className="text-[12px]">Pratinjau invoice belum tersedia</div>
+                <div className="text-[12px]">Memuat pratinjau invoice…</div>
               </div>
             )}
             <div className="absolute top-3 right-3 inline-flex items-center gap-1.5 px-2.5 py-1 bg-black/60 backdrop-blur-sm text-white rounded-full text-[11px] opacity-0 group-hover:opacity-100 transition-opacity">
@@ -395,18 +419,17 @@ export default function TaroInvoiceDetailPage() {
           >
             ✕
           </button>
-          {invoice.image_url ? (
+          {imageUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={invoice.image_url}
+              src={imageUrl}
               alt={`Invoice ${invoice.short_id}`}
               className="max-w-full max-h-full object-contain"
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
             <div className="bg-white rounded-xl p-6 max-w-[640px] w-full text-center text-taco-sub text-[13px]">
-              Preview invoice akan muncul di sini setelah backend mengirim{" "}
-              <code className="text-taco-text mx-1">image_url</code>.
+              Memuat pratinjau invoice…
             </div>
           )}
         </div>
