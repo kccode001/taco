@@ -68,26 +68,6 @@ const SECTION_GROUPS: { label: string; items: NavItem[] }[] = [
   },
 ];
 
-/** Inline back arrow — keeps icon policy (no external lucide deps in admin chrome). */
-function BackArrowIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <line x1="19" y1="12" x2="5" y2="12" />
-      <polyline points="12 19 5 12 12 5" />
-    </svg>
-  );
-}
-
 /** Inline logout icon. */
 function LogOutIcon({ size = 14 }: { size?: number }) {
   return (
@@ -151,19 +131,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           orange is reserved for the "+ Tambah" CTA on each section page. */}
       <aside className="w-[240px] bg-white border-r border-taco-border flex flex-col flex-shrink-0 sticky top-0 h-screen">
         <div className="px-5 py-4 border-b border-taco-divider">
-          <div className="flex items-center">
-            <TacoLogo className="h-7 w-auto" />
-            <span className="ml-3 text-[11px] font-semibold text-taco-muted uppercase tracking-wider">
-              Admin
-            </span>
-          </div>
-          <Link
-            href="/dashboard"
-            className="mt-3 inline-flex items-center gap-1.5 text-[12px] text-taco-muted hover:text-taco-text transition-colors"
-          >
-            <BackArrowIcon size={12} />
-            Kembali ke Dashboard
-          </Link>
+          <TacoLogo className="h-7 w-auto" />
         </div>
 
         <nav className="flex-1 py-2 overflow-y-auto">
