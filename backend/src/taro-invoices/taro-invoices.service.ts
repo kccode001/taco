@@ -1,8 +1,10 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -33,7 +35,8 @@ import { SkuEmbeddingCache } from '../embeddings/sku-embedding-cache.service';
 const CONFIDENCE_THRESHOLD = 0.85;
 
 @Injectable()
-export class TaroInvoicesService {
+export class TaroInvoicesService implements OnModuleInit {
+  private readonly logger = new Logger(TaroInvoicesService.name);
   private readonly uploadDir = path.join(
     process.cwd(),
     process.env.UPLOAD_DIR ?? 'uploads',
@@ -65,6 +68,123 @@ export class TaroInvoicesService {
     private readonly skuCache: SkuEmbeddingCache,
   ) {
     fs.mkdirSync(this.uploadDir, { recursive: true });
+  }
+
+  // ---- Lifecycle: enum migration + backfill ----
+
+  /**
+   * Postgres enum types are immutable from TypeORM's `synchronize: true`
+   * perspective — TypeORM never emits `ALTER TYPE ... ADD VALUE` for an
+   * existing enum even when the TS enum gains a member. So we do it here on
+   * boot, idempotently:
+   *
+   *   1. ADD VALUE 'needs_review' if missing from `taro_invoices_status_enum`.
+   *   2. Re-compute the status of every invoice currently sitting at `done` —
+   *      any with at least one line where `needs_review = true` OR
+   *      `matched_sku_id IS NULL` OR `confidence_score < 0.85` flips to
+   *      `needs_review`. This catches KC's pre-existing test uploads.
+   *
+   * Safe to run on every boot — both statements are no-ops when the schema
+   * + data already match.
+   */
+  async onModuleInit(): Promise<void> {
+    await this.ensureNeedsReviewEnumValue();
+    const flipped = await this.backfillNeedsReviewStatus();
+    if (flipped > 0) {
+      this.logger.log(`Backfilled ${flipped} taro_invoice(s) from 'done' → 'needs_review'`);
+    }
+  }
+
+  private async ensureNeedsReviewEnumValue(): Promise<void> {
+    // `ALTER TYPE ... ADD VALUE IF NOT EXISTS` cannot run inside a transaction
+    // block in Postgres — TypeORM's query runner already opens an implicit
+    // transaction, so we use the raw query path (.query) which runs autocommit.
+    // The IF NOT EXISTS clause makes it idempotent across boots.
+    try {
+      await this.invoicesRepo.query(
+        `ALTER TYPE taro_invoices_status_enum ADD VALUE IF NOT EXISTS 'needs_review'`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure 'needs_review' enum value: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Single-statement backfill: any invoice currently at `done` whose line
+   * items show review-worthy signals is flipped to `needs_review`. Returns
+   * the number of rows updated.
+   */
+  private async backfillNeedsReviewStatus(): Promise<number> {
+    const result = await this.invoicesRepo.query(
+      `
+      UPDATE taro_invoices inv
+      SET status = 'needs_review'::taro_invoices_status_enum
+      WHERE inv.status = 'done'
+        AND EXISTS (
+          SELECT 1 FROM taro_invoice_line_items li
+          WHERE li.invoice_id = inv.id
+            AND (
+              li.needs_review = true
+              OR li.matched_sku_id IS NULL
+              OR li.confidence_score < ${CONFIDENCE_THRESHOLD}
+            )
+        )
+      `,
+    );
+    // node-postgres returns [rows, count]; TypeORM's .query passes that through.
+    const count = Array.isArray(result) && typeof result[1] === 'number' ? result[1] : 0;
+    return count;
+  }
+
+  /**
+   * Re-evaluate `taro_invoices.status` for a single invoice based on its
+   * current line items. Called from the PATCH line-item handler so admin
+   * fixes immediately flip the invoice between `needs_review` ↔ `done`.
+   *
+   * Rules:
+   *   - status='failed' or 'queued' or 'processing' → leave alone (terminal
+   *     OCR pipeline states; not affected by line edits).
+   *   - any line with needs_review=true OR matched_sku_id IS NULL OR
+   *     confidence_score < 0.85 → status = 'needs_review'.
+   *   - otherwise → status = 'done'.
+   *
+   * Returns the resolved status (already persisted).
+   */
+  private async recomputeInvoiceStatus(invoiceId: string): Promise<TaroInvoiceStatus> {
+    const inv = await this.invoicesRepo.findOne({
+      where: { id: invoiceId },
+      select: { id: true, status: true },
+    });
+    if (!inv) return TaroInvoiceStatus.DONE; // shouldn't happen — caller already loaded the line
+
+    // Only OCR-completed invoices participate in the needs_review / done flip.
+    if (
+      inv.status !== TaroInvoiceStatus.DONE &&
+      inv.status !== TaroInvoiceStatus.NEEDS_REVIEW
+    ) {
+      return inv.status;
+    }
+
+    const row = await this.invoicesRepo.query(
+      `
+      SELECT COUNT(*) FILTER (
+        WHERE li.needs_review = true
+           OR li.matched_sku_id IS NULL
+           OR li.confidence_score < $2
+      )::int AS review_count
+      FROM taro_invoice_line_items li
+      WHERE li.invoice_id = $1
+      `,
+      [invoiceId, CONFIDENCE_THRESHOLD],
+    );
+    const reviewCount = Number(row?.[0]?.review_count ?? 0);
+    const next = reviewCount > 0 ? TaroInvoiceStatus.NEEDS_REVIEW : TaroInvoiceStatus.DONE;
+    if (next !== inv.status) {
+      await this.invoicesRepo.update(invoiceId, { status: next });
+    }
+    return next;
   }
 
   // ---- Signed image URL ----
@@ -647,6 +767,12 @@ export class TaroInvoicesService {
       );
     }
 
+    // Aggregate-level effect: an admin fix may have cleared the last review
+    // flag on this invoice, or (when matched_sku_id was set back to null /
+    // confidence stays low) re-introduced one. Recompute so the FE doesn't
+    // need a separate refresh of the invoice header.
+    await this.recomputeInvoiceStatus(saved.invoice_id);
+
     return saved;
   }
 
@@ -752,7 +878,10 @@ export class TaroInvoicesService {
         .createQueryBuilder('inv')
         .select('COUNT(*)::int', 'total_invoices')
         .addSelect(
-          `COUNT(*) FILTER (WHERE inv.status = 'done')::int`,
+          // `done` AND `needs_review` both represent "OCR pipeline finished"
+          // — only `failed` and queued/processing are still in flight. The
+          // processed_count KPI should reflect both terminal-success states.
+          `COUNT(*) FILTER (WHERE inv.status IN ('done', 'needs_review'))::int`,
           'processed_count',
         ),
     ).getRawOne();

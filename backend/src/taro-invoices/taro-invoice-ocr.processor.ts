@@ -260,8 +260,23 @@ export class TaroInvoiceOcrProcessor {
 
       await this.invoicesRepo.update(invoiceId, { progress_percent: PROGRESS.MAPPING_DONE });
 
+      // Status: 'done' only when every line item is clean. Any line flagged
+      // needs_review (low confidence or unmatched SKU) bumps the whole
+      // invoice into 'needs_review' so the FE dashboard's "Perlu Review"
+      // pill catches it without per-line scanning. Mirror the same predicate
+      // used by the line-item entity (confidence_score < 0.85 OR no match).
+      const anyNeedsReview = entities.some(
+        (e) =>
+          e.needs_review === true ||
+          !e.matched_sku_id ||
+          parseFloat(String(e.confidence_score ?? '0')) < CONFIDENCE_THRESHOLD,
+      );
+      const finalStatus = anyNeedsReview
+        ? TaroInvoiceStatus.NEEDS_REVIEW
+        : TaroInvoiceStatus.DONE;
+
       await this.invoicesRepo.update(invoiceId, {
-        status: TaroInvoiceStatus.DONE,
+        status: finalStatus,
         progress_percent: PROGRESS.DONE,
         supplier_name: parsed.supplier_name ?? invoice.supplier_name,
         invoice_date: parsed.invoice_date ?? invoice.invoice_date,

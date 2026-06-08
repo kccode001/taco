@@ -16,6 +16,17 @@ import { User } from './user.entity';
 export enum TaroInvoiceStatus {
   QUEUED = 'queued',
   PROCESSING = 'processing',
+  /**
+   * OCR pipeline finished but at least one line item is either unmatched,
+   * low-confidence (<0.85), or already flagged `needs_review`. Admin/agent
+   * must fix lines via PATCH /api/taro-invoices/line-items/:id; once every
+   * line is clean, the invoice flips back to DONE automatically.
+   */
+  NEEDS_REVIEW = 'needs_review',
+  /**
+   * OCR pipeline finished AND every line item is mapped + above confidence
+   * threshold. No human review required.
+   */
   DONE = 'done',
   FAILED = 'failed',
 }
