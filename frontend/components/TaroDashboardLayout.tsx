@@ -3,72 +3,77 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import {
-  BarChart2,
-  LogOut,
-  Home,
-} from "lucide-react";
+import { Home, LogOut } from "lucide-react";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import {
-  UsersIcon,
-  StoreIcon,
   PackageIcon,
-  TagIcon,
-  ClipboardIcon,
-  PinIcon,
-  FlagIcon,
+  LightbulbIcon,
   FileTextIcon,
-  MapIcon,
-  CalendarIcon,
+  UsersIcon,
 } from "@/app/admin/_components/icons";
+
+type IconCmp = React.ComponentType<{ size?: number; className?: string }>;
 
 type NavItem = {
   href: string;
   label: string;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-  /** When true the item is only highlighted on an EXACT pathname match
+  icon: IconCmp;
+  /** When true, item is only active on EXACT pathname match
    *  (used for list pages whose URL is a prefix of sibling routes). */
   exact?: boolean;
 };
 
 type NavSection = { label?: string; items: NavItem[] };
 
-const TOP_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/dashboard/analytics", label: "Analitik", icon: BarChart2 },
+/** Inline icon — AlertCircle (lucide-style, our SVG convention). Used by
+ *  the "OCR Gagal" nav entry. Kept local so we don't pollute the shared
+ *  /admin icons set. */
+function AlertCircleIcon({ size = 16, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+const TARO_SECTIONS: NavSection[] = [
+  {
+    label: "Overview",
+    items: [
+      { href: "/taro/dashboard", label: "Dashboard", icon: Home as IconCmp },
+    ],
+  },
+  {
+    label: "Produk & Koreksi",
+    items: [
+      { href: "/taro/taco-skus", label: "TACO SKU", icon: PackageIcon },
+      { href: "/taro/recommendations", label: "Rekomendasi", icon: LightbulbIcon },
+      { href: "/taro/failed-ocr", label: "OCR Gagal", icon: AlertCircleIcon },
+    ],
+  },
+  {
+    label: "Invoice & Agen",
+    items: [
+      { href: "/taro/invoices", label: "Daftar Invoice", icon: FileTextIcon, exact: true },
+      { href: "/taro/agents", label: "Sales Agent", icon: UsersIcon },
+    ],
+  },
 ];
 
-const ADMIN_SECTIONS: NavSection[] = [
-  {
-    label: "Organisasi & Jaringan",
-    items: [
-      { href: "/admin/sales-staff", label: "Sales Staff", icon: UsersIcon },
-      { href: "/admin/stores", label: "Toko", icon: StoreIcon },
-      { href: "/admin/wilayah", label: "Wilayah", icon: MapIcon },
-    ],
-  },
-  {
-    label: "Katalog Produk",
-    items: [
-      { href: "/admin/taco-skus", label: "TACO SKU", icon: PackageIcon },
-      { href: "/admin/competitor-skus", label: "SKU Kompetitor", icon: TagIcon },
-      { href: "/admin/competitor-brands", label: "Brand Kompetitor", icon: TagIcon },
-    ],
-  },
-  {
-    label: "Konfigurasi Kunjungan",
-    items: [
-      { href: "/admin/visit-plans", label: "Rencana Kunjungan", icon: CalendarIcon },
-      { href: "/admin/burning-questions", label: "Pertanyaan Prioritas", icon: ClipboardIcon },
-      { href: "/admin/posm", label: "POSM / Aset", icon: PinIcon },
-      { href: "/admin/visit-objectives", label: "Tujuan Kunjungan", icon: FlagIcon },
-      { href: "/admin/visit-contexts", label: "Konteks Kunjungan", icon: FileTextIcon },
-    ],
-  },
-];
-
-export function DashboardLayout({ children }: { children: React.ReactNode }) {
+export function TaroDashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { clearAuth, user } = useAuthStore();
@@ -82,18 +87,19 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
       return;
     }
     const unsub = useAuthStore.persist?.onFinishHydration?.(() => setHydrated(true));
-    return () => { if (typeof unsub === "function") unsub(); };
+    return () => {
+      if (typeof unsub === "function") unsub();
+    };
   }, []);
 
-  // Role-gate: manager + admin everywhere; rep blocked off /admin/*.
+  // Role-gate: same as DashboardLayout — only admin + manager can be here.
   useEffect(() => {
     if (!hydrated) return;
     if (!user) {
       router.replace("/auth/login");
       return;
     }
-    const isAdminRoute = pathname.startsWith("/admin");
-    if (isAdminRoute && user.role !== "admin" && user.role !== "manager") {
+    if (user.role !== "admin" && user.role !== "manager") {
       router.replace("/dashboard");
     }
   }, [hydrated, user, router, pathname]);
@@ -106,14 +112,13 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const renderItem = (item: NavItem) => {
     const { href, label, icon: Icon, exact } = item;
     let active = pathname === href;
-    if (!active && href !== "/dashboard") {
+    if (!active) {
       if (exact) {
-        // Exact-mode items (list pages with sibling routes) also light up on
-        // detail routes like `${href}/123` but NOT on sibling segments such as
-        // `${href}/upload`. Sibling segments are defined in ADMIN_SECTIONS.
+        // Light up on detail pages (`/taro/invoices/abc`) but NOT on sibling
+        // segments registered in TARO_SECTIONS (currently none for invoices).
         if (pathname.startsWith(href + "/")) {
           const nextSeg = pathname.slice(href.length + 1).split("/")[0];
-          const siblingPaths = ADMIN_SECTIONS.flatMap((s) =>
+          const siblingPaths = TARO_SECTIONS.flatMap((s) =>
             s.items.map((i) => i.href)
           );
           const isSibling = siblingPaths.includes(`${href}/${nextSeg}`);
@@ -149,14 +154,17 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
             alt="TACO"
             className="h-7"
           />
+          <Link
+            href="/dashboard"
+            className="mt-3 inline-flex items-center gap-1.5 text-[12px] text-taco-sub hover:text-taco-text"
+          >
+            <span aria-hidden>←</span>
+            <span>Kembali ke TACO Dashboard</span>
+          </Link>
         </div>
 
         <nav className="flex-1 py-2 overflow-y-auto">
-          <div className="mb-2">
-            {TOP_ITEMS.map(renderItem)}
-          </div>
-
-          {ADMIN_SECTIONS.map((group) => (
+          {TARO_SECTIONS.map((group) => (
             <div key={group.label} className="mb-2">
               {group.label && (
                 <div className="px-5 pt-4 pb-2 text-[10px] font-semibold text-taco-muted uppercase tracking-[0.1em]">
@@ -180,9 +188,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 overflow-auto">
-        {children}
-      </main>
+      <main className="flex-1 min-w-0 overflow-auto">{children}</main>
     </div>
   );
 }
