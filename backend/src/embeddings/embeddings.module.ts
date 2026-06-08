@@ -10,6 +10,7 @@ import {
 } from './embeddings.service';
 import { TacoSkuEmbeddingProcessor } from './taco-sku.processor';
 import { CompetitorSkuEmbeddingProcessor } from './competitor-sku.processor';
+import { SkuEmbeddingCache } from './sku-embedding-cache.service';
 
 @Module({
   imports: [
@@ -23,7 +24,8 @@ import { CompetitorSkuEmbeddingProcessor } from './competitor-sku.processor';
     EmbeddingsService,
     TacoSkuEmbeddingProcessor,
     CompetitorSkuEmbeddingProcessor,
+    SkuEmbeddingCache,
   ],
-  exports: [EmbeddingsService],
+  exports: [EmbeddingsService, SkuEmbeddingCache],
 })
 export class EmbeddingsModule {}

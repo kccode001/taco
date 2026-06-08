@@ -55,3 +55,30 @@ export function topK<T extends { embedding: string | null }>(
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, k);
 }
+
+/**
+ * Top-K over candidates that already carry a pre-parsed vector + pre-computed
+ * norm. Avoids re-parsing JSON and recomputing the candidate norm on every
+ * query, which dominates the OCR hot path (965 candidates × N line items).
+ */
+export function topKPrecomputed<T extends { vec: number[] | null; norm: number }>(
+  query: number[],
+  queryNorm: number,
+  candidates: T[],
+  k: number,
+): Array<{ item: T; score: number }> {
+  if (queryNorm === 0) return [];
+  const scored: Array<{ item: T; score: number }> = [];
+  for (const c of candidates) {
+    if (!c.vec || c.norm === 0) continue;
+    // Inline dot product — hottest loop in OCR. Avoid function call overhead.
+    const a = query;
+    const b = c.vec;
+    const len = Math.min(a.length, b.length);
+    let d = 0;
+    for (let i = 0; i < len; i++) d += a[i] * b[i];
+    scored.push({ item: c, score: d / (queryNorm * c.norm) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, k);
+}

@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TacoSku } from '../database/entities/taco-sku.entity';
 import { EmbeddingsService, QUEUE_TACO_SKU } from './embeddings.service';
+import { SkuEmbeddingCache } from './sku-embedding-cache.service';
 
 @Processor(QUEUE_TACO_SKU)
 export class TacoSkuEmbeddingProcessor {
@@ -14,6 +15,7 @@ export class TacoSkuEmbeddingProcessor {
     @InjectRepository(TacoSku)
     private readonly repo: Repository<TacoSku>,
     private readonly embeddings: EmbeddingsService,
+    private readonly skuCache: SkuEmbeddingCache,
   ) {}
 
   @Process('generate')
@@ -29,5 +31,8 @@ export class TacoSkuEmbeddingProcessor {
     if (!vec) return; // no API key — skip silently
 
     await this.repo.update(sku.id, { embedding: JSON.stringify(vec) });
+    // Background bulk-import path: refresh the OCR cache so newly-embedded
+    // SKUs become matchable without a server restart.
+    this.skuCache.invalidate().catch(() => {});
   }
 }

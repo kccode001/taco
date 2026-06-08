@@ -11,6 +11,7 @@ import {
 import { CreateTacoSkuDto } from './dto/create-taco-sku.dto';
 import { UpdateTacoSkuDto } from './dto/update-taco-sku.dto';
 import { SkuQueryDto } from './dto/sku-query.dto';
+import { SkuEmbeddingCache } from '../embeddings/sku-embedding-cache.service';
 
 export interface BulkImportRowResult {
   row: number;
@@ -41,6 +42,7 @@ export class TacoSkusService {
   constructor(
     @InjectRepository(TacoSku)
     private readonly tacoSkusRepo: Repository<TacoSku>,
+    private readonly skuCache: SkuEmbeddingCache,
   ) {
     if (process.env.OPENAI_API_KEY) {
       this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -91,6 +93,7 @@ export class TacoSkusService {
     });
 
     const saved = await this.tacoSkusRepo.save(sku);
+    this.skuCache.invalidate().catch(() => {});
     this.generateEmbedding(saved).catch((err) =>
       console.error(`Failed to generate embedding for SKU ${saved.id}:`, err),
     );
@@ -246,12 +249,16 @@ export class TacoSkusService {
       );
     }
 
+    // Any update could change prompt-visible fields (name, aliases, price band,
+    // unit, etc.) — invalidate the cache so the next OCR job sees fresh data.
+    this.skuCache.invalidate().catch(() => {});
     return saved;
   }
 
   async remove(id: string): Promise<void> {
     const sku = await this.findOne(id);
     await this.tacoSkusRepo.remove(sku);
+    this.skuCache.invalidate().catch(() => {});
   }
 
   async generateEmbedding(sku: TacoSku): Promise<void> {
@@ -267,5 +274,8 @@ export class TacoSkusService {
     await this.tacoSkusRepo.update(sku.id, {
       embedding: JSON.stringify(embedding),
     });
+    // Refresh the in-memory cache so the new vector is visible to the OCR
+    // hot path without a restart.
+    this.skuCache.invalidate().catch(() => {});
   }
 }

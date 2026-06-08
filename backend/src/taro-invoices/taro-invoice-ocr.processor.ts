@@ -4,16 +4,18 @@ import type { Job } from 'bull';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as fs from 'fs';
+import * as path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
+import sharp from 'sharp';
 import { TaroInvoice, TaroInvoiceStatus } from '../database/entities/taro-invoice.entity';
 import { TaroInvoiceLineItem } from '../database/entities/taro-invoice-line-item.entity';
-import { TacoSku } from '../database/entities/taco-sku.entity';
 import { Region } from '../database/entities/region.entity';
 import { TaroMappingRule } from '../database/entities/taro-mapping-rule.entity';
 import { QUEUE_TARO_OCR } from './taro-invoices.constants';
-import { mediaTypeFor } from '../invoices/ocr-utils';
+import { mediaTypeFor, ImageMediaType } from '../invoices/ocr-utils';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
-import { topK } from '../embeddings/similarity';
+import { topKPrecomputed } from '../embeddings/similarity';
+import { SkuEmbeddingCache, CachedSku } from '../embeddings/sku-embedding-cache.service';
 
 interface TaroOcrLineItem {
   raw_text: string;
@@ -32,9 +34,17 @@ interface TaroOcrResponse {
   line_items: TaroOcrLineItem[];
 }
 
-const OCR_MODEL = 'claude-sonnet-4-5';
+const OCR_MODEL = 'claude-sonnet-4-6';
 const CONFIDENCE_THRESHOLD = 0.85;
 const RAG_TOP_K = 10;
+/** Wider top-K used to choose the SKU candidate set fed into the Claude prompt. */
+const PROMPT_CANDIDATE_K = 40;
+/** Max longer-edge px sent to Claude vision. Anything bigger is downscaled. */
+const VISION_MAX_EDGE_PX = 2048;
+/** Concurrency of the OCR worker — each job is dominated by ~5-15s Claude RTT. */
+export const TARO_OCR_CONCURRENCY = 5;
+/** Built-in retries on transient 5xx / 429 from Claude. SDK default is 2. */
+const ANTHROPIC_MAX_RETRIES = 3;
 
 /** Progress stage → 0..100 for the refresh-resilient upload view. */
 const PROGRESS = {
@@ -53,6 +63,15 @@ const PROGRESS = {
  * Mapping pipeline:
  *   raw row → Claude vision → suggested_sku_code → DB lookup by code → matched_sku_id
  *   needs_review = confidence < 0.85 OR no matched SKU
+ *
+ * Performance notes:
+ *   - SKU master + embeddings are cached in-memory by SkuEmbeddingCache (loaded
+ *     once on startup, refreshed on SKU CRUD). Previously every job re-loaded
+ *     965 rows from DB and JSON.parse'd 965 × 3072-dim vectors per line item.
+ *   - Images are downscaled to a 2048px longer edge before being sent to
+ *     Claude vision — large phone uploads were adding 5-10s per call.
+ *   - BullMQ concurrency bumped to 5 (each invoice is ~5-15s Claude RTT, so
+ *     a single worker thread was serializing everything).
  */
 @Processor(QUEUE_TARO_OCR)
 export class TaroInvoiceOcrProcessor {
@@ -64,20 +83,23 @@ export class TaroInvoiceOcrProcessor {
     private readonly invoicesRepo: Repository<TaroInvoice>,
     @InjectRepository(TaroInvoiceLineItem)
     private readonly lineItemsRepo: Repository<TaroInvoiceLineItem>,
-    @InjectRepository(TacoSku)
-    private readonly tacoSkusRepo: Repository<TacoSku>,
     @InjectRepository(Region)
     private readonly regionsRepo: Repository<Region>,
     @InjectRepository(TaroMappingRule)
     private readonly mappingRulesRepo: Repository<TaroMappingRule>,
     private readonly embeddings: EmbeddingsService,
+    private readonly skuCache: SkuEmbeddingCache,
   ) {
-    this.anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    this.anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      maxRetries: ANTHROPIC_MAX_RETRIES,
+    });
   }
 
-  @Process('process-taro-invoice')
+  @Process({ name: 'process-taro-invoice', concurrency: TARO_OCR_CONCURRENCY })
   async handle(job: Job<{ invoiceId: string; imagePath: string }>): Promise<void> {
     const { invoiceId, imagePath } = job.data;
+    const t0 = Date.now();
     const invoice = await this.invoicesRepo.findOne({ where: { id: invoiceId } });
     if (!invoice) {
       this.logger.warn(`TaroInvoice ${invoiceId} not found — skipping OCR.`);
@@ -90,22 +112,7 @@ export class TaroInvoiceOcrProcessor {
         progress_percent: PROGRESS.PROCESSING,
       });
 
-      const skuMaster = await this.tacoSkusRepo.find({
-        where: { is_active: true },
-        select: {
-          id: true,
-          code: true,
-          name: true,
-          catalog_category: true,
-          product_name_aliases: true,
-          min_price: true,
-          max_price: true,
-          avg_price: true,
-          unit: true,
-          unit_aliases: true,
-          embedding: true,
-        },
-      });
+      const skuMaster = await this.skuCache.getAll();
 
       const region = invoice.region_id
         ? await this.regionsRepo.findOne({ where: { id: invoice.region_id } })
@@ -120,21 +127,19 @@ export class TaroInvoiceOcrProcessor {
       await this.invoicesRepo.update(invoiceId, { progress_percent: PROGRESS.OCR_STARTED });
 
       // ---- RAG step 1: cheap OCR pass to extract raw_text ----
-      // We do a single Claude vision call but stage progress around it so the
-      // refresh-resilient UI can show meaningful percentages.
+      const tVision = Date.now();
       const parsed = await this.extractWithVision(imagePath, skuMaster, region, mappingRules);
+      const visionMs = Date.now() - tVision;
 
       await this.invoicesRepo.update(invoiceId, { progress_percent: PROGRESS.OCR_DONE });
 
       // ---- RAG step 2: re-score each line via embeddings ----
-      // For each line's raw_text, compute embedding, then top-K SKUs by cosine.
-      // If the model's suggested code matches one of the top-K, we keep it.
-      // Otherwise we promote the top-K[0] but cap confidence at threshold-0.05
-      // so it still falls into needs_review.
       const codeToId = new Map<string, string>();
       for (const sku of skuMaster) codeToId.set(this.normalizeCode(sku.code), sku.id);
 
+      const tRag = Date.now();
       const ragHits = await this.ragRescore(parsed.line_items, skuMaster);
+      const ragMs = Date.now() - tRag;
 
       const entities: Partial<TaroInvoiceLineItem>[] = parsed.line_items.map((li, idx) => {
         const modelMatchedId = li.suggested_sku_code
@@ -178,6 +183,11 @@ export class TaroInvoiceOcrProcessor {
         invoice_date: parsed.invoice_date ?? invoice.invoice_date,
         total_amount: parsed.total_amount != null ? String(parsed.total_amount) : invoice.total_amount,
       });
+
+      const totalMs = Date.now() - t0;
+      this.logger.log(
+        `Taro OCR ${invoiceId} done in ${totalMs}ms (vision=${visionMs}ms, rag=${ragMs}ms, lines=${entities.length})`,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Taro OCR failed for ${invoiceId}: ${message}`);
@@ -191,35 +201,51 @@ export class TaroInvoiceOcrProcessor {
   /**
    * RAG re-score helper. For each line item, embeds the raw_text + the
    * model's suggested code (if any), then returns the top-K matching SKUs.
-   * Returns [] for a line if embeddings are unavailable (no OPENAI_API_KEY).
+   *
+   * The candidate pool comes from the cached SKU master with pre-parsed
+   * vectors + pre-computed norms (see SkuEmbeddingCache + topKPrecomputed) so
+   * we no longer JSON.parse 965 × 3072-dim arrays per line item.
    */
   private async ragRescore(
     lineItems: TaroOcrLineItem[],
-    skuMaster: TacoSku[],
-  ): Promise<Array<Array<{ item: TacoSku; score: number }>>> {
-    const usable = skuMaster.filter((s) => !!s.embedding);
+    skuMaster: CachedSku[],
+  ): Promise<Array<Array<{ item: CachedSku; score: number }>>> {
+    const usable = skuMaster.filter((s) => s.vec !== null);
     if (usable.length === 0) return lineItems.map(() => []);
 
-    const results: Array<Array<{ item: TacoSku; score: number }>> = [];
-    for (const li of lineItems) {
-      const text = [li.raw_text, li.suggested_sku_code, li.unit]
+    // Embed all line texts in parallel — OpenAI handles concurrency well and
+    // network RTT (200-400ms each) dominates, so serializing was a free loss.
+    const texts = lineItems.map((li) => {
+      return [li.raw_text, li.suggested_sku_code, li.unit]
         .filter(Boolean)
-        .join(' ');
-      if (!text.trim()) {
+        .join(' ')
+        .trim();
+    });
+
+    const vectors = await Promise.all(
+      texts.map(async (text) => {
+        if (!text) return null;
+        try {
+          return await this.embeddings.embed(text);
+        } catch (e) {
+          this.logger.warn(
+            `RAG embed failed for "${text.slice(0, 60)}": ${(e as Error).message}`,
+          );
+          return null;
+        }
+      }),
+    );
+
+    const results: Array<Array<{ item: CachedSku; score: number }>> = [];
+    for (const vec of vectors) {
+      if (!vec) {
         results.push([]);
         continue;
       }
-      try {
-        const vec = await this.embeddings.embed(text);
-        if (!vec) {
-          results.push([]);
-          continue;
-        }
-        results.push(topK(vec, usable, RAG_TOP_K));
-      } catch (e) {
-        this.logger.warn(`RAG embed failed for "${text.slice(0, 60)}": ${(e as Error).message}`);
-        results.push([]);
-      }
+      let qn = 0;
+      for (let i = 0; i < vec.length; i++) qn += vec[i] * vec[i];
+      qn = Math.sqrt(qn);
+      results.push(topKPrecomputed(vec, qn, usable, RAG_TOP_K));
     }
     return results;
   }
@@ -229,20 +255,18 @@ export class TaroInvoiceOcrProcessor {
   }
 
   /**
-   * RAG candidate selection — quick Claude haiku-ish summarisation isn't worth
-   * the extra call, so we just use the file name as a coarse signal and fall
-   * through to the top-N most generally relevant SKUs by embedding similarity
-   * against a hard-coded "invoice line items" probe. The accurate per-line
-   * re-scoring happens in ragRescore() AFTER OCR.
+   * RAG candidate selection — coarse probe to narrow the 965-SKU master to
+   * top-40 candidates that go into the Claude prompt. Per-line re-scoring
+   * happens AFTER OCR in ragRescore().
    *
    * Returns [] if embeddings unavailable so the caller falls back to the full
    * 965-SKU catalog.
    */
   private async pickRagCandidates(
     imagePath: string,
-    skuMaster: TacoSku[],
-  ): Promise<TacoSku[]> {
-    const usable = skuMaster.filter((s) => !!s.embedding);
+    skuMaster: CachedSku[],
+  ): Promise<CachedSku[]> {
+    const usable = skuMaster.filter((s) => s.vec !== null);
     if (usable.length === 0) return [];
 
     // Probe text: a generic invoice-OCR description biased toward TACO products.
@@ -253,38 +277,119 @@ export class TaroInvoiceOcrProcessor {
     try {
       const vec = await this.embeddings.embed(probe);
       if (!vec) return [];
-      // Pull a wider top-K here (40) so Claude has room to pick — the
-      // per-line re-scoring narrows further.
-      return topK(vec, usable, 40).map((r) => r.item);
+      let qn = 0;
+      for (let i = 0; i < vec.length; i++) qn += vec[i] * vec[i];
+      qn = Math.sqrt(qn);
+      return topKPrecomputed(vec, qn, usable, PROMPT_CANDIDATE_K).map((r) => r.item);
     } catch (e) {
       this.logger.warn(`RAG candidate probe failed: ${(e as Error).message}`);
       return [];
     }
   }
 
+  /**
+   * Read the upload, downscale if it's bigger than VISION_MAX_EDGE_PX on the
+   * longer edge, and return base64 + media type for the Claude payload.
+   * Falls back to the raw bytes if sharp can't decode (e.g. PDF — though
+   * those don't reach this path today; mediaTypeFor only accepts images).
+   */
+  private async prepareImage(imagePath: string): Promise<{
+    base64: string;
+    mediaType: ImageMediaType;
+    originalBytes: number;
+    sentBytes: number;
+    downscaled: boolean;
+  }> {
+    const buf = fs.readFileSync(imagePath);
+    const originalBytes = buf.byteLength;
+    const ext = path.extname(imagePath).toLowerCase();
+
+    // Skip resize for tiny files where the overhead isn't worth it.
+    if (originalBytes < 256 * 1024) {
+      return {
+        base64: buf.toString('base64'),
+        mediaType: mediaTypeFor(imagePath),
+        originalBytes,
+        sentBytes: originalBytes,
+        downscaled: false,
+      };
+    }
+
+    try {
+      const img = sharp(buf, { failOn: 'none' }).rotate(); // honour EXIF orientation
+      const meta = await img.metadata();
+      const longerEdge = Math.max(meta.width ?? 0, meta.height ?? 0);
+      if (longerEdge <= VISION_MAX_EDGE_PX) {
+        return {
+          base64: buf.toString('base64'),
+          mediaType: mediaTypeFor(imagePath),
+          originalBytes,
+          sentBytes: originalBytes,
+          downscaled: false,
+        };
+      }
+
+      // Re-encode as JPEG with quality 85 — even PNG screenshots get smaller
+      // and Claude vision treats them identically for OCR.
+      const resized = await img
+        .resize({
+          width: meta.width && meta.width >= (meta.height ?? 0) ? VISION_MAX_EDGE_PX : undefined,
+          height: meta.height && meta.height > (meta.width ?? 0) ? VISION_MAX_EDGE_PX : undefined,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 85, mozjpeg: true })
+        .toBuffer();
+      // Preserve animated GIF fallback by only swapping to jpeg for static raster.
+      const mediaType: ImageMediaType =
+        ext === '.gif' ? 'image/gif' : 'image/jpeg';
+      return {
+        base64: resized.toString('base64'),
+        mediaType,
+        originalBytes,
+        sentBytes: resized.byteLength,
+        downscaled: true,
+      };
+    } catch (e) {
+      this.logger.warn(
+        `Image resize failed for ${imagePath} (${(e as Error).message}) — sending original.`,
+      );
+      return {
+        base64: buf.toString('base64'),
+        mediaType: mediaTypeFor(imagePath),
+        originalBytes,
+        sentBytes: originalBytes,
+        downscaled: false,
+      };
+    }
+  }
+
   private async extractWithVision(
     imagePath: string,
-    skuMaster: TacoSku[],
+    skuMaster: CachedSku[],
     region: Region | null,
     mappingRules: TaroMappingRule[],
   ): Promise<TaroOcrResponse> {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error('ANTHROPIC_API_KEY not configured');
     }
-    const buf = fs.readFileSync(imagePath);
-    const base64 = buf.toString('base64');
-    const mediaType = mediaTypeFor(imagePath);
 
-    // ---- RAG candidate selection ----
-    // Embed the whole image's OCR-able context once to grab top-K SKUs from
-    // the 965-row master, rather than stuffing the full catalog into the
-    // prompt. If embeddings unavailable, fall back to the old "all SKUs"
-    // behaviour so we don't regress.
-    const ragCandidates = await this.pickRagCandidates(imagePath, skuMaster);
+    const [{ base64, mediaType, originalBytes, sentBytes, downscaled }, ragCandidates] =
+      await Promise.all([
+        this.prepareImage(imagePath),
+        this.pickRagCandidates(imagePath, skuMaster),
+      ]);
+
+    if (downscaled) {
+      this.logger.log(
+        `Resized vision payload ${imagePath.split('/').pop()}: ${originalBytes}B → ${sentBytes}B`,
+      );
+    }
+
     const promptSkus = ragCandidates.length > 0 ? ragCandidates : skuMaster;
 
     // Compress the SKU master into a token-efficient text block.
-    // Format: CODE | name | category | min-max (avg) | aliases (truncated)
+    // Format: CODE | name | category | unit | min-max (avg) | aliases (truncated)
     const skuLines = promptSkus.map((s) => {
       const aliases = (s.product_name_aliases ?? []).slice(0, 6).join(', ');
       const units = (s.unit_aliases ?? []).slice(0, 4).join(', ');
@@ -343,7 +448,7 @@ export class TaroInvoiceOcrProcessor {
     const jsonStr = objMatch ? objMatch[0] : cleaned;
     try {
       return JSON.parse(jsonStr) as TaroOcrResponse;
-    } catch (e) {
+    } catch {
       throw new Error(`Failed to parse OCR response: ${jsonStr.slice(0, 200)}`);
     }
   }
