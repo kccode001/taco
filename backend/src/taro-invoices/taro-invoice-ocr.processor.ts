@@ -51,8 +51,6 @@ interface TaroOcrResponse {
 const OCR_MODEL = 'claude-sonnet-4-6';
 const CONFIDENCE_THRESHOLD = 0.85;
 const RAG_TOP_K = 10;
-/** Wider top-K used to choose the SKU candidate set fed into the Claude prompt. */
-const PROMPT_CANDIDATE_K = 40;
 /** Max longer-edge px sent to Claude vision. Anything bigger is downscaled. */
 const VISION_MAX_EDGE_PX = 2048;
 /** Concurrency of the OCR worker — each job is dominated by ~5-15s Claude RTT. */
@@ -437,39 +435,6 @@ export class TaroInvoiceOcrProcessor {
   }
 
   /**
-   * RAG candidate selection — coarse probe to narrow the 965-SKU master to
-   * top-40 candidates that go into the Claude prompt. Per-line re-scoring
-   * happens AFTER OCR in ragRescore().
-   *
-   * Returns [] if embeddings unavailable so the caller falls back to the full
-   * 965-SKU catalog.
-   */
-  private async pickRagCandidates(
-    imagePath: string,
-    skuMaster: CachedSku[],
-  ): Promise<CachedSku[]> {
-    const usable = skuMaster.filter((s) => s.vec !== null);
-    if (usable.length === 0) return [];
-
-    // Probe text: a generic invoice-OCR description biased toward TACO products.
-    // This is intentionally coarse — per-line re-scoring corrects the picks.
-    const probe = `Faktur supplier produk bangunan TACO: laminate HPL sheet edging hardware vinyl plywood ${imagePath
-      .split(/[\\/]/)
-      .pop() ?? ''}`;
-    try {
-      const vec = await this.embeddings.embed(probe);
-      if (!vec) return [];
-      let qn = 0;
-      for (let i = 0; i < vec.length; i++) qn += vec[i] * vec[i];
-      qn = Math.sqrt(qn);
-      return topKPrecomputed(vec, qn, usable, PROMPT_CANDIDATE_K).map((r) => r.item);
-    } catch (e) {
-      this.logger.warn(`RAG candidate probe failed: ${(e as Error).message}`);
-      return [];
-    }
-  }
-
-  /**
    * Read the upload, downscale if it's bigger than VISION_MAX_EDGE_PX on the
    * longer edge, and return base64 + media type for the Claude payload.
    * Falls back to the raw bytes if sharp can't decode (e.g. PDF — though
@@ -556,11 +521,8 @@ export class TaroInvoiceOcrProcessor {
       throw new Error('ANTHROPIC_API_KEY not configured');
     }
 
-    const [{ base64, mediaType, originalBytes, sentBytes, downscaled }, ragCandidates] =
-      await Promise.all([
-        this.prepareImage(imagePath),
-        this.pickRagCandidates(imagePath, skuMaster),
-      ]);
+    const { base64, mediaType, originalBytes, sentBytes, downscaled } =
+      await this.prepareImage(imagePath);
 
     if (downscaled) {
       this.logger.log(
@@ -568,7 +530,14 @@ export class TaroInvoiceOcrProcessor {
       );
     }
 
-    const promptSkus = ragCandidates.length > 0 ? ragCandidates : skuMaster;
+    // Send the FULL SKU master (not a top-K subset). Previous top-40 / top-200
+    // candidate selection — even with a wider K — left the correct SKU outside
+    // Claude's view for ~50% of HPL rows (the 435-SKU laminate family alone
+    // saturates any reasonable K). With Anthropic prompt caching the catalog
+    // block is paid once per ~5 min cache window and reused across invoices,
+    // so the per-call marginal cost is small while accuracy climbs because the
+    // right answer is always visible.
+    const promptSkus = skuMaster;
 
     // Compress the SKU master into a token-efficient text block.
     // Format: CODE | name | category | unit | min-max (avg) | aliases (truncated)
@@ -587,18 +556,32 @@ export class TaroInvoiceOcrProcessor {
          ...mappingRules.map((r) => `  - ${r.rule_text}`)].join('\n')
       : '';
 
-    const systemPrompt = [
+    // Static block — cached across all invoices (until SKU master / rules change).
+    const staticPromptLines = [
       'You are an invoice OCR system for TACO, an Indonesian building-materials brand.',
       'You receive scanned/photo invoices from suppliers (Bahasa Indonesia).',
-      regionLine + ' Use the region context if it helps disambiguate supplier or product names.',
-      ruleLines,
       'Use the TACO SKU candidates below as product knowledge — match each invoice row to ONE SKU by code.',
-      'STRICT MATCHING RULES — read carefully:',
-      '  - Only suggest a SKU when the raw_text contains the SKU CODE verbatim (after stripping dots/dashes/whitespace) OR a verbatim ALIAS from the candidate list.',
-      '  - "HPL TH. 053 AA" matches "TH 053 AA" because the code is present (ignoring the dot). It does NOT match "TH 043 AA" — the digits are different.',
-      '  - If you cannot find an exact code or alias match, RETURN suggested_sku_code = null. Do NOT guess from "similar-looking" codes. A near miss is a CRITICAL ERROR.',
-      '  - Confidence guide: 0.95 = exact code in raw_text, 0.90 = exact alias match, 0.70 = strong category + price-band signal but code differs, ≤0.50 = uncertain.',
-      '  - When the row mentions a TACO product family (Engsel/Hinge, Rel/Drawer Slide, HPL/Laminate, Edging, Plywood) but no exact code is in the candidates, return null with confidence ≤ 0.50.',
+      'VISION-INFORMED MATCHING — the invoice text I extract from each line is UNRELIABLE because the page is handwritten/printed in Bahasa Indonesia. Characters get misread (8↔0, 5↔3, 9↔4, 1↔7, 6↔0; l↔t, m↔n, c↔e, B↔R). For every line item LOOK AT THE ORIGINAL IMAGE to verify the SKU code and product name. The text in `raw_text` is a starting hint, NOT ground truth — the image is the arbiter.',
+      'TIERED CONFIDENCE (use these bands when scoring suggested_sku_code):',
+      '  - 0.90–0.95  EXACT — SKU code (or a verbatim alias) appears in the line AND the image clearly confirms it. Example: image shows "TH 053 AA", candidate is TH 053 AA → 0.93.',
+      '  - 0.75–0.89  HIGH-CONFIDENCE FUZZY — OCR has minor errors (missing space, period vs space, single confusable character) AND the image visibly confirms the catalog code. Example: image shows "TIX 0141" with no space, candidate is TI X0141 VA → 0.85. Example: text says "TH 098 AA" but the image clearly shows "TH 048 AA", candidate is TH 048 AA → 0.78.',
+      '  - 0.55–0.74  LIKELY — OCR has multiple errors but the visible product type + partial code + price band + category convincingly match the candidate. Use when you are reasonably sure but not certain.',
+      '  - 0.40–0.54  UNCERTAIN — a plausible candidate exists but evidence is weak. The reviewer will double-check.',
+      '  - null + confidence ≤ 0.30  NO MATCH — no catalog candidate is a reasonable fit. Still return the line with raw_text so the catalog gap can be analyzed.',
+      'FUZZY-MATCH HEURISTICS — common handwritten OCR errors that DO warrant a fuzzy match when the image confirms:',
+      '  - Missing/extra space between letters and digits: "TIX0141" ≡ "TI X0141"; "TH053" ≡ "TH 053".',
+      '  - Period vs space vs nothing: "TH. 053 AA" ≡ "TH 053 AA"; "ET.06/A" ≡ "ET 06/A".',
+      '  - Confusable digits: 0↔8, 5↔3, 9↔4, 1↔7, 6↔0. If image shows "048" but my text says "098", trust the image.',
+      '  - Confusable letters: l↔t, m↔n, c↔e, B↔R.',
+      '  - Indonesian words near-misses: "Lem" (glue) may be misread as "Let" / "Len" / "Lern".',
+      '  - When extracted text is ONE such typo away from a catalog code AND the image visually matches the candidate\'s product category, propose the match at 0.75+.',
+      'ANTI-HALLUCINATION GUARDRAIL — DO NOT propose a match if ANY of these holds:',
+      '  - The extracted text shares no meaningful characters with the candidate code/alias (e.g. "Lem Taco Activ" must NOT map to a random hardware SKU just to fill the slot).',
+      '  - The image clearly shows a different product type than the candidate.',
+      '  - Only weak digit similarity exists with NO category/alias/visual alignment.',
+      '  - You are guessing from "similar-looking" codes without image confirmation. The previous failure mode was "TH 053 AA → TH 1250 FA" — that kind of leap must never come back. If you can\'t see the code clearly AND the surrounding evidence is weak, RETURN null.',
+      '  Better to return null than wrong. But do NOT refuse when the evidence (image + partial OCR + category + price band) reasonably points to a single candidate.',
+      'CATALOG-GAP CASES — when the row mentions a TACO product family (Engsel/Hinge, Rel/Drawer Slide, HPL/Laminate, Edging, Plywood, Lem/Glue, Skrup/Screw) but NO candidate is a credible match even with image evidence, return suggested_sku_code = null with confidence ≤ 0.30. The line will be flagged as `likely_taco_unmapped` so the catalog gap surfaces.',
       'DITTO MARKS — Indonesian handwritten invoices reuse the previous row\'s product description with marks like "--", "—", "do.", "sda" (sama dengan atas = same as above), or "\'\'". When a line uses ditto marks, the product is the SAME as the previous line — only the variant / size / spec on that line differs.',
       '  - Set `raw_text` to the EXPANDED product description (substitute the previous line\'s product noun in place of the ditto).',
       '    Example: prev "45 Engsel Taco Lurus 16.000 720.000" + curr "20 -- 1/2 16.000 320.000" → raw_text = "20 Engsel Taco 1/2 16.000 320.000".',
@@ -625,14 +608,31 @@ export class TaroInvoiceOcrProcessor {
       '  - Always satisfy: total_price ≈ quantity × unit_price (within 1 IDR rounding).',
       'Output JSON ONLY — no prose, no markdown fences.',
       '',
-      `TACO SKU CANDIDATES (top ${promptSkus.length} by relevance — CODE | name | category | unit | price band | aliases):`,
+      `TACO SKU MASTER (full catalog, ${promptSkus.length} SKUs — CODE | name | category | unit | price band | aliases):`,
       skuContext,
     ].filter(Boolean).join('\n');
 
+    // Dynamic block — varies per invoice (region + recent mapping rules).
+    const dynamicPromptLines = [
+      regionLine + ' Use the region context if it helps disambiguate supplier or product names.',
+      ruleLines,
+    ].filter(Boolean).join('\n');
+
+    // Two-block system prompt: the static SKU master + rules are marked
+    // cache_control so Anthropic prompt caching reuses them across invoices
+    // (5 min cache window). The dynamic block carries per-invoice region/rules
+    // and is sent uncached so it stays fresh.
     const response = await this.anthropic.messages.create({
       model: OCR_MODEL,
       max_tokens: 8192,
-      system: systemPrompt,
+      system: [
+        {
+          type: 'text',
+          text: staticPromptLines,
+          cache_control: { type: 'ephemeral' },
+        },
+        ...(dynamicPromptLines ? [{ type: 'text' as const, text: dynamicPromptLines }] : []),
+      ],
       messages: [
         {
           role: 'user',

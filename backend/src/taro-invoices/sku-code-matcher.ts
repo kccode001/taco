@@ -68,8 +68,13 @@ function tokenizeForCodeMatch(raw: string): string[] {
     .map((t) => t.trim())
     .filter((t) => t.length > 0)
     .filter((t) => {
-      // Drop pure number tokens > 3 digits (price-like) and very long tokens.
-      if (/^\d{4,}$/.test(t)) return false;
+      // Drop pure number tokens that look price-like (≥5 digits — Indonesian
+      // prices are ≥10.000 once the thousands dot is stripped). Keep 1-4 digit
+      // numeric tokens because SKU codes legitimately include them — e.g.
+      // "TI X0141 VA" → tokens "TI X0141 VA" or aliases "TIX 0141". Throwing
+      // away "0141" was a real bug: it left "HPL TIX" as the only window which
+      // never matched the catalog alias "TIX0141VA".
+      if (/^\d{5,}$/.test(t)) return false;
       if (t.length > 12) return false;
       // Drop obvious Indonesian/English filler.
       if (
