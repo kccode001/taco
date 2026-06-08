@@ -26,6 +26,7 @@
     "seed:taro-invoices-demo": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taro-invoices-demo.ts",
     "seed:taro-sales-agents": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taro-sales-agents.ts",
     "seed:taco-skus-indonesian-aliases": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taco-skus-indonesian-aliases.ts",
+    "seed:taco-adhesive-skus": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taco-adhesive-skus.ts",
     "seed:clear-taro-data": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/clear-taro-data.ts"
   },
   "dependencies": {

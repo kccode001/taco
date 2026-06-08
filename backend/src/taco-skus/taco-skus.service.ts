@@ -56,6 +56,12 @@ export class TacoSkusService {
       qb.andWhere('sku.category = :cat', { cat: norm });
     }
 
+    if (query.catalog_category) {
+      qb.andWhere('sku.catalog_category = :catalogCat', {
+        catalogCat: query.catalog_category,
+      });
+    }
+
     if (query.search) {
       qb.andWhere(
         '(sku.name ILIKE :search OR sku.code ILIKE :search OR sku.category::text ILIKE :search)',
