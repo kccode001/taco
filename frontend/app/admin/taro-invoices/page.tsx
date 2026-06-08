@@ -1,11 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { getTaroInvoices, type TaroInvoiceSummary } from "@/lib/api";
-import { Badge, TableHeader, EmptyRow } from "../_components/CrudShell";
-import { SearchIcon } from "../_components/icons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  getRegionAreas,
+  getTaroInvoices,
+  type RegionArea,
+  type TaroInvoiceSummary,
+} from "@/lib/api";
+import { Badge, TableHeader, EmptyRow } from "../_components/CrudShell";
+import { ChevronDownIcon, MapIcon, SearchIcon } from "../_components/icons";
+import {
+  MOCK_REGION_AREAS,
   MOCK_TARO_INVOICES,
   confidenceTone,
   formatDateTime,
@@ -38,8 +44,39 @@ function statusBadge(status: TaroInvoiceSummary["status"]) {
 
 export default function TaroInvoiceListPage() {
   const [invoices, setInvoices] = useState<TaroInvoiceSummary[]>([]);
+  const [regions, setRegions] = useState<RegionArea[]>([]);
   const [search, setSearch] = useState("");
   const [pill, setPill] = useState<FilterPill>("all");
+  const [regionFilter, setRegionFilter] = useState<string | "all">("all");
+  const [regionMenuOpen, setRegionMenuOpen] = useState(false);
+  const regionMenuRef = useRef<HTMLDivElement>(null);
+
+  // Load region areas once — used both as filter source and to resolve
+  // region_id → display_path on invoices the BE returns without it.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await getRegionAreas();
+        const data =
+          ((res.data as { data?: RegionArea[] })?.data ??
+            (res.data as RegionArea[])) ?? [];
+        if (!alive) return;
+        setRegions(data.length ? data : MOCK_REGION_AREAS);
+      } catch {
+        if (alive) setRegions(MOCK_REGION_AREAS);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const regionMap = useMemo(() => {
+    const m = new Map<string, RegionArea>();
+    for (const r of regions) m.set(r.id, r);
+    return m;
+  }, [regions]);
 
   const refetch = useCallback(async () => {
     try {
@@ -47,13 +84,15 @@ export default function TaroInvoiceListPage() {
       if (pill === "needs_review") params.needs_review = "true";
       else if (pill !== "all") params.status = pill;
       if (search.trim()) params.search = search.trim();
+      if (regionFilter !== "all") params.region_id = regionFilter;
       const res = await getTaroInvoices(params);
       const raw =
         ((res.data as { data?: unknown[] })?.data ??
           (res.data as unknown[])) ?? [];
-      // BE returns a richer shape: `low_confidence_count`, `needs_review_count`,
-      // `supplier_name`, etc. Adapt to the summary the table expects so live BE
-      // data renders without UI changes.
+      // BE returns a richer shape (`region_id`, `low_confidence_count`,
+      // `needs_review_count`, `supplier_name`). Adapt to the summary the
+      // table expects so live BE data renders without UI changes — and
+      // resolve region_id → display_path via the regions list.
       const data: TaroInvoiceSummary[] = (raw as Array<Record<string, unknown>>).map((r) => {
         const id = String(r.id ?? "");
         const lineCount = Number(r.line_count ?? r.lineCount ?? 0);
@@ -66,11 +105,22 @@ export default function TaroInvoiceListPage() {
             ? Math.max(0, 1 - needsReviewCount / lineCount)
             : 0
           : Number(r.avg_confidence ?? 0);
+        const regionId = (r.region_id as string | null | undefined) ?? null;
+        const regionDisplay =
+          (r.region_display as string | null | undefined) ??
+          (regionId ? regionMap.get(regionId)?.display_path ?? null : null);
+        const supplier =
+          (r.ocr_detected_supplier as string | undefined) ??
+          (r.supplier_name as string | undefined) ??
+          (r.supplier as string | undefined) ??
+          null;
         return {
           id,
           short_id: String(r.short_id ?? id).slice(0, 12),
           uploaded_at: String(r.uploaded_at ?? r.created_at ?? ""),
-          supplier: String(r.supplier ?? r.supplier_name ?? "—"),
+          region_id: regionId,
+          region_display: regionDisplay,
+          ocr_detected_supplier: supplier,
           line_count: lineCount,
           avg_confidence: avg,
           status: (r.status as TaroInvoiceSummary["status"]) ?? "pending",
@@ -80,29 +130,57 @@ export default function TaroInvoiceListPage() {
     } catch {
       setInvoices(MOCK_TARO_INVOICES);
     }
-  }, [pill, search]);
+  }, [pill, search, regionFilter, regionMap]);
 
   useEffect(() => {
     const t = setTimeout(refetch, 200);
     return () => clearTimeout(t);
   }, [refetch]);
 
+  // Close region menu on outside click / Esc.
+  useEffect(() => {
+    if (!regionMenuOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (!regionMenuRef.current?.contains(e.target as Node)) {
+        setRegionMenuOpen(false);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setRegionMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [regionMenuOpen]);
+
   const filtered = useMemo(() => {
     return invoices.filter((i) => {
       if (pill === "done" && i.status !== "done") return false;
       if (pill === "needs_review" && i.status !== "needs_review") return false;
       if (pill === "processing" && i.status !== "processing") return false;
+      if (regionFilter !== "all" && i.region_id !== regionFilter) return false;
       if (search.trim()) {
         const q = search.toLowerCase();
-        if (
-          !i.supplier.toLowerCase().includes(q) &&
-          !i.short_id.toLowerCase().includes(q)
-        )
-          return false;
+        const haystack = [
+          i.short_id,
+          i.region_display ?? "",
+          i.ocr_detected_supplier ?? "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
       }
       return true;
     });
-  }, [invoices, pill, search]);
+  }, [invoices, pill, regionFilter, search]);
+
+  const selectedRegionLabel =
+    regionFilter === "all"
+      ? "Semua Wilayah"
+      : regionMap.get(regionFilter)?.display_path ?? "Semua Wilayah";
 
   return (
     <div className="space-y-5">
@@ -133,10 +211,79 @@ export default function TaroInvoiceListPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Cari supplier atau ID invoice…"
+              placeholder="Cari ID invoice atau nama wilayah…"
               className="h-[36px] pl-9 pr-3 border border-taco-border rounded-lg text-[13px] text-taco-text bg-white outline-none w-[260px] focus:border-taco-text"
             />
           </div>
+
+          {/* Region filter dropdown */}
+          <div ref={regionMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setRegionMenuOpen((v) => !v)}
+              className={`h-[36px] pl-3 pr-2 inline-flex items-center gap-2 border rounded-lg text-[13px] bg-white transition-colors min-w-[200px] max-w-[280px] ${
+                regionMenuOpen || regionFilter !== "all"
+                  ? "border-taco-text text-taco-text"
+                  : "border-taco-border text-taco-sub hover:border-taco-text hover:text-taco-text"
+              }`}
+              aria-haspopup="listbox"
+              aria-expanded={regionMenuOpen}
+            >
+              <span className="text-taco-muted flex-shrink-0">
+                <MapIcon size={14} />
+              </span>
+              <span className="truncate flex-1 text-left">
+                {selectedRegionLabel}
+              </span>
+              <span className="text-taco-muted flex-shrink-0">
+                <ChevronDownIcon size={14} />
+              </span>
+            </button>
+            {regionMenuOpen && (
+              <div className="absolute z-30 mt-1.5 w-[300px] bg-white border border-taco-border rounded-lg shadow-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRegionFilter("all");
+                    setRegionMenuOpen(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 text-[13px] hover:bg-taco-page ${
+                    regionFilter === "all"
+                      ? "bg-taco-page text-taco-text font-semibold"
+                      : "text-taco-text"
+                  }`}
+                >
+                  Semua Wilayah
+                </button>
+                <div className="max-h-[280px] overflow-y-auto border-t border-taco-divider">
+                  {regions.map((r) => {
+                    const active = regionFilter === r.id;
+                    return (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => {
+                          setRegionFilter(r.id);
+                          setRegionMenuOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-[13px] hover:bg-taco-page ${
+                          active
+                            ? "bg-taco-page text-taco-text font-semibold"
+                            : "text-taco-text"
+                        }`}
+                      >
+                        {r.display_path}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="px-3 py-2 border-t border-taco-divider text-[11px] text-taco-muted">
+                  {regions.length} wilayah ASM
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center gap-1.5 ml-auto">
             {PILLS.map((p) => {
               const active = pill === p.value;
@@ -162,7 +309,7 @@ export default function TaroInvoiceListPage() {
             cols={[
               "Invoice ID",
               "Tanggal Upload",
-              "Supplier",
+              "Wilayah ASM",
               "Jumlah Baris",
               "Kepercayaan AI",
               "Status",
@@ -189,8 +336,12 @@ export default function TaroInvoiceListPage() {
                     <td className="px-4 py-3 text-[13px] text-taco-sub whitespace-nowrap">
                       {formatDateTime(inv.uploaded_at)}
                     </td>
-                    <td className="px-4 py-3 text-[14px] text-taco-text">
-                      {inv.supplier}
+                    <td className="px-4 py-3 text-[13px]">
+                      {inv.region_display ? (
+                        <span className="text-taco-text">{inv.region_display}</span>
+                      ) : (
+                        <span className="text-taco-muted italic">Tanpa Region</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-[13px] text-taco-text whitespace-nowrap">
                       {inv.line_count}

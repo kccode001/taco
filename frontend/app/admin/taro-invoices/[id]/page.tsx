@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
+  getRegionAreas,
   getTacoSkus,
   getTaroInvoice,
   updateTaroLineItem,
+  type RegionArea,
   type TaroInvoiceDetail,
   type TaroInvoiceLine,
 } from "@/lib/api";
@@ -14,12 +16,13 @@ import { Badge, TableHeader, EmptyRow } from "../../_components/CrudShell";
 import { Modal } from "../../_components/Modal";
 import {
   MOCK_INVOICE_DETAIL,
+  MOCK_REGION_AREAS,
   confidenceTone,
   formatDateTime,
   formatIdr,
 } from "../_components/mockData";
 import type { TacoSkuRow } from "../../taco-skus/_components/SkuTable";
-import { SearchIcon, ZoomInIcon } from "../../_components/icons";
+import { MapIcon, SearchIcon, ZoomInIcon } from "../../_components/icons";
 
 function FallbackInvoice(id: string): TaroInvoiceDetail {
   const cached = MOCK_INVOICE_DETAIL[id];
@@ -34,11 +37,55 @@ export default function TaroInvoiceDetailPage() {
   const [invoice, setInvoice] = useState<TaroInvoiceDetail | null>(null);
   const [editing, setEditing] = useState<TaroInvoiceLine | null>(null);
   const [zoom, setZoom] = useState(false);
+  const [regions, setRegions] = useState<RegionArea[]>([]);
+
+  // Load region areas so we can resolve region_id → display_path when
+  // the BE returns only the id (list shape) on the invoice payload.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await getRegionAreas();
+        const data =
+          ((res.data as { data?: RegionArea[] })?.data ??
+            (res.data as RegionArea[])) ?? [];
+        if (alive) setRegions(data.length ? data : MOCK_REGION_AREAS);
+      } catch {
+        if (alive) setRegions(MOCK_REGION_AREAS);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const refetch = useCallback(async () => {
     try {
       const res = await getTaroInvoice(id);
-      setInvoice(res.data ?? FallbackInvoice(id));
+      const raw = res.data as unknown as Record<string, unknown> | null;
+      if (!raw) {
+        setInvoice(FallbackInvoice(id));
+        return;
+      }
+      // Normalize region payload — BE detail responds with `region: {…}`
+      // (nested object) while the list shape only has `region_id`. Coalesce
+      // into the FE-friendly `region_id` + `region_display` pair.
+      const regionObj = raw.region as
+        | { id?: string; display_path?: string }
+        | null
+        | undefined;
+      const region_id =
+        regionObj?.id ?? (raw.region_id as string | null | undefined) ?? null;
+      const region_display =
+        regionObj?.display_path ??
+        (raw.region_display as string | null | undefined) ??
+        null;
+      const normalized = {
+        ...(raw as object),
+        region_id,
+        region_display,
+      } as TaroInvoiceDetail;
+      setInvoice(normalized);
     } catch {
       setInvoice(FallbackInvoice(id));
     }
@@ -47,6 +94,13 @@ export default function TaroInvoiceDetailPage() {
   useEffect(() => {
     if (id) refetch();
   }, [id, refetch]);
+
+  // Resolve final display from region map if BE didn't ship it inline.
+  const regionMap = useMemo(() => {
+    const m = new Map<string, RegionArea>();
+    for (const r of regions) m.set(r.id, r);
+    return m;
+  }, [regions]);
 
   const applyLineUpdate = (updated: TaroInvoiceLine) => {
     setInvoice((inv) =>
@@ -67,6 +121,10 @@ export default function TaroInvoiceDetailPage() {
     );
   }
 
+  const regionDisplay =
+    invoice.region_display ??
+    (invoice.region_id ? regionMap.get(invoice.region_id)?.display_path ?? null : null);
+
   return (
     <div className="space-y-5">
       <div>
@@ -77,11 +135,29 @@ export default function TaroInvoiceDetailPage() {
           ← Kembali ke Daftar Invoice
         </Link>
         <h1 className="text-[20px] font-bold text-taco-text leading-tight mt-2">
-          {invoice.short_id} · {invoice.supplier}
+          Invoice {invoice.short_id}
         </h1>
-        <p className="text-[13px] text-taco-sub mt-1">
-          Diunggah {formatDateTime(invoice.uploaded_at)}
-        </p>
+        <div className="flex items-center gap-2 flex-wrap mt-2">
+          {regionDisplay ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-taco-page border border-taco-border rounded-full text-[12px] text-taco-text">
+              <span className="text-taco-muted">
+                <MapIcon size={12} />
+              </span>
+              <span className="font-medium">Wilayah ASM:</span>
+              <span>{regionDisplay}</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-taco-page border border-taco-border rounded-full text-[12px] text-taco-muted italic">
+              <span>
+                <MapIcon size={12} />
+              </span>
+              Tanpa Region
+            </span>
+          )}
+          <span className="text-[12px] text-taco-sub">
+            · Diunggah {formatDateTime(invoice.uploaded_at)}
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
@@ -90,8 +166,12 @@ export default function TaroInvoiceDetailPage() {
             Ringkasan Invoice
           </div>
           <div className="grid grid-cols-2 gap-y-2 gap-x-6 text-[13px]">
-            <div className="text-taco-sub">Supplier</div>
-            <div className="text-taco-text">{invoice.supplier}</div>
+            <div className="text-taco-sub">Wilayah ASM</div>
+            <div className="text-taco-text">
+              {regionDisplay ?? (
+                <span className="text-taco-muted italic">Tanpa Region</span>
+              )}
+            </div>
             <div className="text-taco-sub">Tanggal invoice</div>
             <div className="text-taco-text">{invoice.invoice_date ?? "—"}</div>
             <div className="text-taco-sub">Total</div>
@@ -407,7 +487,7 @@ function EditLineItemModal({
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               rows={3}
-              placeholder="Mis. supplier menulis singkatan WLN — sebenarnya Walnut."
+              placeholder="Mis. invoice menulis singkatan WLN — sebenarnya Walnut."
               className="w-full border border-taco-border rounded-lg px-3 py-2.5 text-[14px] text-taco-text bg-white outline-none resize-none focus:border-taco-text"
             />
           </div>

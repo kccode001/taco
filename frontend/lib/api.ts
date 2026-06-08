@@ -711,7 +711,12 @@ export interface TaroInvoiceSummary {
   id: string;
   short_id: string;
   uploaded_at: string;
-  supplier: string;
+  /** Optional OCR-detected supplier name. Decorative only — admin uploads
+   *  internal invoices, so region is the primary classifier and we never
+   *  render this as a primary column. */
+  ocr_detected_supplier?: string | null;
+  region_id?: string | null;
+  region_display?: string | null;
   line_count: number;
   avg_confidence: number;
   status: TaroInvoiceStatus;
@@ -741,6 +746,51 @@ export interface TaroAnalytics {
   monthly_volume: { month: string; count: number }[];
   top_uploaded_skus: { sku_code: string; sku_name: string; count: number }[];
   low_confidence_skus: { sku_code: string; sku_name: string; avg_confidence: number; samples: number }[];
+  /** New regional aggregates from Core (commit 132fab0f). Optional so older
+   *  BE shapes still typecheck and so mocks can omit them too. */
+  regions_summary?: TaroRegionsSummaryRow[];
+  region_monthly?: TaroRegionMonthlyRow[];
+  top_skus_by_region?: TaroTopSkusByRegionRow[];
+  region_price_extremes?: TaroRegionPriceExtremeRow[];
+}
+
+/** BE-aligned region object — `id` is null for the "Tanpa Region" bucket. */
+export interface TaroRegionRef {
+  id: string | null;
+  code: string;
+  name: string;
+  display_path: string;
+}
+
+export interface TaroRegionsSummaryRow {
+  region: TaroRegionRef;
+  invoice_count: number;
+  total_line_items: number;
+  avg_confidence: number;
+  needs_review_rate: number;
+}
+
+export interface TaroRegionMonthlyRow {
+  region: TaroRegionRef;
+  months: { month: string; invoices: number }[];
+}
+
+export interface TaroTopSkusByRegionRow {
+  region: TaroRegionRef;
+  top_skus: {
+    sku: { code: string; name: string; category: string | null };
+    count: number;
+  }[];
+}
+
+/** One row per (sku × region) extreme — Core emits the min + max row pair
+ *  so the FE can pivot into "SKU | min region | max region | spread". */
+export interface TaroRegionPriceExtremeRow {
+  sku: { code: string; name: string; category: string | null };
+  region: TaroRegionRef;
+  avg_price: number;
+  is_min: boolean;
+  is_max: boolean;
 }
 
 export const getTaroInvoices = (params?: Record<string, string>) =>
@@ -827,6 +877,6 @@ export const applyTaroRecommendation = (id: string) =>
 export const rejectTaroRecommendation = (id: string) =>
   api.post(`/taro-invoices/recommendations/${id}/reject`);
 
-export const getTaroAnalytics = () =>
-  api.get<TaroAnalytics>("/taro-invoices/analytics");
+export const getTaroAnalytics = (params?: { region_id?: string }) =>
+  api.get<TaroAnalytics>("/taro-invoices/analytics", { params });
 
