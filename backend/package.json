@@ -24,7 +24,8 @@
     "seed:taco-sku-embeddings": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taco-sku-embeddings.ts",
     "seed:visit-history": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-visit-history.ts",
     "seed:taro-invoices-demo": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taro-invoices-demo.ts",
-    "seed:taro-sales-agents": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taro-sales-agents.ts"
+    "seed:taro-sales-agents": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taro-sales-agents.ts",
+    "seed:taco-skus-indonesian-aliases": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taco-skus-indonesian-aliases.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",

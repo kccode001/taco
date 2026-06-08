@@ -16,6 +16,11 @@ import { mediaTypeFor, ImageMediaType } from '../invoices/ocr-utils';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
 import { topKPrecomputed } from '../embeddings/similarity';
 import { SkuEmbeddingCache, CachedSku } from '../embeddings/sku-embedding-cache.service';
+import {
+  buildCodeIndex,
+  findExactSkuCode,
+  ExactCodeMatch,
+} from './sku-code-matcher';
 
 interface TaroOcrLineItem {
   raw_text: string;
@@ -145,18 +150,64 @@ export class TaroInvoiceOcrProcessor {
       const skuById = new Map<string, CachedSku>();
       for (const sku of skuMaster) skuById.set(sku.id, sku);
 
+      // Prebuilt index for deterministic code/alias matching — runs BEFORE
+      // we trust Claude's pick. Catches the "HPL TH. 053 AA → TH 043 AA"
+      // hallucination class, where the printed code is in the catalog but
+      // Claude picked a similar-looking wrong one (because the RAG candidate
+      // pool didn't include the right SKU).
+      const exactIndex = buildCodeIndex(
+        skuMaster.map((s) => ({
+          id: s.id,
+          code: s.code,
+          product_name_aliases: s.product_name_aliases,
+        })),
+      );
+
       const entities: Partial<TaroInvoiceLineItem>[] = parsed.line_items.map((li, idx) => {
         const modelMatchedId = li.suggested_sku_code
           ? codeToId.get(this.normalizeCode(li.suggested_sku_code)) ?? null
           : null;
         const topRag = ragHits[idx]?.[0] ?? null;
 
+        // Exact-code pre-pass (Fix 1) — wins over both Claude and RAG when
+        // the raw_text contains a verbatim SKU code or alias.
+        const exact: ExactCodeMatch | null = findExactSkuCode(li.raw_text ?? '', exactIndex);
+
         let matchedId = modelMatchedId;
         let confidence = Math.max(0, Math.min(1, li.confidence_score ?? 0));
-        // If the model didn't pick anything but RAG is very confident, promote.
-        if (!matchedId && topRag && topRag.score >= 0.55) {
+        let failure_reason: string | null = null;
+
+        if (exact) {
+          // If exact disagrees with Claude, prefer exact. Log so we can audit
+          // the model's miss-rate over time.
+          if (modelMatchedId && modelMatchedId !== exact.sku_id) {
+            const modelSku = skuById.get(modelMatchedId);
+            const exactSku = skuById.get(exact.sku_id);
+            this.logger.warn(
+              `Exact-code override on line ${idx + 1}: raw="${li.raw_text?.slice(0, 80)}" ` +
+                `model→${modelSku?.code ?? '(unknown)'} exact→${exactSku?.code ?? '(unknown)'} ` +
+                `via=${exact.matched_via}`,
+            );
+          }
+          matchedId = exact.sku_id;
+          confidence = exact.confidence;
+        } else if (!matchedId && topRag && topRag.score >= 0.55) {
+          // If the model didn't pick anything but RAG is very confident, promote.
           matchedId = topRag.item.id;
           confidence = Math.min(confidence || 0.6, CONFIDENCE_THRESHOLD - 0.05);
+        }
+
+        // Fix 4 — surface unmapped TACO references so the OCR Gagal page +
+        // recommendation pipeline can prioritise catalog gaps. Fires when:
+        //  - we have NO match at all and the row references a TACO product, OR
+        //  - we matched something but confidence is below threshold AND the row
+        //    references a TACO product (catches the "TH 098 AA → wrong-guess
+        //    at 0.2 conf" failure mode where Claude refuses to return null).
+        if (
+          this.looksLikeTacoReference(li.raw_text ?? '') &&
+          (!matchedId || confidence < CONFIDENCE_THRESHOLD)
+        ) {
+          failure_reason = 'likely_taco_unmapped';
         }
 
         // Repair the common Claude failure mode where the printed unit_price is
@@ -183,6 +234,7 @@ export class TaroInvoiceOcrProcessor {
           unit_price: String(repaired.unit_price),
           total_price: String(repaired.total_price),
           edited: false,
+          failure_reason,
         };
       });
 
@@ -268,6 +320,43 @@ export class TaroInvoiceOcrProcessor {
 
   private normalizeCode(code: string): string {
     return code.toUpperCase().replace(/\s+/g, '').replace(/-/g, '');
+  }
+
+  /**
+   * Cheap heuristic that flags a raw OCR line as "probably referencing a TACO
+   * product" — used to tag `failure_reason='likely_taco_unmapped'` so KC can
+   * see catalog gaps in the OCR Gagal page + recommendations queue.
+   *
+   * Signals (any one is enough):
+   *   - literal substring "taco" (case-insensitive);
+   *   - common Indonesian TACO category words: engsel (hinge), rel (drawer
+   *     rail), lem (glue), skrup/sekrup (screw), mata router (router bit),
+   *     buc/bucket (glue tin sized), HPL (laminate);
+   *   - a code-shaped token that LOOKS like a TACO SKU prefix (TH/TS/TE/TI/
+   *     ET/FWP/FDB/BBS/TL/...) followed by 2-4 char tail.
+   */
+  private looksLikeTacoReference(raw: string): boolean {
+    if (!raw) return false;
+    const s = raw.toLowerCase();
+    if (s.includes('taco')) return true;
+    const KEYWORDS = [
+      'engsel', 'engsel.', 'engsell',
+      'rel ', 'rel.', // " rel " with trailing space avoids "barrel"
+      'lem ', 'lem.',
+      'skrup', 'sekrup', 'sekerup',
+      'mata router', 'router roda', 'router brasa',
+      'buc lem', 'buc.lem', 'lem activ', 'lem-activ',
+      'hpl ', 'hpl.',
+      'edging', 'tepi laminate',
+    ];
+    for (const k of KEYWORDS) {
+      if (s.includes(k)) return true;
+    }
+    // Code-shaped token sniff (e.g. "TH 053 AA", "ET 06/A", "FDB 8301 E").
+    if (/\b(TH|TS|TE|TI|TV|TP|TL|TPS|TPT|TPU|TGS|TSD|TBP|TRL|TAS|TPS|ET|BBS|US|RLT|FDB|FWP|FBT|FBL|FCS)[\.\s]*[A-Z0-9\/-]{2,8}\b/i.test(raw)) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -486,7 +575,12 @@ export class TaroInvoiceOcrProcessor {
       regionLine + ' Use the region context if it helps disambiguate supplier or product names.',
       ruleLines,
       'Use the TACO SKU candidates below as product knowledge — match each invoice row to ONE SKU by code.',
-      'Match using: SKU code, product name, name aliases, unit & unit alias hints, and price band.',
+      'STRICT MATCHING RULES — read carefully:',
+      '  - Only suggest a SKU when the raw_text contains the SKU CODE verbatim (after stripping dots/dashes/whitespace) OR a verbatim ALIAS from the candidate list.',
+      '  - "HPL TH. 053 AA" matches "TH 053 AA" because the code is present (ignoring the dot). It does NOT match "TH 043 AA" — the digits are different.',
+      '  - If you cannot find an exact code or alias match, RETURN suggested_sku_code = null. Do NOT guess from "similar-looking" codes. A near miss is a CRITICAL ERROR.',
+      '  - Confidence guide: 0.95 = exact code in raw_text, 0.90 = exact alias match, 0.70 = strong category + price-band signal but code differs, ≤0.50 = uncertain.',
+      '  - When the row mentions a TACO product family (Engsel/Hinge, Rel/Drawer Slide, HPL/Laminate, Edging, Plywood) but no exact code is in the candidates, return null with confidence ≤ 0.50.',
       'Return strict JSON with shape:',
       '{ "supplier_name": string|null, "invoice_date": "YYYY-MM-DD"|null, "total_amount": number|null,',
       '  "line_items": [ { "raw_text": string, "suggested_sku_code": string|null, "confidence_score": 0..1, "quantity": number, "unit": string|null, "unit_price": number, "total_price": number } ] }',
@@ -497,7 +591,6 @@ export class TaroInvoiceOcrProcessor {
       '  - Indonesian invoices use "." as the thousands separator: "Rp 320.000" means 320000 (three hundred twenty thousand), NOT 320.',
       '  - If only ONE price is visible per row, decide using the SKU price band: pick the value that falls inside band as unit_price; if both candidates fit, the smaller is unit_price.',
       '  - Always satisfy: total_price ≈ quantity × unit_price (within 1 IDR rounding).',
-      'If no SKU is a confident match, set suggested_sku_code to null and confidence_score < 0.85.',
       'Output JSON ONLY — no prose, no markdown fences.',
       '',
       `TACO SKU CANDIDATES (top ${promptSkus.length} by relevance — CODE | name | category | unit | price band | aliases):`,

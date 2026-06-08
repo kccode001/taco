@@ -64,6 +64,18 @@ export class TaroInvoiceLineItem {
   @Column({ type: 'boolean', default: false })
   edited: boolean;
 
+  /**
+   * Best-effort tag for *why* a line wasn't mapped — surfaced in the OCR Gagal
+   * page + recommendations so KC can prioritise catalog gaps.
+   *
+   * Values today:
+   *   - 'likely_taco_unmapped' — raw_text references "Taco" / a TACO product
+   *     family (engsel, rel, lem, skrup, router) but no catalog SKU matched.
+   *   - null — no special reason (either matched, or generic non-TACO row).
+   */
+  @Column({ type: 'text', nullable: true })
+  failure_reason: string | null;
+
   @CreateDateColumn()
   created_at: Date;
 
