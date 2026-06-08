@@ -36,6 +36,18 @@ export class TaroInvoiceLineItem {
   @Column({ type: 'text' })
   raw_text: string;
 
+  /**
+   * The original handwritten line as Claude saw it BEFORE ditto-mark expansion
+   * (e.g. "20 -- 1/2 16.000 320.000"). Populated only when `raw_text` was
+   * expanded from a ditto mark ("--", "—", "do.", "sda", "''") against the
+   * previous line's product — otherwise null.
+   *
+   * Used by the FE detail page to show admins both "Asli" (handwritten form)
+   * and the interpreted product, so they can spot a bad expansion.
+   */
+  @Column({ type: 'text', nullable: true })
+  original_text: string | null;
+
   @Column({ type: 'uuid', nullable: true })
   matched_sku_id: string | null;
 

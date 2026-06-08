@@ -23,7 +23,16 @@ import {
 } from './sku-code-matcher';
 
 interface TaroOcrLineItem {
+  /**
+   * The product description, ALREADY EXPANDED if the handwritten line used
+   * ditto marks ("--", "—", "do.", "sda", "''"). Used by RAG + SKU matching.
+   */
   raw_text: string;
+  /**
+   * The handwritten form as it appears on the page (e.g. "20 -- 1/2 …").
+   * Only present when the row used a ditto mark — otherwise null.
+   */
+  original_text?: string | null;
   suggested_sku_code: string | null;
   confidence_score: number;
   quantity: number;
@@ -222,10 +231,19 @@ export class TaroInvoiceOcrProcessor {
           matchedId ? skuById.get(matchedId) ?? null : null,
         );
 
+        // Normalise the ditto fields: only persist `original_text` when it
+        // actually differs from the expanded `raw_text`. Claude has been
+        // observed to populate both with the same value for non-ditto rows.
+        const rawText = (li.raw_text ?? '').trim();
+        const originalRaw = (li.original_text ?? '').trim();
+        const originalText =
+          originalRaw && originalRaw !== rawText ? originalRaw : null;
+
         return {
           invoice_id: invoiceId,
           line_no: idx + 1,
-          raw_text: li.raw_text ?? '',
+          raw_text: rawText,
+          original_text: originalText,
           matched_sku_id: matchedId,
           confidence_score: confidence.toFixed(3),
           needs_review: confidence < CONFIDENCE_THRESHOLD || !matchedId,
@@ -581,9 +599,23 @@ export class TaroInvoiceOcrProcessor {
       '  - If you cannot find an exact code or alias match, RETURN suggested_sku_code = null. Do NOT guess from "similar-looking" codes. A near miss is a CRITICAL ERROR.',
       '  - Confidence guide: 0.95 = exact code in raw_text, 0.90 = exact alias match, 0.70 = strong category + price-band signal but code differs, ≤0.50 = uncertain.',
       '  - When the row mentions a TACO product family (Engsel/Hinge, Rel/Drawer Slide, HPL/Laminate, Edging, Plywood) but no exact code is in the candidates, return null with confidence ≤ 0.50.',
+      'DITTO MARKS — Indonesian handwritten invoices reuse the previous row\'s product description with marks like "--", "—", "do.", "sda" (sama dengan atas = same as above), or "\'\'". When a line uses ditto marks, the product is the SAME as the previous line — only the variant / size / spec on that line differs.',
+      '  - Set `raw_text` to the EXPANDED product description (substitute the previous line\'s product noun in place of the ditto).',
+      '    Example: prev "45 Engsel Taco Lurus 16.000 720.000" + curr "20 -- 1/2 16.000 320.000" → raw_text = "20 Engsel Taco 1/2 16.000 320.000".',
+      '    Example: prev "2 Bvs Skrup 4cm 110.000 220.000" + curr "2 Bvs -- 3cm 95.000 190.000" → raw_text = "2 Bvs Skrup 3cm 95.000 190.000".',
+      '  - Set `original_text` to the line EXACTLY as written (still containing the ditto marks). For non-ditto lines set `original_text` to null.',
+      '  - If the FIRST line of the invoice uses a ditto, return original_text unchanged in raw_text (nothing to expand against) — set confidence ≤ 0.30 and flag with suggested_sku_code = null.',
+      'HINGE VARIANTS (Engsel) — when the row mentions Engsel, the variant word is critical for picking the right SKU:',
+      '  - "Lurus" / "Standar" / "Normal" / "Full" → Full Overlay (e.g. ET 06/A "Hinge - Full Overlay"; or ET 01/A / ET 02/A if "Soft Close" / "SC" is ALSO present).',
+      '  - "1/2" / "Setengah" / "Half" → Half Overlay (e.g. ET 06/B "Hinge - Half Overlay"; or ET 01/B / ET 02/B for soft-close half-overlay).',
+      '  - "Inset" / "Dalam" → Inset (e.g. ET 06/C "Hinge - Inset"; or ET 01/C / ET 02/C for soft-close inset).',
+      '  - "Soft Close" / "SC" / "Slow Close" → Soft Closing Hinge variant (ET 01/* or ET 02/*).',
+      '  - "Engsel Taco Lurus" with NO soft-close word → prefer ET 06/A (basic Full Overlay), NOT ET 02/C (Soft Closing Inset).',
+      '  - Never pick a Soft Closing hinge when the line only says "Lurus" with no soft-close hint.',
+      '  - Pick the candidate SKU whose name matches BOTH product type (Hinge) AND variant — not just the product type.',
       'Return strict JSON with shape:',
       '{ "supplier_name": string|null, "invoice_date": "YYYY-MM-DD"|null, "total_amount": number|null,',
-      '  "line_items": [ { "raw_text": string, "suggested_sku_code": string|null, "confidence_score": 0..1, "quantity": number, "unit": string|null, "unit_price": number, "total_price": number } ] }',
+      '  "line_items": [ { "raw_text": string (expanded), "original_text": string|null (handwritten form, only when ditto was used), "suggested_sku_code": string|null, "confidence_score": 0..1, "quantity": number, "unit": string|null, "unit_price": number, "total_price": number } ] }',
       'PRICING FIELDS — read carefully:',
       '  - "unit_price" = price PER ONE UNIT (the "Harga Satuan" / "@Rp" column). NEVER divide by quantity.',
       '  - "total_price" = line total = quantity × unit_price (the "Jumlah" / "Total" column).',
