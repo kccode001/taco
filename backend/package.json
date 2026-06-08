@@ -22,7 +22,8 @@
     "seed:visit-schedules": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-visit-schedules.ts",
     "seed:regions": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-regions.ts",
     "seed:taco-sku-embeddings": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taco-sku-embeddings.ts",
-    "seed:visit-history": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-visit-history.ts"
+    "seed:visit-history": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-visit-history.ts",
+    "seed:taro-invoices-demo": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taro-invoices-demo.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",

@@ -390,6 +390,28 @@ export class TaroInvoicesService {
     top_uploaded_skus: Array<{ sku_id: string; sku_code: string; sku_name: string; count: number }>;
     low_confidence_skus: Array<{ sku_id: string; sku_code: string; sku_name: string; avg_confidence: number; line_count: number }>;
     monthly_volume: Array<{ month: string; count: number }>;
+    regions_summary: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      invoice_count: number;
+      total_line_items: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    }>;
+    region_monthly: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      months: Array<{ month: string; invoices: number }>;
+    }>;
+    top_skus_by_region: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      top_skus: Array<{ sku: { code: string; name: string; category: string | null }; count: number }>;
+    }>;
+    region_price_extremes: Array<{
+      sku: { code: string; name: string; category: string | null };
+      region: { id: string | null; code: string; name: string; display_path: string };
+      avg_price: number;
+      is_min: boolean;
+      is_max: boolean;
+    }>;
   }> {
     // Helper to apply region scope on either an invoice-rooted or a line-item-rooted QB.
     const scopeInvoice = <T extends import('typeorm').SelectQueryBuilder<any>>(qb: T): T => {
@@ -465,6 +487,8 @@ export class TaroInvoicesService {
       .orderBy(`date_trunc('month', inv.uploaded_at)`, 'ASC')
       .getRawMany();
 
+    const regional = await this.computeRegionalAggregates(regionId);
+
     return {
       region_id: regionId ?? null,
       total_invoices: totals?.total_invoices ?? 0,
@@ -474,6 +498,403 @@ export class TaroInvoicesService {
       top_uploaded_skus: topSkus,
       low_confidence_skus: lowConfSkus,
       monthly_volume: monthly,
+      regions_summary: regional.regions_summary,
+      region_monthly: regional.region_monthly,
+      top_skus_by_region: regional.top_skus_by_region,
+      region_price_extremes: regional.region_price_extremes,
+    };
+  }
+
+  /**
+   * Build the four region-flavoured arrays. Split out so `analytics()` stays
+   * readable.
+   *
+   *   regions_summary       — every ASM area + "Tanpa Region" bucket
+   *                           (sorted by invoice_count desc)
+   *   region_monthly        — last 6 months of invoice counts per region with
+   *                           >0 invoices
+   *   top_skus_by_region    — top 5 line-item SKUs per region with >0 invoices
+   *   region_price_extremes — 10 SKUs that show the widest avg-price spread
+   *                           across regions (returns the min + max row pair)
+   *
+   * When `regionId` is set, all four collapse to that region's slice and
+   * `region_price_extremes` is empty (cross-region context is N/A).
+   */
+  private async computeRegionalAggregates(regionId?: string): Promise<{
+    regions_summary: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      invoice_count: number;
+      total_line_items: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    }>;
+    region_monthly: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      months: Array<{ month: string; invoices: number }>;
+    }>;
+    top_skus_by_region: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      top_skus: Array<{ sku: { code: string; name: string; category: string | null }; count: number }>;
+    }>;
+    region_price_extremes: Array<{
+      sku: { code: string; name: string; category: string | null };
+      region: { id: string | null; code: string; name: string; display_path: string };
+      avg_price: number;
+      is_min: boolean;
+      is_max: boolean;
+    }>;
+  }> {
+    // --- All areas + "Tanpa Region" pseudo-bucket ---
+    // When scoped, we only need that one area row (no Tanpa Region) so the
+    // dashboard keeps showing "your" KPIs without a noisy null bucket.
+    let areaRows: Array<{ id: string; code: string; name: string; display_path: string }>;
+    if (regionId) {
+      const r = await this.regions.findOne(regionId);
+      areaRows = [{ id: r.id, code: r.code, name: r.name, display_path: r.display_path }];
+    } else {
+      const all = await this.regions.areas();
+      areaRows = all.map((r) => ({
+        id: r.id,
+        code: r.code,
+        name: r.name,
+        display_path: r.display_path,
+      }));
+    }
+
+    const TANPA_REGION = {
+      id: null as string | null,
+      code: 'TANPA-REGION',
+      name: 'Tanpa Region',
+      display_path: 'Tanpa Region',
+    };
+
+    // --- regions_summary ---
+    // Group by region_id once and fan back out across `areaRows` so areas with
+    // zero invoices still render — `regionsRowsRaw` only includes regions that
+    // have at least one invoice.
+    const summaryRowsRaw = await this.invoicesRepo.query(
+      `
+      SELECT
+        inv.region_id AS region_id,
+        COUNT(DISTINCT inv.id)::int AS invoice_count,
+        COUNT(li.id)::int AS total_line_items,
+        COALESCE(AVG(li.confidence_score), 0)::float AS avg_confidence,
+        CASE WHEN COUNT(li.id) = 0 THEN 0
+             ELSE (COUNT(li.id) FILTER (WHERE li.needs_review = true))::float
+                  / COUNT(li.id)::float
+        END AS needs_review_rate
+      FROM taro_invoices inv
+      LEFT JOIN taro_invoice_line_items li ON li.invoice_id = inv.id
+      ${regionId ? 'WHERE inv.region_id = $1' : ''}
+      GROUP BY inv.region_id
+      `,
+      regionId ? [regionId] : [],
+    );
+    const summaryByRegion = new Map<string | null, {
+      invoice_count: number;
+      total_line_items: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    }>();
+    for (const r of summaryRowsRaw as Array<{
+      region_id: string | null;
+      invoice_count: number;
+      total_line_items: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    }>) {
+      summaryByRegion.set(r.region_id, {
+        invoice_count: Number(r.invoice_count ?? 0),
+        total_line_items: Number(r.total_line_items ?? 0),
+        avg_confidence: Number(r.avg_confidence ?? 0),
+        needs_review_rate: Number(r.needs_review_rate ?? 0),
+      });
+    }
+
+    type RegionSummaryRow = {
+      region: { id: string | null; code: string; name: string; display_path: string };
+      invoice_count: number;
+      total_line_items: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    };
+    const regionsSummary: RegionSummaryRow[] = areaRows.map((r) => {
+      const agg = summaryByRegion.get(r.id) ?? {
+        invoice_count: 0,
+        total_line_items: 0,
+        avg_confidence: 0,
+        needs_review_rate: 0,
+      };
+      return {
+        region: { id: r.id, code: r.code, name: r.name, display_path: r.display_path },
+        invoice_count: agg.invoice_count,
+        total_line_items: agg.total_line_items,
+        avg_confidence: agg.avg_confidence,
+        needs_review_rate: agg.needs_review_rate,
+      };
+    });
+    // Append "Tanpa Region" bucket only in global scope.
+    if (!regionId) {
+      const tanpa = summaryByRegion.get(null);
+      regionsSummary.push({
+        region: TANPA_REGION,
+        invoice_count: tanpa?.invoice_count ?? 0,
+        total_line_items: tanpa?.total_line_items ?? 0,
+        avg_confidence: tanpa?.avg_confidence ?? 0,
+        needs_review_rate: tanpa?.needs_review_rate ?? 0,
+      });
+    }
+    regionsSummary.sort((a, b) => b.invoice_count - a.invoice_count);
+
+    // --- region_monthly: last 6 months, one row per region with >0 invoices ---
+    const monthlyRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        inv.region_id AS region_id,
+        to_char(date_trunc('month', inv.uploaded_at), 'YYYY-MM') AS month,
+        COUNT(*)::int AS invoices
+      FROM taro_invoices inv
+      WHERE inv.uploaded_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+        ${regionId ? 'AND inv.region_id = $1' : ''}
+      GROUP BY inv.region_id, date_trunc('month', inv.uploaded_at)
+      ORDER BY inv.region_id NULLS LAST, date_trunc('month', inv.uploaded_at) ASC
+      `,
+      regionId ? [regionId] : [],
+    );
+
+    // Build last-6-months window labels (oldest first) so frontend gets a
+    // contiguous series even where some months are empty.
+    const monthLabels: string[] = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      monthLabels.push(`${yyyy}-${mm}`);
+    }
+
+    const monthlyByRegion = new Map<string | null, Map<string, number>>();
+    for (const r of monthlyRows as Array<{
+      region_id: string | null;
+      month: string;
+      invoices: number;
+    }>) {
+      const key = r.region_id;
+      const inner = monthlyByRegion.get(key) ?? new Map<string, number>();
+      inner.set(r.month, Number(r.invoices));
+      monthlyByRegion.set(key, inner);
+    }
+
+    const regionByIdLookup = new Map<string, typeof areaRows[number]>();
+    for (const a of areaRows) regionByIdLookup.set(a.id, a);
+
+    const regionMonthly: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      months: Array<{ month: string; invoices: number }>;
+    }> = [];
+
+    // Iterate using summary order (already sorted by invoice_count desc) so the
+    // heaviest region surfaces first.
+    for (const s of regionsSummary) {
+      if (s.invoice_count === 0) continue;
+      const key = s.region.id;
+      const inner = monthlyByRegion.get(key) ?? new Map<string, number>();
+      regionMonthly.push({
+        region: s.region,
+        months: monthLabels.map((m) => ({ month: m, invoices: inner.get(m) ?? 0 })),
+      });
+    }
+
+    // --- top_skus_by_region: top 5 SKUs per region (regions with >0 invoices) ---
+    const topByRegionRows = await this.invoicesRepo.query(
+      `
+      SELECT region_id, sku_code, sku_name, sku_category, line_count
+      FROM (
+        SELECT
+          inv.region_id AS region_id,
+          sku.code AS sku_code,
+          sku.name AS sku_name,
+          sku.catalog_category AS sku_category,
+          COUNT(*)::int AS line_count,
+          ROW_NUMBER() OVER (
+            PARTITION BY inv.region_id
+            ORDER BY COUNT(*) DESC, sku.code ASC
+          ) AS rn
+        FROM taro_invoice_line_items li
+        INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+        INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+        ${regionId ? 'WHERE inv.region_id = $1' : ''}
+        GROUP BY inv.region_id, sku.code, sku.name, sku.catalog_category
+      ) ranked
+      WHERE rn <= 5
+      ORDER BY region_id NULLS LAST, line_count DESC
+      `,
+      regionId ? [regionId] : [],
+    );
+    const topByRegionMap = new Map<string | null, Array<{
+      sku: { code: string; name: string; category: string | null };
+      count: number;
+    }>>();
+    for (const r of topByRegionRows as Array<{
+      region_id: string | null;
+      sku_code: string;
+      sku_name: string;
+      sku_category: string | null;
+      line_count: number;
+    }>) {
+      const list = topByRegionMap.get(r.region_id) ?? [];
+      list.push({
+        sku: { code: r.sku_code, name: r.sku_name, category: r.sku_category },
+        count: Number(r.line_count),
+      });
+      topByRegionMap.set(r.region_id, list);
+    }
+    const topSkusByRegion: Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      top_skus: Array<{ sku: { code: string; name: string; category: string | null }; count: number }>;
+    }> = [];
+    for (const s of regionsSummary) {
+      if (s.invoice_count === 0) continue;
+      const skus = topByRegionMap.get(s.region.id) ?? [];
+      if (skus.length === 0) continue;
+      topSkusByRegion.push({ region: s.region, top_skus: skus });
+    }
+
+    // --- region_price_extremes ---
+    // When scoped to a single region, cross-region price comparison is by
+    // definition empty.
+    let regionPriceExtremes: Array<{
+      sku: { code: string; name: string; category: string | null };
+      region: { id: string | null; code: string; name: string; display_path: string };
+      avg_price: number;
+      is_min: boolean;
+      is_max: boolean;
+    }> = [];
+
+    if (!regionId) {
+      const priceRows = await this.invoicesRepo.query(
+        `
+        WITH per_sku_region AS (
+          SELECT
+            sku.id AS sku_id,
+            sku.code AS sku_code,
+            sku.name AS sku_name,
+            sku.catalog_category AS sku_category,
+            inv.region_id AS region_id,
+            AVG(li.unit_price)::float AS avg_price
+          FROM taro_invoice_line_items li
+          INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+          INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+          WHERE inv.region_id IS NOT NULL
+            AND li.unit_price IS NOT NULL
+            AND li.unit_price > 0
+          GROUP BY sku.id, sku.code, sku.name, sku.catalog_category, inv.region_id
+        ),
+        spreads AS (
+          SELECT
+            sku_id,
+            COUNT(DISTINCT region_id) AS region_count,
+            MAX(avg_price) - MIN(avg_price) AS spread
+          FROM per_sku_region
+          GROUP BY sku_id
+          HAVING COUNT(DISTINCT region_id) >= 2
+        ),
+        top_spreads AS (
+          SELECT sku_id, spread
+          FROM spreads
+          ORDER BY spread DESC
+          LIMIT 10
+        )
+        SELECT psr.sku_id, psr.sku_code, psr.sku_name, psr.sku_category,
+               psr.region_id, psr.avg_price, ts.spread
+        FROM per_sku_region psr
+        INNER JOIN top_spreads ts ON ts.sku_id = psr.sku_id
+        ORDER BY ts.spread DESC, psr.sku_code, psr.avg_price ASC
+        `,
+        [],
+      );
+
+      // Group by sku_id, pick min + max region for each, emit two rows per SKU.
+      const bySku = new Map<string, Array<{
+        sku_code: string;
+        sku_name: string;
+        sku_category: string | null;
+        region_id: string | null;
+        avg_price: number;
+      }>>();
+      for (const r of priceRows as Array<{
+        sku_id: string;
+        sku_code: string;
+        sku_name: string;
+        sku_category: string | null;
+        region_id: string | null;
+        avg_price: number;
+        spread: number;
+      }>) {
+        const list = bySku.get(r.sku_id) ?? [];
+        list.push({
+          sku_code: r.sku_code,
+          sku_name: r.sku_name,
+          sku_category: r.sku_category,
+          region_id: r.region_id,
+          avg_price: Number(r.avg_price),
+        });
+        bySku.set(r.sku_id, list);
+      }
+
+      // Preserve spread ordering by tracking SKU appearance order.
+      const seenOrder: string[] = [];
+      for (const r of priceRows as Array<{ sku_id: string }>) {
+        if (!seenOrder.includes(r.sku_id)) seenOrder.push(r.sku_id);
+      }
+
+      for (const skuId of seenOrder) {
+        const rows = bySku.get(skuId) ?? [];
+        if (rows.length < 2) continue;
+        let minRow = rows[0];
+        let maxRow = rows[0];
+        for (const row of rows) {
+          if (row.avg_price < minRow.avg_price) minRow = row;
+          if (row.avg_price > maxRow.avg_price) maxRow = row;
+        }
+        const minRegion = minRow.region_id
+          ? regionByIdLookup.get(minRow.region_id) ?? TANPA_REGION
+          : TANPA_REGION;
+        const maxRegion = maxRow.region_id
+          ? regionByIdLookup.get(maxRow.region_id) ?? TANPA_REGION
+          : TANPA_REGION;
+        regionPriceExtremes.push({
+          sku: { code: minRow.sku_code, name: minRow.sku_name, category: minRow.sku_category },
+          region: {
+            id: minRegion.id,
+            code: minRegion.code,
+            name: minRegion.name,
+            display_path: minRegion.display_path,
+          },
+          avg_price: minRow.avg_price,
+          is_min: true,
+          is_max: false,
+        });
+        regionPriceExtremes.push({
+          sku: { code: maxRow.sku_code, name: maxRow.sku_name, category: maxRow.sku_category },
+          region: {
+            id: maxRegion.id,
+            code: maxRegion.code,
+            name: maxRegion.name,
+            display_path: maxRegion.display_path,
+          },
+          avg_price: maxRow.avg_price,
+          is_min: false,
+          is_max: true,
+        });
+      }
+    }
+
+    return {
+      regions_summary: regionsSummary,
+      region_monthly: regionMonthly,
+      top_skus_by_region: topSkusByRegion,
+      region_price_extremes: regionPriceExtremes,
     };
   }
 
