@@ -62,10 +62,11 @@ export default function TacoSkusPage() {
     return skus.filter((s) => {
       if (search.trim()) {
         const q = search.toLowerCase();
-        const syns = Array.isArray(s.synonyms)
-          ? s.synonyms
-          : typeof s.synonyms === "string"
-            ? s.synonyms.split(/[,\n]/g)
+        const rawSyns = s.product_name_aliases ?? s.synonyms;
+        const syns = Array.isArray(rawSyns)
+          ? rawSyns
+          : typeof rawSyns === "string"
+            ? rawSyns.split(/[,\n]/g)
             : [];
         const synMatch = syns.some((syn) =>
           syn.trim().toLowerCase().includes(q)

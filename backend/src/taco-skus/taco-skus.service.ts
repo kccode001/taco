@@ -74,11 +74,19 @@ export class TacoSkusService {
   }
 
   async create(dto: CreateTacoSkuDto): Promise<TacoSku> {
+    const avg = dto.avg_price ?? dto.standard_price ?? 0;
     const sku = this.tacoSkusRepo.create({
       code: dto.code,
       name: dto.name,
       category: dto.category,
-      standard_price: dto.standard_price,
+      catalog_category: dto.catalog_category ?? null,
+      unit: dto.unit ?? null,
+      product_name_aliases: dto.product_name_aliases ?? [],
+      unit_aliases: dto.unit_aliases ?? [],
+      min_price: dto.min_price ?? 0,
+      max_price: dto.max_price ?? 0,
+      avg_price: avg,
+      standard_price: dto.standard_price ?? avg,
       uom: dto.uom || 'pcs',
     });
 

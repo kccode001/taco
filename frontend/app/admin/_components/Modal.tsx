@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { CloseIcon } from "./icons";
 
 export function Modal({
@@ -89,6 +89,7 @@ export function FormField({
   type = "text",
   placeholder,
   hint,
+  prefix,
 }: {
   label: string;
   value: string;
@@ -96,6 +97,7 @@ export function FormField({
   type?: string;
   placeholder?: string;
   hint?: string;
+  prefix?: string;
 }) {
   return (
     <div>
@@ -103,13 +105,28 @@ export function FormField({
         {label}
       </label>
       {hint && <div className="text-[12px] text-taco-muted mb-1.5">{hint}</div>}
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full h-[44px] border border-taco-border rounded-lg px-3 text-[14px] text-taco-text bg-white outline-none focus:border-taco-text"
-      />
+      {prefix ? (
+        <div className="w-full h-[44px] flex items-stretch border border-taco-border rounded-lg bg-white overflow-hidden focus-within:border-taco-text">
+          <span className="flex items-center px-3 text-[13px] font-medium text-taco-muted border-r border-taco-border bg-taco-page">
+            {prefix}
+          </span>
+          <input
+            type={type}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
+            className="flex-1 px-3 text-[14px] text-taco-text bg-white outline-none"
+          />
+        </div>
+      ) : (
+        <input
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full h-[44px] border border-taco-border rounded-lg px-3 text-[14px] text-taco-text bg-white outline-none focus:border-taco-text"
+        />
+      )}
     </div>
   );
 }
@@ -174,6 +191,107 @@ export function FormTextarea({
         placeholder={placeholder}
         className="w-full border border-taco-border rounded-lg px-3 py-2.5 text-[14px] text-taco-text bg-white outline-none resize-none focus:border-taco-text"
       />
+    </div>
+  );
+}
+
+/** Multi-tag chip input — type a value, Enter or comma adds a chip.
+ *  Backspace on empty input removes the last chip. Each chip has a × button. */
+export function FormTagInput({
+  label,
+  values,
+  onChange,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  values: string[];
+  onChange: (v: string[]) => void;
+  placeholder?: string;
+  hint?: string;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const commit = (raw: string) => {
+    const parts = raw
+      .split(/[,\n]/g)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !values.includes(s));
+    if (parts.length === 0) return;
+    onChange([...values, ...parts]);
+    setDraft("");
+  };
+
+  const remove = (idx: number) => {
+    const next = values.slice();
+    next.splice(idx, 1);
+    onChange(next);
+  };
+
+  return (
+    <div>
+      <label className="block text-[13px] font-medium text-taco-text mb-1.5">
+        {label}
+      </label>
+      {hint && <div className="text-[12px] text-taco-muted mb-1.5">{hint}</div>}
+      <div className="w-full min-h-[44px] border border-taco-border rounded-lg px-2 py-1.5 text-[14px] bg-white focus-within:border-taco-text flex flex-wrap gap-1.5 items-center">
+        {values.map((tag, i) => (
+          <span
+            key={`${tag}-${i}`}
+            className="group inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-taco-page border border-taco-border text-[12px] text-taco-text"
+          >
+            <span className="truncate max-w-[200px]">{tag}</span>
+            <button
+              type="button"
+              aria-label={`Hapus ${tag}`}
+              onClick={() => remove(i)}
+              className="w-4 h-4 inline-flex items-center justify-center rounded-full text-taco-muted hover:text-taco-text hover:bg-taco-border/60"
+            >
+              <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+                <path
+                  d="M1 1L9 9M9 1L1 9"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </span>
+        ))}
+        <input
+          value={draft}
+          onChange={(e) => {
+            const v = e.target.value;
+            // If user types a comma, commit immediately.
+            if (v.endsWith(",")) {
+              commit(v.slice(0, -1));
+            } else {
+              setDraft(v);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit(draft);
+            } else if (e.key === "Backspace" && draft === "" && values.length > 0) {
+              e.preventDefault();
+              remove(values.length - 1);
+            }
+          }}
+          onBlur={() => {
+            if (draft.trim()) commit(draft);
+          }}
+          onPaste={(e) => {
+            const text = e.clipboardData.getData("text");
+            if (/[,\n]/.test(text)) {
+              e.preventDefault();
+              commit(text);
+            }
+          }}
+          placeholder={values.length === 0 ? placeholder : ""}
+          className="flex-1 min-w-[120px] h-[28px] outline-none border-0 bg-transparent text-taco-text placeholder:text-taco-muted px-1"
+        />
+      </div>
     </div>
   );
 }

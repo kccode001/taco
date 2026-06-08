@@ -17,14 +17,20 @@ export interface TacoSkuRow {
   unit?: string;
   min_price?: number;
   max_price?: number;
+  /** BE canonical key (entity column `avg_price`). */
   avg_price?: number;
+  /** Catalog spelling (FE alias). Kept for mock/back-compat. */
   average_price?: number;
   standard_price?: number;
   embedded?: boolean;
   embedding_status?: "pending" | "done" | "failed";
-  /** Comma-or-array list of OCR synonyms. Drives Taro Invoices matching. */
+  /** BE canonical: `product_name_aliases` (text[]). */
+  product_name_aliases?: string[] | string;
+  /** FE alias / mock seed key. Maps onto `product_name_aliases` for the BE. */
   synonyms?: string[] | string;
-  /** UOM synonyms (e.g. "lbr", "lembar", "sheet"). */
+  /** BE canonical: `unit_aliases` (text[]). */
+  unit_aliases?: string[] | string;
+  /** FE alias / mock seed key. Maps onto `unit_aliases` for the BE. */
   unit_synonyms?: string[] | string;
 }
 
@@ -75,9 +81,11 @@ export function SkuTable({
         ) : (
           rows.map((s) => {
             const status = s.embedding_status ?? (s.embedded ? "done" : "pending");
-            const synonyms = normalizeList(s.synonyms);
-            const unitSyns = normalizeList(s.unit_synonyms);
-            const avg = s.average_price ?? s.avg_price ?? s.standard_price;
+            // Prefer BE canonical (`product_name_aliases`, `unit_aliases`,
+            // `avg_price`); fall back to FE aliases used by mocks.
+            const synonyms = normalizeList(s.product_name_aliases ?? s.synonyms);
+            const unitSyns = normalizeList(s.unit_aliases ?? s.unit_synonyms);
+            const avg = s.avg_price ?? s.average_price ?? s.standard_price;
             return (
               <tr
                 key={s.id}
