@@ -4,28 +4,18 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 
-export default function Home() {
+export default function TaroAppEntry() {
   const router = useRouter();
-  const { user, token } = useAuthStore();
-
+  const user = useAuthStore((s) => s.user);
+  const hasHydrated = useAuthStore((s) => s.hasHydrated);
   useEffect(() => {
-    if (!token || !user) {
+    if (!hasHydrated) return;
+    if (!user) {
       router.replace("/auth/login");
       return;
     }
-    if (user.role === "rep") {
-      router.replace("/app");
-    } else if (user.role === "manager") {
-      router.replace("/dashboard");
-    } else if (user.role === "admin") {
-      router.replace("/admin");
-    } else if (user.role === "taro_agent") {
-      router.replace("/taro-app/home");
-    } else {
-      router.replace("/auth/login");
-    }
-  }, [token, user, router]);
-
+    router.replace("/taro-app/home");
+  }, [hasHydrated, user, router]);
   return (
     <div className="min-h-screen bg-taco-page flex items-center justify-center">
       <img

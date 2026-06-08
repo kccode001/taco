@@ -1,11 +1,17 @@
-export type UserRole = "rep" | "manager" | "admin";
+export type UserRole = "rep" | "manager" | "admin" | "taro_agent";
 
 export interface User {
   id: string;
   name: string;
+  email?: string;
+  phone?: string;
   role: UserRole;
   territory_id?: string;
   territory_name?: string;
+  /** For taro_agent — short ASM area display path, e.g. "C - BU1 - ASM Bandung" */
+  region_id?: string;
+  region_display?: string;
+  region_code?: string;
 }
 
 export interface AuthState {

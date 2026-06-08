@@ -21,13 +21,7 @@ export default function LoginPage() {
       const res = await authLogin(email, password);
       const { access_token, user } = res.data;
       setAuth(user, access_token);
-      if (user.role === "rep") {
-        router.push("/app");
-      } else if (user.role === "manager") {
-        router.push("/dashboard");
-      } else {
-        router.push("/admin");
-      }
+      routeByRole(user.role);
     } catch {
       setError("Email atau password salah. Silakan coba lagi.");
     } finally {
@@ -35,17 +29,75 @@ export default function LoginPage() {
     }
   };
 
-  const demoLogin = async (asEmail: string) => {
+  const routeByRole = (role: string) => {
+    if (role === "rep") router.push("/app");
+    else if (role === "manager") router.push("/dashboard");
+    else if (role === "taro_agent") router.push("/taro-app/home");
+    else router.push("/admin");
+  };
+
+  /** Fallback session for taro_agent when Core hasn't seeded the role yet.
+   *  Mints a mock user + sentinel token so the PWA renders end-to-end. */
+  const taroAgentFallback = (asEmail: string) => {
+    // Map demo emails → ASM area display.
+    const map: Record<string, { name: string; region_code: string; region_display: string; region_id: string; phone: string }> = {
+      "taro1@taco.id": {
+        name: "Rian Pratama",
+        region_code: "J-BU1-ASM-JKT1",
+        region_display: "J - BU1 - ASM Jakarta 1",
+        region_id: "area-w-jkt-s",
+        phone: "+62 812-3456-7891",
+      },
+      "taro2@taco.id": {
+        name: "Citra Lestari",
+        region_code: "C-BU1-ASM-BDG",
+        region_display: "C - BU1 - ASM Bandung",
+        region_id: "area-c-bdg",
+        phone: "+62 813-4567-8902",
+      },
+    };
+    const meta = map[asEmail] ?? map["taro1@taco.id"];
+    return {
+      access_token: "demo-taro-" + asEmail,
+      user: {
+        id: "taro-demo-" + asEmail,
+        name: meta.name,
+        email: asEmail,
+        phone: meta.phone,
+        role: "taro_agent" as const,
+        region_id: meta.region_id,
+        region_code: meta.region_code,
+        region_display: meta.region_display,
+      },
+    };
+  };
+
+  const demoLogin = async (
+    asEmail: string,
+    /** Override the post-login destination — used by the "Taro Dashboard"
+     *  demo button so admin lands on /taro/dashboard instead of /admin. */
+    targetOverride?: string
+  ) => {
     setError("");
     setLoading(true);
+    const isTaroAgent = asEmail.startsWith("taro");
     try {
       const res = await authLogin(asEmail, "password123");
       const { access_token, user } = res.data;
       setAuth(user, access_token);
-      if (user.role === "rep") router.push("/app");
-      else if (user.role === "manager") router.push("/dashboard");
-      else router.push("/admin");
+      if (targetOverride) {
+        router.push(targetOverride);
+        return;
+      }
+      routeByRole(user.role);
     } catch {
+      if (isTaroAgent) {
+        // Core hasn't seeded taro_agent yet — fall back to local mock session.
+        const { access_token, user } = taroAgentFallback(asEmail);
+        setAuth(user, access_token);
+        router.push(targetOverride ?? "/taro-app/home");
+        return;
+      }
       setError("Demo login gagal — backend belum siap?");
     } finally {
       setLoading(false);
@@ -145,9 +197,27 @@ export default function LoginPage() {
                 <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-accent-tint text-taco-accent text-[12px] font-bold">A</span>
                 <span>Admin TACO</span>
               </button>
+              <button
+                type="button"
+                onClick={() => demoLogin("admin@taco.id", "/taro/dashboard")}
+                disabled={loading}
+                className="w-full h-[52px] bg-white border border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-text transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-page text-taco-sub text-[12px] font-bold border border-taco-border">TD</span>
+                <span>Taro Dashboard →</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => demoLogin("taro1@taco.id", "/taro-app")}
+                disabled={loading}
+                className="w-full h-[52px] bg-white border border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-text transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-page text-taco-sub text-[12px] font-bold border border-taco-border">PWA</span>
+                <span>Taro Sales Agent (PWA)</span>
+              </button>
             </div>
             <p className="text-[11px] text-taco-muted text-center mt-3">
-              Manual: gunakan <code className="text-taco-text">rep@taco.id</code> · <code className="text-taco-text">manager@taco.id</code> · <code className="text-taco-text">admin@taco.id</code> dengan password <code className="text-taco-text">password123</code>
+              Manual: gunakan <code className="text-taco-text">rep@taco.id</code> · <code className="text-taco-text">manager@taco.id</code> · <code className="text-taco-text">admin@taco.id</code> · <code className="text-taco-text">taro1@taco.id</code> dengan password <code className="text-taco-text">password123</code>
             </p>
           </div>
         </div>
