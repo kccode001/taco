@@ -11,16 +11,19 @@ import {
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/dashboard/analytics", label: "Analitik", icon: BarChart2 },
-  { href: "/admin", label: "Admin", icon: Settings },
+const NAV_ITEMS = [
+  { href: "/dashboard", label: "Dashboard", icon: Home, roles: ["manager", "admin"] as const },
+  { href: "/dashboard/analytics", label: "Analitik", icon: BarChart2, roles: ["manager", "admin"] as const },
+  { href: "/admin", label: "Admin", icon: Settings, roles: ["admin"] as const },
 ];
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { clearAuth, user } = useAuthStore();
+  const navItems = NAV_ITEMS.filter((item) =>
+    user ? (item.roles as readonly string[]).includes(user.role) : false
+  );
 
   const handleLogout = () => {
     clearAuth();
@@ -30,7 +33,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-taco-page flex">
       {/* Sidebar */}
-      <aside className="w-[220px] bg-white border-r border-taco-border flex flex-col flex-shrink-0 sticky top-0 h-screen">
+      <aside className="w-[240px] bg-white border-r border-taco-border flex flex-col flex-shrink-0 sticky top-0 h-screen">
         <div className="px-5 py-4 border-b border-taco-divider">
           <img
             src="https://manage.taco.co.id/asset-images/logo.svg"

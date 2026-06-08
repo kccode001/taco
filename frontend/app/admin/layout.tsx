@@ -150,7 +150,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     className={cn(
                       "flex items-center gap-2.5 px-5 h-10 text-[13px] transition-colors border-l-[3px]",
                       active
-                        ? "border-l-taco-text bg-taco-page text-taco-text font-semibold"
+                        ? "border-l-taco-accent bg-taco-accent-tint text-taco-text font-semibold"
                         : "border-l-transparent text-taco-sub hover:text-taco-text hover:bg-taco-page font-medium"
                     )}
                   >

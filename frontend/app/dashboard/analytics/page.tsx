@@ -8,7 +8,6 @@ import { DashboardLayout } from "@/components/DashboardLayout";
 import { AiDailyDigest } from "./_components/AiDailyDigest";
 import { CompetitorHubTable } from "./_components/CompetitorHubTable";
 import { IndeksHargaTaco } from "./_components/IndeksHargaTaco";
-import { IndonesiaHeatmap } from "./_components/IndonesiaHeatmap";
 import { PriceMovementChart } from "./_components/PriceMovementChart";
 import { KesehatanStokKategori } from "./_components/KesehatanStokKategori";
 import { KepatuhanPosm } from "./_components/KepatuhanPosm";
@@ -51,10 +50,7 @@ export default function AnalyticsPage() {
         {/* 1. AI Daily Digest first — Generate Ulang = the page's body orange */}
         <AiDailyDigest />
 
-        {/* 2. Indonesia heatmap — AC-18 (regional patterns) */}
-        <IndonesiaHeatmap />
-
-        {/* 3. Competitor Hub — AC-17 (30-day intel filtered by region) */}
+        {/* 2. Competitor Hub — AC-17 (30-day intel filtered by region) */}
         <CompetitorHubTable />
 
         {/* 4. Indeks Harga TACO — AUDIT-009 §05 new panel */}
