@@ -141,6 +141,10 @@ export class TaroInvoiceOcrProcessor {
       const ragHits = await this.ragRescore(parsed.line_items, skuMaster);
       const ragMs = Date.now() - tRag;
 
+      // SKU lookup-by-id used by the unit_price/total_price repair below.
+      const skuById = new Map<string, CachedSku>();
+      for (const sku of skuMaster) skuById.set(sku.id, sku);
+
       const entities: Partial<TaroInvoiceLineItem>[] = parsed.line_items.map((li, idx) => {
         const modelMatchedId = li.suggested_sku_code
           ? codeToId.get(this.normalizeCode(li.suggested_sku_code)) ?? null
@@ -155,6 +159,18 @@ export class TaroInvoiceOcrProcessor {
           confidence = Math.min(confidence || 0.6, CONFIDENCE_THRESHOLD - 0.05);
         }
 
+        // Repair the common Claude failure mode where the printed unit_price is
+        // returned as total_price and unit_price is back-computed as total/qty.
+        // Detection: qty > 1 and the stored unit_price sits BELOW the SKU's
+        // min_price band while the stored total_price sits INSIDE the band —
+        // i.e. the values are swapped relative to the catalog.
+        const repaired = this.repairUnitPriceSwap(
+          li.quantity ?? 0,
+          li.unit_price ?? 0,
+          li.total_price ?? 0,
+          matchedId ? skuById.get(matchedId) ?? null : null,
+        );
+
         return {
           invoice_id: invoiceId,
           line_no: idx + 1,
@@ -164,8 +180,8 @@ export class TaroInvoiceOcrProcessor {
           needs_review: confidence < CONFIDENCE_THRESHOLD || !matchedId,
           quantity: String(li.quantity ?? 0),
           unit: li.unit ?? null,
-          unit_price: String(li.unit_price ?? 0),
-          total_price: String(li.total_price ?? (li.quantity ?? 0) * (li.unit_price ?? 0)),
+          unit_price: String(repaired.unit_price),
+          total_price: String(repaired.total_price),
           edited: false,
         };
       });
@@ -252,6 +268,65 @@ export class TaroInvoiceOcrProcessor {
 
   private normalizeCode(code: string): string {
     return code.toUpperCase().replace(/\s+/g, '').replace(/-/g, '');
+  }
+
+  /**
+   * Detect + fix the Claude OCR failure mode where it returns the printed
+   * unit price as `total_price` and divides by qty to populate `unit_price`.
+   *
+   * Triggered when:
+   *   - quantity > 1 (single-unit rows are ambiguous either way)
+   *   - the matched SKU has a usable price band (min/max > 0)
+   *   - the stored unit_price is BELOW min_price (likely back-computed)
+   *   - the stored total_price sits INSIDE the SKU's price band (the swap)
+   *
+   * On repair: unit_price becomes the original total_price; total_price is
+   * recomputed as qty × new unit_price.
+   *
+   * Falls through unchanged when no matched SKU, no usable band, or the
+   * stored values already line up with the band.
+   */
+  private repairUnitPriceSwap(
+    quantity: number,
+    unitPrice: number,
+    totalPrice: number,
+    sku: CachedSku | null,
+  ): { unit_price: number; total_price: number } {
+    const qty = Number(quantity) || 0;
+    let up = Number(unitPrice) || 0;
+    let tp = Number(totalPrice) || 0;
+
+    if (qty <= 1 || up <= 0 || tp <= 0) {
+      // Backfill total_price if Claude omitted it (preserves previous behaviour).
+      if (tp <= 0 && qty > 0 && up > 0) tp = qty * up;
+      return { unit_price: up, total_price: tp };
+    }
+
+    const minPrice = Number(sku?.min_price ?? 0);
+    const maxPrice = Number(sku?.max_price ?? 0);
+    const hasBand = minPrice > 0 && maxPrice > 0 && maxPrice >= minPrice;
+    if (!hasBand) return { unit_price: up, total_price: tp };
+
+    // Allow a 25% slack on each end of the band so legitimate edge-of-band
+    // prices don't get rewritten. The swap signature is very strong (printed
+    // unit price is *qty* times bigger than the back-computed value) so a
+    // loose band check is enough.
+    const bandLo = minPrice * 0.75;
+    const bandHi = maxPrice * 1.25;
+    const inBand = (v: number) => v >= bandLo && v <= bandHi;
+
+    const looksSwapped = !inBand(up) && inBand(tp) && up < minPrice;
+    if (looksSwapped) {
+      this.logger.warn(
+        `Repaired swapped unit_price for SKU ${sku?.code}: up ${up}→${tp}, tp ${tp}→${qty * tp} (qty=${qty}, band=${minPrice}-${maxPrice})`,
+      );
+      const newUp = tp;
+      const newTp = qty * newUp;
+      up = newUp;
+      tp = newTp;
+    }
+
+    return { unit_price: up, total_price: tp };
   }
 
   /**
@@ -415,6 +490,13 @@ export class TaroInvoiceOcrProcessor {
       'Return strict JSON with shape:',
       '{ "supplier_name": string|null, "invoice_date": "YYYY-MM-DD"|null, "total_amount": number|null,',
       '  "line_items": [ { "raw_text": string, "suggested_sku_code": string|null, "confidence_score": 0..1, "quantity": number, "unit": string|null, "unit_price": number, "total_price": number } ] }',
+      'PRICING FIELDS — read carefully:',
+      '  - "unit_price" = price PER ONE UNIT (the "Harga Satuan" / "@Rp" column). NEVER divide by quantity.',
+      '  - "total_price" = line total = quantity × unit_price (the "Jumlah" / "Total" column).',
+      '  - For "5 lbr × Rp 320.000 = Rp 1.600.000": quantity=5, unit_price=320000, total_price=1600000.',
+      '  - Indonesian invoices use "." as the thousands separator: "Rp 320.000" means 320000 (three hundred twenty thousand), NOT 320.',
+      '  - If only ONE price is visible per row, decide using the SKU price band: pick the value that falls inside band as unit_price; if both candidates fit, the smaller is unit_price.',
+      '  - Always satisfy: total_price ≈ quantity × unit_price (within 1 IDR rounding).',
       'If no SKU is a confident match, set suggested_sku_code to null and confidence_score < 0.85.',
       'Output JSON ONLY — no prose, no markdown fences.',
       '',

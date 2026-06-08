@@ -386,6 +386,7 @@ export class TaroInvoicesService {
   async findOne(id: string, scopeUploaderId: string | null = null): Promise<TaroInvoice> {
     const inv = await this.invoicesRepo
       .createQueryBuilder('inv')
+      .leftJoinAndSelect('inv.region', 'region')
       .leftJoinAndSelect('inv.line_items', 'li')
       .leftJoinAndSelect('li.matched_sku', 'sku')
       .where('inv.id = :id', { id })
