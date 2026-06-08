@@ -22,7 +22,7 @@ export default function LoginPage() {
       const { access_token, user } = res.data;
       setAuth(user, access_token);
       if (user.role === "rep") {
-        router.push("/app/stores");
+        router.push("/app");
       } else if (user.role === "manager") {
         router.push("/dashboard");
       } else {
@@ -42,7 +42,7 @@ export default function LoginPage() {
       const res = await authLogin(asEmail, "password123");
       const { access_token, user } = res.data;
       setAuth(user, access_token);
-      if (user.role === "rep") router.push("/app/stores");
+      if (user.role === "rep") router.push("/app");
       else if (user.role === "manager") router.push("/dashboard");
       else router.push("/admin");
     } catch {

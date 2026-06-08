@@ -14,7 +14,7 @@ export default function Home() {
       return;
     }
     if (user.role === "rep") {
-      router.replace("/app/stores");
+      router.replace("/app");
     } else if (user.role === "manager") {
       router.replace("/dashboard");
     } else if (user.role === "admin") {

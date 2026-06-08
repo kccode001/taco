@@ -66,6 +66,140 @@ export const updateVisitSection = (
 export const submitVisit = (visitId: string) =>
   api.post(`/visits/${visitId}/submit`);
 
+// Visit Schedules — Core has shipped these endpoints.
+// BE returns frequency as English lowercase ("daily"|"weekly"|"monthly"|"once")
+// and status as "planned"|"visited"|"missed". PlannedVisit carries the
+// normalized Indonesian label so render code can drop it straight in.
+export type VisitFrequencyRaw = "once" | "daily" | "weekly" | "monthly";
+export type VisitFrequency = "Sekali" | "Harian" | "Mingguan" | "Bulanan";
+export type ScheduleStatus = "planned" | "visited" | "missed";
+
+export interface PlannedVisitRaw {
+  schedule_id: string;
+  store: {
+    id: string;
+    code?: string;
+    name: string;
+    address?: string;
+    territory?: { name?: string };
+  };
+  frequency: VisitFrequencyRaw | VisitFrequency;
+  scheduled_for: string;
+  status: ScheduleStatus;
+  visit_id?: string | null;
+}
+
+export interface PlannedVisit {
+  schedule_id: string;
+  store: {
+    id: string;
+    name: string;
+    address?: string;
+    territory_name?: string;
+  };
+  frequency: VisitFrequency;
+  scheduled_for: string; // ISO date
+  status: ScheduleStatus;
+  visit_id?: string | null;
+}
+
+export interface WeekDayBucketRaw {
+  date: string;
+  weekday: number;
+  items: PlannedVisitRaw[];
+}
+
+export interface WeekDayBucket {
+  date: string; // YYYY-MM-DD
+  weekday_short: string; // "Sen", "Sel"
+  count: number;
+  visited_count: number;
+  items: PlannedVisit[];
+}
+
+export interface VisitHistoryItem {
+  visit_id: string;
+  store_id: string;
+  store_name: string;
+  territory_name?: string;
+  submitted_at?: string;
+  visit_date?: string;
+  status: "draft" | "submitted";
+}
+
+const FREQ_LABEL: Record<string, VisitFrequency> = {
+  once: "Sekali",
+  daily: "Harian",
+  weekly: "Mingguan",
+  monthly: "Bulanan",
+  Sekali: "Sekali",
+  Harian: "Harian",
+  Mingguan: "Mingguan",
+  Bulanan: "Bulanan",
+};
+
+const WEEKDAY_SHORT_ID = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
+
+export function normalizePlannedVisit(raw: PlannedVisitRaw): PlannedVisit {
+  return {
+    schedule_id: raw.schedule_id,
+    store: {
+      id: raw.store.id,
+      name: raw.store.name,
+      address: raw.store.address,
+      territory_name: raw.store.territory?.name,
+    },
+    frequency: FREQ_LABEL[String(raw.frequency)] ?? "Sekali",
+    scheduled_for: raw.scheduled_for,
+    status: raw.status,
+    visit_id: raw.visit_id ?? null,
+  };
+}
+
+export function normalizeWeekBucket(raw: WeekDayBucketRaw): WeekDayBucket {
+  const d = new Date(raw.date);
+  const jsDow = d.getDay();
+  const items = (raw.items ?? []).map(normalizePlannedVisit);
+  return {
+    date: raw.date,
+    weekday_short: WEEKDAY_SHORT_ID[jsDow] ?? "—",
+    count: items.length,
+    visited_count: items.filter((it) => it.status === "visited").length,
+    items,
+  };
+}
+
+function unwrapList<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[];
+  const obj = data as { data?: T[] } | null;
+  return obj?.data ?? [];
+}
+
+export async function fetchPlannedToday(): Promise<PlannedVisit[]> {
+  const res = await api.get("/visit-schedules/today");
+  return unwrapList<PlannedVisitRaw>(res.data).map(normalizePlannedVisit);
+}
+
+export async function fetchPlannedUpcoming(): Promise<PlannedVisit[]> {
+  const res = await api.get("/visit-schedules/upcoming");
+  return unwrapList<PlannedVisitRaw>(res.data).map(normalizePlannedVisit);
+}
+
+export async function fetchPlannedWeek(): Promise<WeekDayBucket[]> {
+  const res = await api.get("/visit-schedules/this-week");
+  return unwrapList<WeekDayBucketRaw>(res.data).map(normalizeWeekBucket);
+}
+
+export async function fetchVisitHistory(
+  params?: Record<string, string>
+): Promise<VisitHistoryItem[]> {
+  const res = await api.get("/visits/history", { params });
+  return unwrapList<VisitHistoryItem>(res.data);
+}
+
+// Auth helpers (rep self)
+export const getCurrentUser = () => api.get("/users/me");
+
 // Competitor (P1) — multi-brand per visit
 export interface VisitCompetitor {
   id: string;
@@ -653,3 +787,4 @@ export const rejectTaroRecommendation = (id: string) =>
 
 export const getTaroAnalytics = () =>
   api.get<TaroAnalytics>("/taro-invoices/analytics");
+

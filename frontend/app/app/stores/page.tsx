@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { LogOut } from "lucide-react";
 import { useAuthStore } from "@/lib/store";
 import { getStores, getTerritories } from "@/lib/api";
 import { Store } from "@/lib/types";
@@ -37,7 +36,8 @@ function sortStoresByOldestVisit(stores: Store[]): Store[] {
 
 export default function StoresPage() {
   const router = useRouter();
-  const { user, clearAuth } = useAuthStore();
+  const user = useAuthStore((s) => s.user);
+  const hasHydrated = useAuthStore((s) => s.hasHydrated);
   const [stores, setStores] = useState<Store[]>([]);
   const [territories, setTerritories] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,6 +61,7 @@ export default function StoresPage() {
   }, [search, territory]);
 
   useEffect(() => {
+    if (!hasHydrated) return;
     if (!user || user.role !== "rep") {
       router.replace("/auth/login");
       return;
@@ -76,7 +77,7 @@ export default function StoresPage() {
       )
       .catch(() => {});
     fetchStores();
-  }, [user, router, fetchStores]);
+  }, [hasHydrated, user, router, fetchStores]);
 
   useEffect(() => {
     const t = setTimeout(fetchStores, 300);
@@ -84,11 +85,6 @@ export default function StoresPage() {
   }, [search, territory, fetchStores]);
 
   const sortedStores = useMemo(() => sortStoresByOldestVisit(stores), [stores]);
-
-  const handleLogout = () => {
-    clearAuth();
-    router.push("/auth/login");
-  };
 
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
@@ -109,15 +105,13 @@ export default function StoresPage() {
               >
                 + Tambah Kunjungan
               </button>
-              <div className="w-9 h-9 rounded-full bg-taco-page border border-taco-border flex items-center justify-center text-[14px] font-semibold text-taco-sub">
-                {user?.name?.[0]?.toUpperCase() ?? "R"}
-              </div>
               <button
-                onClick={handleLogout}
-                aria-label="Logout"
-                className="p-2 text-taco-muted hover:text-taco-text min-h-[44px] min-w-[44px]"
+                type="button"
+                onClick={() => router.push("/app/profile")}
+                aria-label="Profil"
+                className="w-9 h-9 rounded-full bg-taco-page border border-taco-border flex items-center justify-center text-[14px] font-semibold text-taco-sub"
               >
-                <LogOut size={18} />
+                {user?.name?.[0]?.toUpperCase() ?? "R"}
               </button>
             </div>
           </div>

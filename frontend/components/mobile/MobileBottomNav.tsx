@@ -12,6 +12,26 @@ interface NavItem {
 
 const ITEMS: NavItem[] = [
   {
+    key: "home",
+    label: "Beranda",
+    href: "/app",
+    icon: (
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+        <polyline points="9 22 9 12 15 12 15 22" />
+      </svg>
+    ),
+  },
+  {
     key: "stores",
     label: "Toko",
     href: "/app/stores",
@@ -26,8 +46,8 @@ const ITEMS: NavItem[] = [
         strokeLinecap="round"
         strokeLinejoin="round"
       >
-        <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-        <polyline points="9 22 9 12 15 12 15 22" />
+        <path d="M4 7h16l-1.2 11.2A2 2 0 0116.8 20H7.2a2 2 0 01-2-1.8L4 7z" />
+        <path d="M8 7V5a4 4 0 018 0v2" />
       </svg>
     ),
   },
@@ -50,26 +70,6 @@ const ITEMS: NavItem[] = [
         <rect x="9" y="3" width="6" height="4" rx="1" />
         <line x1="9" y1="12" x2="15" y2="12" />
         <line x1="9" y1="16" x2="13" y2="16" />
-      </svg>
-    ),
-  },
-  {
-    key: "history",
-    label: "Riwayat",
-    href: "/app/history",
-    icon: (
-      <svg
-        width="22"
-        height="22"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <circle cx="12" cy="12" r="10" />
-        <polyline points="12 6 12 12 16 14" />
       </svg>
     ),
   },
@@ -108,9 +108,13 @@ export function MobileBottomNav({ className }: { className?: string }) {
     >
       {ITEMS.map((item) => {
         const active =
-          pathname === item.href ||
+          (item.key === "home" && pathname === "/app") ||
           (item.key === "stores" && pathname.startsWith("/app/stores")) ||
-          (item.key === "visits" && pathname.startsWith("/app/visit"));
+          (item.key === "visits" &&
+            (pathname.startsWith("/app/visit") ||
+              pathname.startsWith("/app/visits") ||
+              pathname.startsWith("/app/history"))) ||
+          (item.key === "profile" && pathname.startsWith("/app/profile"));
         return (
           <button
             key={item.key}
