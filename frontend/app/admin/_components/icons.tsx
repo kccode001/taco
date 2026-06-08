@@ -165,3 +165,18 @@ export const ZoomInIcon = ({ size, className }: IconProps) => (
     <line x1="8" y1="11" x2="14" y2="11" />
   </svg>
 );
+
+export const CalendarIcon = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+    <line x1="16" y1="2" x2="16" y2="6" />
+    <line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="3" y1="10" x2="21" y2="10" />
+  </svg>
+);
+
+export const ChevronDownIcon = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);

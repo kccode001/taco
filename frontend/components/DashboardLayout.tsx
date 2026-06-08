@@ -23,6 +23,7 @@ import {
   UploadIcon,
   LightbulbIcon,
   BarChart2Icon,
+  CalendarIcon,
 } from "@/app/admin/_components/icons";
 
 type NavItem = {
@@ -70,6 +71,7 @@ const ADMIN_SECTIONS: NavSection[] = [
   {
     label: "Konfigurasi Kunjungan",
     items: [
+      { href: "/admin/visit-plans", label: "Rencana Kunjungan", icon: CalendarIcon },
       { href: "/admin/burning-questions", label: "Pertanyaan Prioritas", icon: ClipboardIcon },
       { href: "/admin/posm", label: "POSM / Aset", icon: PinIcon },
       { href: "/admin/visit-objectives", label: "Tujuan Kunjungan", icon: FlagIcon },
