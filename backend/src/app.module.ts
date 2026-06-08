@@ -23,6 +23,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { DigestModule } from './digest/digest.module';
 import { VoiceModule } from './voice/voice.module';
 import { EmbeddingsModule } from './embeddings/embeddings.module';
+import { TaroInvoicesModule } from './taro-invoices/taro-invoices.module';
 
 import { User } from './database/entities/user.entity';
 import { Territory } from './database/entities/territory.entity';
@@ -50,6 +51,10 @@ import { VisitCompetitorPosm } from './database/entities/visit-competitor-posm.e
 import { VisitBurningQuestion } from './database/entities/visit-burning-question.entity';
 import { VisitSinyalToko } from './database/entities/visit-sinyal-toko.entity';
 import { FotoKatalog } from './invoices/foto-katalog.entity';
+import { TaroInvoice } from './database/entities/taro-invoice.entity';
+import { TaroInvoiceLineItem } from './database/entities/taro-invoice-line-item.entity';
+import { TaroInvoiceSkuCorrection } from './database/entities/taro-invoice-sku-correction.entity';
+import { TaroInvoiceRecommendation } from './database/entities/taro-invoice-recommendation.entity';
 
 @Module({
   imports: [
@@ -68,6 +73,7 @@ import { FotoKatalog } from './invoices/foto-katalog.entity';
           VisitCompetitor, VisitCompetitorSku, VisitCompetitorPromo,
           VisitCompetitorPosm, VisitBurningQuestion, VisitSinyalToko,
           FotoKatalog,
+          TaroInvoice, TaroInvoiceLineItem, TaroInvoiceSkuCorrection, TaroInvoiceRecommendation,
         ],
         synchronize: true,
         logging: false,
@@ -101,6 +107,7 @@ import { FotoKatalog } from './invoices/foto-katalog.entity';
     DigestModule,
     VoiceModule,
     EmbeddingsModule,
+    TaroInvoicesModule,
   ],
 })
 export class AppModule {}
