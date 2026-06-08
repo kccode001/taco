@@ -109,10 +109,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     return () => { if (typeof unsub === "function") unsub(); };
   }, []);
 
-  // AC-1: role-gate /admin (admin only).
+  // Role-gate /admin — managers can access admin features per KC directive
+  // ("manager should have all the features"). Reps still blocked.
   useEffect(() => {
     if (!hydrated) return;
-    if (user && user.role !== "admin") {
+    if (user && user.role !== "admin" && user.role !== "manager") {
       router.replace("/dashboard");
     } else if (!user) {
       router.replace("/auth/login");

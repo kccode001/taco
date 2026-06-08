@@ -11,19 +11,16 @@ import {
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "Dashboard", icon: Home, roles: ["manager", "admin"] as const },
-  { href: "/dashboard/analytics", label: "Analitik", icon: BarChart2, roles: ["manager", "admin"] as const },
-  { href: "/admin", label: "Admin", icon: Settings, roles: ["admin"] as const },
+const navItems = [
+  { href: "/dashboard", label: "Dashboard", icon: Home },
+  { href: "/dashboard/analytics", label: "Analitik", icon: BarChart2 },
+  { href: "/admin", label: "Admin", icon: Settings },
 ];
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { clearAuth, user } = useAuthStore();
-  const navItems = NAV_ITEMS.filter((item) =>
-    user ? (item.roles as readonly string[]).includes(user.role) : false
-  );
 
   const handleLogout = () => {
     clearAuth();
