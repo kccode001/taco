@@ -16,12 +16,16 @@ const TYPE_LABEL: Record<TaroRecommendation["type"], string> = {
   synonym: "Tambah Sinonim",
   new_sku: "Buat SKU Baru",
   mapping_rule: "Aturan Mapping",
+  update_sku_knowledge: "Update Product Knowledge",
+  investigate_competitor: "Investigasi Kompetitor",
 };
 
-const TYPE_TONE: Record<TaroRecommendation["type"], "info" | "ok" | "warn"> = {
+const TYPE_TONE: Record<TaroRecommendation["type"], "info" | "ok" | "warn" | "err"> = {
   synonym: "info",
   new_sku: "ok",
   mapping_rule: "warn",
+  update_sku_knowledge: "ok",
+  investigate_competitor: "err",
 };
 
 type FilterStatus = "pending" | "applied" | "rejected";

@@ -731,11 +731,23 @@ export interface TaroInvoiceDetail extends TaroInvoiceSummary {
 
 export interface TaroRecommendation {
   id: string;
-  type: "synonym" | "new_sku" | "mapping_rule";
+  type: "synonym" | "new_sku" | "mapping_rule" | "update_sku_knowledge" | "investigate_competitor";
   title: string;
   body: string;
   status: "pending" | "applied" | "rejected";
   created_at: string;
+  /** New: BE flags whether the card originates from admin corrections or
+   *  recurring OCR failures. Defaults to "admin_correction" when missing. */
+  source?: "admin_correction" | "ocr_failure";
+  /** Optional payload — shape varies per type. UI renders the relevant
+   *  fields when present. */
+  payload?: {
+    existing_sku?: { code?: string; name?: string };
+    suggested_synonym?: string;
+    raw_text?: string;
+    occurrence_count?: number;
+    regions?: string[];
+  };
 }
 
 export interface TaroAnalytics {
@@ -752,6 +764,70 @@ export interface TaroAnalytics {
   region_monthly?: TaroRegionMonthlyRow[];
   top_skus_by_region?: TaroTopSkusByRegionRow[];
   region_price_extremes?: TaroRegionPriceExtremeRow[];
+  /** SKU intelligence arrays (Core landing in parallel). Optional — Taro
+   *  dashboard auto-resolves when the BE ships, falls back to mocks otherwise. */
+  top_taco_skus?: TaroSkuRankedRow[];
+  least_popular_taco_skus?: TaroSkuRankedRow[];
+  trending_taco_skus?: TaroSkuTrendingRow[];
+  taco_sku_monthly?: TaroSkuMonthlyRow[];
+  detected_non_taco_products?: TaroNonTacoProductRow[];
+}
+
+/** SKU intelligence — BE shipped these in commit-of-the-day with this exact
+ *  shape (nested `sku` object). FE pages normalize at the consumption point. */
+export interface TaroSkuRankedRow {
+  sku?: { code: string; name: string; category?: string | null };
+  /** Legacy flat fields — kept optional so older mocks still typecheck. */
+  sku_code?: string;
+  sku_name?: string;
+  total_volume?: number;
+  total_value?: number;
+  invoice_count?: number;
+  /** Alias used by legacy mocks. */
+  volume?: number;
+}
+
+export interface TaroSkuTrendingRow {
+  sku?: { code: string; name: string; category?: string | null };
+  sku_code?: string;
+  sku_name?: string;
+  current_month_volume?: number;
+  previous_month_volume?: number;
+  /** BE emits integer percent (e.g. 48 = +48%, 9999 = sentinel for "from zero"). */
+  growth_pct: number;
+  /** Legacy alias. */
+  volume?: number;
+}
+
+export interface TaroSkuMonthlyRow {
+  sku?: { code: string; name: string; category?: string | null };
+  sku_code?: string;
+  sku_name?: string;
+  months: { month: string; volume: number }[];
+}
+
+export interface TaroNonTacoProductRow {
+  raw_text: string;
+  /** BE emits `occurrence_count`; legacy mocks may use `frequency`. */
+  occurrence_count?: number;
+  frequency?: number;
+  avg_unit_price: number;
+  /** BE shape — flag + nested match. */
+  likely_taco_sku_match?: {
+    sku: { code: string; name: string };
+    similarity_score?: number;
+    similarity?: number;
+  } | null;
+  is_likely_competitor?: boolean;
+  /** BE shape `regions_seen_in: [{ region: {...}, count }]`; legacy `regions: [{ display_path, count }]`. */
+  regions_seen_in?: { region: { display_path: string }; count: number }[];
+  /** Legacy alias. */
+  closest_taco_sku?: {
+    code: string;
+    name: string;
+    similarity: number;
+  } | null;
+  regions?: { display_path: string; count: number }[];
 }
 
 /** BE-aligned region object — `id` is null for the "Tanpa Region" bucket. */
