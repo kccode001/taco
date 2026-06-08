@@ -437,45 +437,29 @@ export default function TaroRecommendationsPage() {
                   {rec.body}
                 </div>
 
-                {/* Payload detail strip — surfaces the structured fields when BE
-                    sends them, so admins can see the data behind the card.
-                    BE uses `suggested_payload`; FE legacy uses `payload`. */}
+                {/* Raw OCR detail strip — only renders when the card has a
+                    `raw_text` payload (investigate_competitor + some
+                    add_synonym cards). Other types (mapping_rule, create_sku,
+                    update_sku_knowledge, correction-sourced add_synonym) skip
+                    the grey block entirely so we don't render an empty box. */}
                 {(() => {
                   const payload =
                     rec.payload ??
                     ((rec as unknown as { suggested_payload?: typeof rec.payload }).suggested_payload);
-                  if (!payload) return null;
+                  const rawText = payload?.raw_text;
+                  if (!rawText) return null;
                   return (
                     <div className="bg-taco-page border border-taco-divider rounded-md px-3 py-2 text-[12px] space-y-1">
-                      {payload.existing_sku && (
-                        <div className="text-taco-text">
-                          <span className="text-taco-muted">SKU terkait: </span>
-                          <span className="font-mono text-[11px]">
-                            {payload.existing_sku.code}
+                      <div className="text-taco-text">
+                        <span className="text-taco-muted">Raw text OCR: </span>
+                        <span className="italic">&ldquo;{rawText}&rdquo;</span>
+                        {payload?.occurrence_count !== undefined && (
+                          <span className="text-taco-muted ml-1.5">
+                            ({payload.occurrence_count}×)
                           </span>
-                          {payload.existing_sku.name && (
-                            <span className="ml-1">— {payload.existing_sku.name}</span>
-                          )}
-                        </div>
-                      )}
-                      {payload.suggested_synonym && (
-                        <div className="text-taco-text">
-                          <span className="text-taco-muted">Sinonim usulan: </span>
-                          <span className="font-medium">{payload.suggested_synonym}</span>
-                        </div>
-                      )}
-                      {payload.raw_text && (
-                        <div className="text-taco-text">
-                          <span className="text-taco-muted">Raw text OCR: </span>
-                          <span className="italic">&ldquo;{payload.raw_text}&rdquo;</span>
-                          {payload.occurrence_count !== undefined && (
-                            <span className="text-taco-muted ml-1.5">
-                              ({payload.occurrence_count}×)
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {payload.regions && payload.regions.length > 0 && (
+                        )}
+                      </div>
+                      {payload?.regions && payload.regions.length > 0 && (
                         <div className="flex items-start gap-1.5 flex-wrap text-taco-text">
                           <span className="text-taco-muted">Wilayah: </span>
                           {payload.regions.slice(0, 4).map((r) => (

@@ -1,24 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   getTaroAnalytics,
   type TaroAnalytics,
   type TaroNonTacoProductRow,
-  type TaroSkuMonthlyRow,
   type TaroSkuRankedRow,
   type TaroSkuTrendingRow,
 } from "@/lib/api";
-import {
-  MOCK_ANALYTICS,
-  MOCK_DETECTED_NON_TACO_PRODUCTS,
-  MOCK_LEAST_POPULAR_TACO_SKUS,
-  MOCK_TACO_SKU_MONTHLY,
-  MOCK_TOP_TACO_SKUS,
-  MOCK_TRENDING_TACO_SKUS,
-  formatIdr,
-} from "../../admin/taro-invoices/_components/mockData";
+import { formatIdr } from "../../admin/taro-invoices/_components/mockData";
+
+/** Empty TaroAnalytics shell used while the dashboard is loading or when the
+ *  BE returns an empty response. Replaces the legacy MOCK_ANALYTICS spread so
+ *  zero-state numbers reflect reality instead of demo values. */
+const EMPTY_ANALYTICS: TaroAnalytics = {
+  total_invoices: 0,
+  processed: 0,
+  needs_review: 0,
+  avg_confidence: 0,
+  monthly_volume: [],
+  top_uploaded_skus: [],
+  low_confidence_skus: [],
+};
 
 /** Taro Dashboard — SKU intelligence focus.
  *  Answers: what's selling, what's growing, what's slow, what TACO doesn't
@@ -28,7 +32,6 @@ import {
  *  These helpers read either shape so the panels work with both. */
 type Ranked = TaroSkuRankedRow;
 type Trending = TaroSkuTrendingRow;
-type Monthly = TaroSkuMonthlyRow;
 type NonTaco = TaroNonTacoProductRow;
 
 function skuCode(r: { sku?: { code: string }; sku_code?: string }): string {
@@ -109,7 +112,6 @@ export default function TaroDashboardOverviewPage() {
   const [trendingSkus, setTrendingSkus] = useState<TaroSkuTrendingRow[]>([]);
   const [slowSkus, setSlowSkus] = useState<TaroSkuRankedRow[]>([]);
   const [nonTaco, setNonTaco] = useState<TaroNonTacoProductRow[]>([]);
-  const [skuMonthly, setSkuMonthly] = useState<TaroSkuMonthlyRow[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -118,9 +120,8 @@ export default function TaroDashboardOverviewPage() {
         const data = (res.data ?? {}) as TaroAnalytics &
           Record<string, unknown>;
         // BE emits `processed_count` / `needs_review_count` while the FE
-        // historically read `processed` / `needs_review`. Normalize here so
-        // KPI tiles display real backend totals (not mock fallbacks bleeding
-        // through a naive shallow merge).
+        // historically read `processed` / `needs_review`. Normalize so KPI
+        // tiles display real backend totals — including zeros after a wipe.
         const normalized: TaroAnalytics = {
           ...data,
           total_invoices: (data.total_invoices as number | undefined) ?? 0,
@@ -140,52 +141,43 @@ export default function TaroDashboardOverviewPage() {
           low_confidence_skus:
             (data.low_confidence_skus as TaroAnalytics["low_confidence_skus"]) ?? [],
         };
-        const hasRealAnalytics =
-          (normalized.total_invoices ?? 0) > 0 ||
-          (normalized.processed ?? 0) > 0 ||
-          (normalized.needs_review ?? 0) > 0;
-        setAnalytics(hasRealAnalytics ? normalized : MOCK_ANALYTICS);
+        setAnalytics(normalized);
 
-        // BE is shipping these in parallel — auto-resolve when arrays are
-        // present and non-empty, otherwise fall back to representative mocks
-        // so the new layout renders.
+        // Pass through whatever BE returns. Empty arrays render real empty
+        // states — no mock fallbacks pretending the catalog has data.
         setTopSkus(
           data.top_taco_skus && data.top_taco_skus.length
             ? data.top_taco_skus.slice(0, 10)
-            : MOCK_TOP_TACO_SKUS
+            : []
         );
         setTrendingSkus(
           data.trending_taco_skus && data.trending_taco_skus.length
             ? data.trending_taco_skus.slice(0, 10)
-            : MOCK_TRENDING_TACO_SKUS
+            : []
         );
         setSlowSkus(
           data.least_popular_taco_skus && data.least_popular_taco_skus.length
             ? data.least_popular_taco_skus.slice(0, 10)
-            : MOCK_LEAST_POPULAR_TACO_SKUS
+            : []
         );
         setNonTaco(
           data.detected_non_taco_products && data.detected_non_taco_products.length
             ? data.detected_non_taco_products
-            : MOCK_DETECTED_NON_TACO_PRODUCTS
-        );
-        setSkuMonthly(
-          data.taco_sku_monthly && data.taco_sku_monthly.length
-            ? data.taco_sku_monthly
-            : MOCK_TACO_SKU_MONTHLY
+            : []
         );
       } catch {
-        setAnalytics(MOCK_ANALYTICS);
-        setTopSkus(MOCK_TOP_TACO_SKUS);
-        setTrendingSkus(MOCK_TRENDING_TACO_SKUS);
-        setSlowSkus(MOCK_LEAST_POPULAR_TACO_SKUS);
-        setNonTaco(MOCK_DETECTED_NON_TACO_PRODUCTS);
-        setSkuMonthly(MOCK_TACO_SKU_MONTHLY);
+        // Network/BE error → treat as empty rather than faking data. Real
+        // failures should be visible, not papered over with mocks.
+        setAnalytics(EMPTY_ANALYTICS);
+        setTopSkus([]);
+        setTrendingSkus([]);
+        setSlowSkus([]);
+        setNonTaco([]);
       }
     })();
   }, []);
 
-  const a = analytics ?? MOCK_ANALYTICS;
+  const a = analytics ?? EMPTY_ANALYTICS;
 
   const trendingUp = trendingSkus.filter((s) => s.growth_pct > 0).sort((x, y) => y.growth_pct - x.growth_pct);
   const trendingDown = trendingSkus.filter((s) => s.growth_pct < 0).sort((x, y) => x.growth_pct - y.growth_pct);
@@ -224,7 +216,11 @@ export default function TaroDashboardOverviewPage() {
         />
         <Kpi
           label="Rata-rata Kepercayaan"
-          value={`${Math.round((a.avg_confidence ?? 0) * 100)}%`}
+          value={
+            (a.avg_confidence ?? 0) > 0
+              ? `${Math.round((a.avg_confidence ?? 0) * 100)}%`
+              : "—"
+          }
           hint="Akurasi OCR keseluruhan"
         />
         <Kpi
@@ -234,11 +230,27 @@ export default function TaroDashboardOverviewPage() {
         />
       </div>
 
+      {/* Global empty-state banner — shown when there are zero invoices,
+          which is the state right after a data wipe or on a fresh install. */}
+      {(a.total_invoices ?? 0) === 0 && (
+        <div className="bg-white border border-taco-border rounded-xl px-6 py-10 text-center">
+          <div className="text-[15px] font-semibold text-taco-text mb-1">
+            Belum ada data.
+          </div>
+          <div className="text-[13px] text-taco-sub max-w-[480px] mx-auto">
+            Upload invoice pertama Anda dari aplikasi sales agent.
+          </div>
+        </div>
+      )}
+
       {/* PANEL 1 — Top 10 TACO SKU Terpopuler */}
       <Panel
         title="Top 10 TACO SKU Terpopuler"
         subtitle="Ranking berdasarkan volume unit dari invoice masuk."
       >
+        {topSkus.length === 0 ? (
+          <EmptyState text="Belum ada SKU yang dipetakan" />
+        ) : (
         <div className="space-y-2.5">
           {topSkus.map((s, idx) => {
             const v = vol(s);
@@ -280,6 +292,7 @@ export default function TaroDashboardOverviewPage() {
             );
           })}
         </div>
+        )}
       </Panel>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -288,14 +301,18 @@ export default function TaroDashboardOverviewPage() {
           title="TACO SKU Trending Bulan Ini"
           subtitle="Pertumbuhan bulan-ke-bulan. Hijau = naik, merah = turun."
         >
-          <div className="space-y-2">
-            {trendingUp.slice(0, 5).map((s) => (
-              <TrendingRow key={`up-${s.sku_code}`} sku={s} />
-            ))}
-            {trendingDown.slice(0, 5).map((s) => (
-              <TrendingRow key={`dn-${s.sku_code}`} sku={s} />
-            ))}
-          </div>
+          {trendingSkus.length === 0 ? (
+            <EmptyState text="Belum ada data trending" />
+          ) : (
+            <div className="space-y-2">
+              {trendingUp.slice(0, 5).map((s) => (
+                <TrendingRow key={`up-${skuCode(s)}`} sku={s} />
+              ))}
+              {trendingDown.slice(0, 5).map((s) => (
+                <TrendingRow key={`dn-${skuCode(s)}`} sku={s} />
+              ))}
+            </div>
+          )}
         </Panel>
 
         {/* PANEL 3 — Slow Movers */}
@@ -303,6 +320,9 @@ export default function TaroDashboardOverviewPage() {
           title="TACO SKU Kurang Diminati"
           subtitle="10 SKU dengan volume terendah — kandidat sales push."
         >
+          {slowSkus.length === 0 ? (
+            <EmptyState text="Belum ada data" />
+          ) : (
           <div className="space-y-2.5">
             {slowSkus.map((s, idx) => {
               const v = vol(s);
@@ -330,6 +350,7 @@ export default function TaroDashboardOverviewPage() {
               );
             })}
           </div>
+          )}
         </Panel>
       </div>
 
@@ -428,7 +449,7 @@ export default function TaroDashboardOverviewPage() {
               {nonTaco.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-4 py-8 text-center text-[13px] text-taco-muted">
-                    Belum ada produk non-TACO terdeteksi.
+                    Belum ada produk non-TACO terdeteksi
                   </td>
                 </tr>
               )}
@@ -436,15 +457,13 @@ export default function TaroDashboardOverviewPage() {
           </table>
         </div>
       </Panel>
-
-      {/* PANEL 5 — Stacked-line monthly trends */}
-      <Panel
-        title="Tren Volume TACO SKU (6 Bulan)"
-        subtitle={`Top ${skuMonthly.length} SKU sepanjang 6 bulan terakhir.`}
-      >
-        <SkuTrendChart rows={skuMonthly} />
-      </Panel>
     </div>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="py-8 text-center text-[13px] text-taco-muted">{text}</div>
   );
 }
 
@@ -503,121 +522,3 @@ function TrendingRow({ sku }: { sku: TaroSkuTrendingRow }) {
   );
 }
 
-/** Inline SVG stacked-line chart. Avoids the recharts dep for this page —
- *  a small custom SVG keeps the dashboard light and matches brand palette. */
-function SkuTrendChart({ rows }: { rows: TaroSkuMonthlyRow[] }) {
-  const palette = ["#1A1A1A", "#1D9E75", "#4F8BD6", "#7C5BBC", "#E07B00", "#9C7E55", "#5C7080"];
-  // Derive month axis from the union of all returned months.
-  const months = useMemo(() => {
-    const set = new Set<string>();
-    for (const r of rows) for (const m of r.months) set.add(m.month);
-    return Array.from(set);
-  }, [rows]);
-
-  if (rows.length === 0 || months.length === 0) {
-    return (
-      <div className="text-[12px] text-taco-muted py-8 text-center">
-        Belum ada data tren bulanan.
-      </div>
-    );
-  }
-
-  const width = 720;
-  const height = 240;
-  const padding = { top: 16, right: 16, bottom: 28, left: 40 };
-  const innerW = width - padding.left - padding.right;
-  const innerH = height - padding.top - padding.bottom;
-  const maxVal = Math.max(
-    1,
-    ...rows.flatMap((r) => r.months.map((m) => m.volume))
-  );
-  const xStep = months.length > 1 ? innerW / (months.length - 1) : innerW;
-
-  return (
-    <div>
-      <div className="w-full overflow-x-auto">
-        <svg
-          viewBox={`0 0 ${width} ${height}`}
-          className="w-full h-auto max-w-full"
-          preserveAspectRatio="xMidYMid meet"
-        >
-          {/* gridlines */}
-          {[0, 0.25, 0.5, 0.75, 1].map((t) => (
-            <line
-              key={t}
-              x1={padding.left}
-              x2={padding.left + innerW}
-              y1={padding.top + innerH * (1 - t)}
-              y2={padding.top + innerH * (1 - t)}
-              stroke="#E5E5E5"
-              strokeWidth={1}
-            />
-          ))}
-          {/* y labels */}
-          {[0, 0.5, 1].map((t) => (
-            <text
-              key={t}
-              x={padding.left - 6}
-              y={padding.top + innerH * (1 - t) + 4}
-              textAnchor="end"
-              fontSize="10"
-              fill="#888"
-            >
-              {Math.round(maxVal * t)}
-            </text>
-          ))}
-          {/* x labels */}
-          {months.map((m, i) => (
-            <text
-              key={m}
-              x={padding.left + i * xStep}
-              y={height - 8}
-              textAnchor="middle"
-              fontSize="10"
-              fill="#888"
-            >
-              {m}
-            </text>
-          ))}
-          {/* lines */}
-          {rows.map((row, ridx) => {
-            const color = palette[ridx % palette.length];
-            const points = months
-              .map((m, i) => {
-                const vv = row.months.find((mm) => mm.month === m)?.volume ?? 0;
-                const x = padding.left + i * xStep;
-                const y = padding.top + innerH * (1 - vv / maxVal);
-                return `${x},${y}`;
-              })
-              .join(" ");
-            return (
-              <polyline
-                key={`${skuCode(row)}-${ridx}`}
-                points={points}
-                fill="none"
-                stroke={color}
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            );
-          })}
-        </svg>
-      </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-3 pt-3 border-t border-taco-divider">
-        {rows.map((row, ridx) => (
-          <div
-            key={`${skuCode(row)}-${ridx}`}
-            className="inline-flex items-center gap-1.5 text-[11px] text-taco-sub"
-          >
-            <span
-              className="inline-block w-3 h-0.5 rounded"
-              style={{ background: palette[ridx % palette.length] }}
-            />
-            <span className="truncate max-w-[160px]">{skuName(row)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
