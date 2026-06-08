@@ -11,7 +11,6 @@ import {
 import { Badge } from "../../admin/_components/CrudShell";
 import { LightbulbIcon, SparkleIcon } from "../../admin/_components/icons";
 import { Modal } from "../../admin/_components/Modal";
-import { MOCK_RECOMMENDATIONS } from "../../admin/taro-invoices/_components/mockData";
 
 /** BE emits a wider set of `type` strings than the FE enum lists (e.g.
  *  `add_synonym` aliases `synonym`). Map any unknown type to a sensible
@@ -181,13 +180,9 @@ export default function TaroRecommendationsPage() {
       const data =
         ((res.data as { data?: TaroRecommendation[] })?.data ??
           (res.data as TaroRecommendation[])) ?? [];
-      if (data.length) {
-        setRecs(data.filter((r) => r.status === s));
-      } else {
-        setRecs(MOCK_RECOMMENDATIONS.filter((r) => r.status === s));
-      }
+      setRecs(data.filter((r) => r.status === s));
     } catch {
-      setRecs(MOCK_RECOMMENDATIONS.filter((r) => r.status === s));
+      setRecs([]);
     } finally {
       setLoading(false);
     }
