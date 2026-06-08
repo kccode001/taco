@@ -24,6 +24,7 @@ import { DigestModule } from './digest/digest.module';
 import { VoiceModule } from './voice/voice.module';
 import { EmbeddingsModule } from './embeddings/embeddings.module';
 import { TaroInvoicesModule } from './taro-invoices/taro-invoices.module';
+import { TaroSalesAgentsModule } from './taro-sales-agents/taro-sales-agents.module';
 import { VisitSchedulesModule } from './visit-schedules/visit-schedules.module';
 import { RegionsModule } from './regions/regions.module';
 
@@ -115,6 +116,7 @@ import { TaroMappingRule } from './database/entities/taro-mapping-rule.entity';
     VoiceModule,
     EmbeddingsModule,
     TaroInvoicesModule,
+    TaroSalesAgentsModule,
     VisitSchedulesModule,
     RegionsModule,
   ],

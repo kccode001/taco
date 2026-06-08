@@ -1,10 +1,12 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { Territory } from './territory.entity';
+import { Region } from './region.entity';
 
 export enum UserRole {
   REP = 'rep',
   MANAGER = 'manager',
   ADMIN = 'admin',
+  TARO_AGENT = 'taro_agent',
 }
 
 @Entity('users')
@@ -30,6 +32,17 @@ export class User {
   @ManyToOne(() => Territory, { nullable: true, eager: false })
   @JoinColumn({ name: 'territory_id' })
   territory: Territory;
+
+  /**
+   * Taro Sales Agent's primary region (ASM area) — only used when role=taro_agent.
+   * Nullable so other roles don't need to populate it.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  taro_region_id: string | null;
+
+  @ManyToOne(() => Region, { nullable: true, eager: false })
+  @JoinColumn({ name: 'taro_region_id' })
+  taro_region: Region | null;
 
   /** Indonesian mobile phone, kept as raw user-entered text (e.g. "0812-3456-7890"). */
   @Column({ type: 'text', nullable: true })

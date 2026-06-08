@@ -57,7 +57,8 @@ export class TaroInvoicesService {
     files: Express.Multer.File[],
     uploadedBy: string | null,
     regionId: string | null,
-  ): Promise<Array<{ id: string; file_name: string; status: TaroInvoiceStatus; region_id: string | null }>> {
+    storeName: string | null = null,
+  ): Promise<Array<{ id: string; file_name: string; status: TaroInvoiceStatus; region_id: string | null; store_name: string | null }>> {
     if (!files || files.length === 0) {
       throw new BadRequestException('At least one file is required (multipart field "files")');
     }
@@ -66,7 +67,7 @@ export class TaroInvoicesService {
       await this.regions.assertIsArea(regionId);
     }
 
-    const results: Array<{ id: string; file_name: string; status: TaroInvoiceStatus; region_id: string | null }> = [];
+    const results: Array<{ id: string; file_name: string; status: TaroInvoiceStatus; region_id: string | null; store_name: string | null }> = [];
     for (const file of files) {
       // Insert a row first so we get the UUID, then persist the file under the
       // canonical name `${id}${ext}`. Image streaming resolves by id prefix —
@@ -79,6 +80,7 @@ export class TaroInvoicesService {
           raw_image_url: '',
           file_name: file.originalname,
           region_id: regionId,
+          store_name: storeName,
         }),
       );
       const ext = path.extname(file.originalname).toLowerCase() || '.bin';
@@ -98,6 +100,7 @@ export class TaroInvoicesService {
         file_name: file.originalname,
         status: invoice.status,
         region_id: regionId,
+        store_name: storeName,
       });
     }
     return results;
@@ -241,6 +244,8 @@ export class TaroInvoicesService {
       total_amount: string | null;
       file_name: string | null;
       region_id: string | null;
+      store_name: string | null;
+      uploaded_by: string | null;
       line_count: number;
       low_confidence_count: number;
       needs_review_count: number;
@@ -263,6 +268,8 @@ export class TaroInvoicesService {
       .addSelect('inv.total_amount', 'total_amount')
       .addSelect('inv.file_name', 'file_name')
       .addSelect('inv.region_id', 'region_id')
+      .addSelect('inv.store_name', 'store_name')
+      .addSelect('inv.uploaded_by', 'uploaded_by')
       .addSelect('COUNT(li.id)::int', 'line_count')
       .addSelect(
         `COUNT(li.id) FILTER (WHERE li.confidence_score < ${CONFIDENCE_THRESHOLD})::int`,
@@ -300,6 +307,8 @@ export class TaroInvoicesService {
         total_amount: r.total_amount,
         file_name: r.file_name,
         region_id: r.region_id ?? null,
+        store_name: r.store_name ?? null,
+        uploaded_by: r.uploaded_by ?? null,
         line_count: r.line_count ?? 0,
         low_confidence_count: r.low_confidence_count ?? 0,
         needs_review_count: r.needs_review_count ?? 0,
@@ -412,6 +421,17 @@ export class TaroInvoicesService {
       is_min: boolean;
       is_max: boolean;
     }>;
+    agents_summary: Array<{
+      agent: { id: string; name: string; email: string };
+      region: { id: string | null; code: string; name: string; display_path: string } | null;
+      invoice_count: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    }>;
+    agent_monthly: Array<{
+      agent: { id: string; name: string; email: string };
+      months: Array<{ month: string; invoices: number }>;
+    }>;
   }> {
     // Helper to apply region scope on either an invoice-rooted or a line-item-rooted QB.
     const scopeInvoice = <T extends import('typeorm').SelectQueryBuilder<any>>(qb: T): T => {
@@ -488,6 +508,7 @@ export class TaroInvoicesService {
       .getRawMany();
 
     const regional = await this.computeRegionalAggregates(regionId);
+    const agentPanels = await this.computeAgentAggregates(regionId);
 
     return {
       region_id: regionId ?? null,
@@ -502,7 +523,149 @@ export class TaroInvoicesService {
       region_monthly: regional.region_monthly,
       top_skus_by_region: regional.top_skus_by_region,
       region_price_extremes: regional.region_price_extremes,
+      agents_summary: agentPanels.agents_summary,
+      agent_monthly: agentPanels.agent_monthly,
     };
+  }
+
+  /**
+   * Top-10 agents by invoice volume (with confidence + needs-review rate),
+   * plus a 6-month invoice series for the top-5 of those agents. Mirrors the
+   * shape of `computeRegionalAggregates` so the FE can render region/agent
+   * panels with the same component.
+   */
+  private async computeAgentAggregates(regionId?: string): Promise<{
+    agents_summary: Array<{
+      agent: { id: string; name: string; email: string };
+      region: { id: string | null; code: string; name: string; display_path: string } | null;
+      invoice_count: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    }>;
+    agent_monthly: Array<{
+      agent: { id: string; name: string; email: string };
+      months: Array<{ month: string; invoices: number }>;
+    }>;
+  }> {
+    const summaryArgs: Array<string> = [];
+    let summaryWhere = `inv.uploaded_by IS NOT NULL`;
+    if (regionId) {
+      summaryArgs.push(regionId);
+      summaryWhere += ` AND inv.region_id = $${summaryArgs.length}`;
+    }
+
+    const summaryRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        u.id AS agent_id,
+        u.name AS agent_name,
+        u.email AS agent_email,
+        r.id AS region_id,
+        r.code AS region_code,
+        r.name AS region_name,
+        r.display_path AS region_path,
+        COUNT(DISTINCT inv.id)::int AS invoice_count,
+        COALESCE(AVG(li.confidence_score), 0)::float AS avg_confidence,
+        CASE WHEN COUNT(li.id) = 0 THEN 0
+             ELSE (COUNT(li.id) FILTER (WHERE li.needs_review = true))::float
+                  / COUNT(li.id)::float
+        END AS needs_review_rate
+      FROM taro_invoices inv
+      INNER JOIN users u ON u.id = inv.uploaded_by
+      LEFT JOIN regions r ON r.id = u.taro_region_id
+      LEFT JOIN taro_invoice_line_items li ON li.invoice_id = inv.id
+      WHERE ${summaryWhere}
+      GROUP BY u.id, u.name, u.email, r.id, r.code, r.name, r.display_path
+      ORDER BY invoice_count DESC, u.name ASC
+      LIMIT 10
+      `,
+      summaryArgs,
+    );
+
+    const agentsSummary = (summaryRows as Array<{
+      agent_id: string;
+      agent_name: string;
+      agent_email: string;
+      region_id: string | null;
+      region_code: string | null;
+      region_name: string | null;
+      region_path: string | null;
+      invoice_count: number;
+      avg_confidence: number;
+      needs_review_rate: number;
+    }>).map((r) => ({
+      agent: { id: r.agent_id, name: r.agent_name, email: r.agent_email },
+      region: r.region_id
+        ? {
+            id: r.region_id,
+            code: r.region_code ?? '',
+            name: r.region_name ?? '',
+            display_path: r.region_path ?? '',
+          }
+        : null,
+      invoice_count: Number(r.invoice_count ?? 0),
+      avg_confidence: Number(r.avg_confidence ?? 0),
+      needs_review_rate: Number(r.needs_review_rate ?? 0),
+    }));
+
+    // Last-6-months labels (oldest first) so the FE chart gets a contiguous
+    // series even where some months have zero uploads.
+    const monthLabels: string[] = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      monthLabels.push(`${yyyy}-${mm}`);
+    }
+
+    const top5 = agentsSummary.slice(0, 5);
+    if (top5.length === 0) {
+      return { agents_summary: agentsSummary, agent_monthly: [] };
+    }
+
+    const monthlyArgs: Array<string | string[]> = [top5.map((a) => a.agent.id)];
+    let monthlyWhere = `inv.uploaded_by = ANY($1)`;
+    if (regionId) {
+      monthlyArgs.push(regionId);
+      monthlyWhere += ` AND inv.region_id = $${monthlyArgs.length}`;
+    }
+
+    const monthlyRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        inv.uploaded_by AS agent_id,
+        to_char(date_trunc('month', inv.uploaded_at), 'YYYY-MM') AS month,
+        COUNT(*)::int AS invoices
+      FROM taro_invoices inv
+      WHERE ${monthlyWhere}
+        AND inv.uploaded_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+      GROUP BY inv.uploaded_by, date_trunc('month', inv.uploaded_at)
+      ORDER BY inv.uploaded_by, date_trunc('month', inv.uploaded_at) ASC
+      `,
+      monthlyArgs,
+    );
+
+    const byAgent = new Map<string, Map<string, number>>();
+    for (const r of monthlyRows as Array<{
+      agent_id: string;
+      month: string;
+      invoices: number;
+    }>) {
+      const inner = byAgent.get(r.agent_id) ?? new Map<string, number>();
+      inner.set(r.month, Number(r.invoices));
+      byAgent.set(r.agent_id, inner);
+    }
+
+    const agentMonthly = top5.map((a) => {
+      const inner = byAgent.get(a.agent.id) ?? new Map<string, number>();
+      return {
+        agent: a.agent,
+        months: monthLabels.map((m) => ({ month: m, invoices: inner.get(m) ?? 0 })),
+      };
+    });
+
+    return { agents_summary: agentsSummary, agent_monthly: agentMonthly };
   }
 
   /**
@@ -896,6 +1059,273 @@ export class TaroInvoicesService {
       top_skus_by_region: topSkusByRegion,
       region_price_extremes: regionPriceExtremes,
     };
+  }
+
+  // ---- Failed OCR queue ----
+
+  /**
+   * Roll-up of OCR failures, grouped by exact `raw_text` so admin sees
+   * "this label appeared 15 times and we never matched it". Two failure
+   * shapes today:
+   *   - no_match       : `matched_sku_id IS NULL`
+   *   - low_confidence : `matched_sku_id` set but score < FAILED_THRESHOLD
+   * (`ambiguous` is reserved for the multi-candidate case once the OCR
+   * pipeline starts emitting alternates — wire is in place.)
+   *
+   * Pagination is over the grouped rows, not raw line items, so a single
+   * page is a stable working set for the review screen.
+   */
+  async failedOcr(params: {
+    page: number;
+    limit: number;
+    region_id?: string;
+    agent_id?: string;
+  }): Promise<{
+    data: Array<{
+      raw_text: string;
+      failure_reason: 'no_match' | 'low_confidence' | 'ambiguous';
+      occurrence_count: number;
+      latest_uploaded_at: Date | null;
+      avg_confidence: number;
+      closest_sku_candidate: {
+        id: string;
+        code: string;
+        name: string;
+        similarity: number;
+      } | null;
+      sample_line_items: Array<{
+        line_item_id: string;
+        invoice_id: string;
+        raw_text: string;
+        confidence_score: number;
+        region: { id: string | null; code: string; name: string; display_path: string } | null;
+        agent: { id: string | null; name: string | null; email: string | null } | null;
+        uploaded_at: Date;
+      }>;
+    }>;
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    const FAILED_THRESHOLD = 0.5;
+    const offset = (params.page - 1) * params.limit;
+
+    // 1. Aggregate by raw_text. Filters are inlined as parameters so the
+    //    same SQL handles all four optional-scope combinations.
+    const where: string[] = [
+      `(li.matched_sku_id IS NULL OR li.confidence_score < $1)`,
+    ];
+    const args: Array<string | number> = [FAILED_THRESHOLD];
+
+    if (params.region_id) {
+      args.push(params.region_id);
+      where.push(`inv.region_id = $${args.length}`);
+    }
+    if (params.agent_id) {
+      args.push(params.agent_id);
+      where.push(`inv.uploaded_by = $${args.length}`);
+    }
+
+    const whereSql = where.join(' AND ');
+
+    const totalRow = await this.invoicesRepo.query(
+      `
+      SELECT COUNT(DISTINCT li.raw_text)::int AS total
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      WHERE ${whereSql}
+      `,
+      args,
+    );
+    const total = Number(totalRow?.[0]?.total ?? 0);
+
+    const groupRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        li.raw_text AS raw_text,
+        COUNT(*)::int AS occurrence_count,
+        MAX(inv.uploaded_at) AS latest_uploaded_at,
+        COALESCE(AVG(li.confidence_score), 0)::float AS avg_confidence,
+        BOOL_OR(li.matched_sku_id IS NULL) AS has_no_match,
+        BOOL_OR(li.matched_sku_id IS NOT NULL AND li.confidence_score < $1) AS has_low_conf
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      WHERE ${whereSql}
+      GROUP BY li.raw_text
+      ORDER BY occurrence_count DESC, latest_uploaded_at DESC
+      OFFSET ${offset} LIMIT ${params.limit}
+      `,
+      args,
+    );
+
+    if (groupRows.length === 0) {
+      return { data: [], total, page: params.page, limit: params.limit };
+    }
+
+    const rawTexts = (groupRows as Array<{ raw_text: string }>).map((r) => r.raw_text);
+
+    // 2. Pull up to N sample line items per group for the admin context panel.
+    //    Use ROW_NUMBER window so we cap at 3 samples / group regardless of how
+    //    many invoices share the same raw_text.
+    const sampleRows = await this.invoicesRepo.query(
+      `
+      SELECT line_item_id, invoice_id, raw_text, confidence_score, region_id,
+             region_code, region_name, region_path, agent_id, agent_name,
+             agent_email, uploaded_at
+      FROM (
+        SELECT
+          li.id AS line_item_id,
+          li.invoice_id AS invoice_id,
+          li.raw_text AS raw_text,
+          li.confidence_score::float AS confidence_score,
+          inv.region_id AS region_id,
+          r.code AS region_code,
+          r.name AS region_name,
+          r.display_path AS region_path,
+          inv.uploaded_by AS agent_id,
+          u.name AS agent_name,
+          u.email AS agent_email,
+          inv.uploaded_at AS uploaded_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY li.raw_text
+            ORDER BY inv.uploaded_at DESC
+          ) AS rn
+        FROM taro_invoice_line_items li
+        INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+        LEFT JOIN regions r ON r.id = inv.region_id
+        LEFT JOIN users u ON u.id = inv.uploaded_by
+        WHERE li.raw_text = ANY($1)
+          AND (li.matched_sku_id IS NULL OR li.confidence_score < $2)
+      ) ranked
+      WHERE rn <= 3
+      ORDER BY raw_text, uploaded_at DESC
+      `,
+      [rawTexts, FAILED_THRESHOLD],
+    );
+
+    const samplesByText = new Map<string, Array<{
+      line_item_id: string;
+      invoice_id: string;
+      raw_text: string;
+      confidence_score: number;
+      region: { id: string | null; code: string; name: string; display_path: string } | null;
+      agent: { id: string | null; name: string | null; email: string | null } | null;
+      uploaded_at: Date;
+    }>>();
+    for (const r of sampleRows as Array<{
+      line_item_id: string;
+      invoice_id: string;
+      raw_text: string;
+      confidence_score: number;
+      region_id: string | null;
+      region_code: string | null;
+      region_name: string | null;
+      region_path: string | null;
+      agent_id: string | null;
+      agent_name: string | null;
+      agent_email: string | null;
+      uploaded_at: Date;
+    }>) {
+      const list = samplesByText.get(r.raw_text) ?? [];
+      list.push({
+        line_item_id: r.line_item_id,
+        invoice_id: r.invoice_id,
+        raw_text: r.raw_text,
+        confidence_score: Number(r.confidence_score ?? 0),
+        region: r.region_id
+          ? {
+              id: r.region_id,
+              code: r.region_code ?? '',
+              name: r.region_name ?? '',
+              display_path: r.region_path ?? '',
+            }
+          : null,
+        agent: r.agent_id
+          ? { id: r.agent_id, name: r.agent_name, email: r.agent_email }
+          : null,
+        uploaded_at: r.uploaded_at,
+      });
+      samplesByText.set(r.raw_text, list);
+    }
+
+    // 3. Closest-SKU hint: where any line in the group already has a
+    //    `matched_sku_id` (low_confidence case), expose that SKU as the
+    //    candidate with `similarity = avg(confidence)` for that pairing.
+    //    For pure `no_match` groups we leave it null — RAG re-scoring is
+    //    available behind the recommendations regenerate endpoint.
+    const candidateRows = await this.invoicesRepo.query(
+      `
+      SELECT raw_text, sku_id, code, name, similarity
+      FROM (
+        SELECT
+          li.raw_text AS raw_text,
+          sku.id AS sku_id,
+          sku.code AS code,
+          sku.name AS name,
+          AVG(li.confidence_score)::float AS similarity,
+          ROW_NUMBER() OVER (
+            PARTITION BY li.raw_text
+            ORDER BY AVG(li.confidence_score) DESC, COUNT(*) DESC
+          ) AS rn
+        FROM taro_invoice_line_items li
+        INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+        WHERE li.raw_text = ANY($1)
+          AND li.matched_sku_id IS NOT NULL
+        GROUP BY li.raw_text, sku.id, sku.code, sku.name
+      ) ranked
+      WHERE rn = 1
+      `,
+      [rawTexts],
+    );
+    const candidateByText = new Map<string, {
+      id: string;
+      code: string;
+      name: string;
+      similarity: number;
+    }>();
+    for (const r of candidateRows as Array<{
+      raw_text: string;
+      sku_id: string;
+      code: string;
+      name: string;
+      similarity: number;
+    }>) {
+      candidateByText.set(r.raw_text, {
+        id: r.sku_id,
+        code: r.code,
+        name: r.name,
+        similarity: Number(r.similarity ?? 0),
+      });
+    }
+
+    const data = (groupRows as Array<{
+      raw_text: string;
+      occurrence_count: number;
+      latest_uploaded_at: Date | null;
+      avg_confidence: number;
+      has_no_match: boolean;
+      has_low_conf: boolean;
+    }>).map((g) => {
+      // failure_reason precedence: pure no_match > pure low_confidence > mixed.
+      // (`ambiguous` is reserved — pipeline doesn't surface multi-candidate
+      // yet.) For mixed groups we surface `low_confidence` since the admin
+      // can then promote the existing candidate.
+      let failureReason: 'no_match' | 'low_confidence' | 'ambiguous' = 'no_match';
+      if (g.has_low_conf && !g.has_no_match) failureReason = 'low_confidence';
+      else if (g.has_low_conf && g.has_no_match) failureReason = 'low_confidence';
+
+      return {
+        raw_text: g.raw_text,
+        failure_reason: failureReason,
+        occurrence_count: Number(g.occurrence_count ?? 0),
+        latest_uploaded_at: g.latest_uploaded_at,
+        avg_confidence: Number(g.avg_confidence ?? 0),
+        closest_sku_candidate: candidateByText.get(g.raw_text) ?? null,
+        sample_line_items: samplesByText.get(g.raw_text) ?? [],
+      };
+    });
+
+    return { data, total, page: params.page, limit: params.limit };
   }
 
   // ---- Image streaming ----

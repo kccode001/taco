@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 import { TaroInvoiceLineItem } from './taro-invoice-line-item.entity';
 import { Region } from './region.entity';
+import { User } from './user.entity';
 
 export enum TaroInvoiceStatus {
   QUEUED = 'queued',
@@ -35,6 +36,10 @@ export class TaroInvoice {
 
   @Column({ type: 'uuid', nullable: true })
   uploaded_by: string | null;
+
+  @ManyToOne(() => User, { nullable: true, eager: false })
+  @JoinColumn({ name: 'uploaded_by' })
+  uploaded_by_user: User | null;
 
   @Column({ type: 'enum', enum: TaroInvoiceStatus, default: TaroInvoiceStatus.PROCESSING })
   status: TaroInvoiceStatus;
@@ -62,6 +67,13 @@ export class TaroInvoice {
 
   @Column({ type: 'text', nullable: true })
   file_name: string | null;
+
+  /**
+   * Store name where this Taro invoice was uploaded from — captured at upload
+   * time by the sales agent. Nullable for back-compat with pre-split rows.
+   */
+  @Column({ type: 'text', nullable: true })
+  store_name: string | null;
 
   /** Region area tagged at upload time — nullable for back-compat. */
   @Column({ type: 'uuid', nullable: true })

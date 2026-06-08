@@ -7,7 +7,17 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { UsersService } from '../users/users.service';
-import { User } from '../database/entities/user.entity';
+import { User, UserRole } from '../database/entities/user.entity';
+
+/**
+ * Default landing route per role. FE is free to override based on which login
+ * page the user came from (e.g. the Taro admin login button → /taro/dashboard)
+ * but Taro Sales Agents are pinned to the PWA shell unconditionally.
+ */
+function redirectForRole(role: string): string {
+  if (role === UserRole.TARO_AGENT) return '/taro-app';
+  return '/dashboard';
+}
 
 @Injectable()
 export class AuthService {
@@ -48,6 +58,7 @@ export class AuthService {
         name: user.name,
         role: user.role,
       },
+      redirect_to: redirectForRole(user.role),
     };
   }
 
@@ -97,6 +108,7 @@ export class AuthService {
         name: user.name,
         role: user.role,
       },
+      redirect_to: redirectForRole(user.role),
     };
   }
 

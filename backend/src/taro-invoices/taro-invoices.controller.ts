@@ -48,6 +48,9 @@ function getContentType(filePath: string): string {
 /**
  * Taro Invoices — admin/manager-only bulk OCR + SKU mapping.
  * Mounted under `/api/taro-invoices` via the global `api` prefix in main.ts.
+ *
+ * `taro_agent` role is allowed for `bulk-upload` only (set per-handler below) —
+ * admin/manager keep full CRUD access via the class-level @Roles decorator.
  */
 @Controller('taro-invoices')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -59,19 +62,25 @@ export class TaroInvoicesController {
   ) {}
 
   @Post('bulk-upload')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
   @UseInterceptors(FilesInterceptor('files', 20))
   bulkUpload(
     @UploadedFiles() files: Express.Multer.File[],
     @CurrentUser('id') userId: string,
     @Body('region_id') regionId?: string,
+    @Body('store_name') storeName?: string,
   ) {
-    const cleaned = typeof regionId === 'string' && regionId.trim().length > 0
+    const cleanedRegion = typeof regionId === 'string' && regionId.trim().length > 0
       ? regionId.trim()
       : null;
-    return this.invoices.bulkUpload(files, userId, cleaned);
+    const cleanedStore = typeof storeName === 'string' && storeName.trim().length > 0
+      ? storeName.trim()
+      : null;
+    return this.invoices.bulkUpload(files, userId, cleanedRegion, cleanedStore);
   }
 
   @Get('uploads/in-progress')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
   uploadsInProgress(@CurrentUser('id') userId: string) {
     return this.invoices.inProgressForUser(userId);
   }
@@ -79,6 +88,20 @@ export class TaroInvoicesController {
   @Get('analytics')
   analytics(@Query('region_id') regionId?: string) {
     return this.invoices.analytics(regionId);
+  }
+
+  @Get('failed-ocr')
+  failedOcr(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('region_id') regionId?: string,
+    @Query('agent_id') agentId?: string,
+  ) {
+    const p = Math.max(1, parseInt(page ?? '1', 10) || 1);
+    const l = Math.min(200, Math.max(1, parseInt(limit ?? '20', 10) || 20));
+    const rid = typeof regionId === 'string' && regionId.trim() ? regionId.trim() : undefined;
+    const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : undefined;
+    return this.invoices.failedOcr({ page: p, limit: l, region_id: rid, agent_id: aid });
   }
 
   @Get('recommendations')

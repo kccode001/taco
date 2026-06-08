@@ -42,8 +42,9 @@ export class UsersService {
   }
 
   /**
-   * `/users/me` payload — same as findOne but eagerly joins territory
-   * so the FE doesn't need a second roundtrip to resolve the name/code.
+   * `/users/me` payload — same as findOne but eagerly joins territory + the
+   * Taro region (for taro_agent users) so the FE doesn't need a second
+   * roundtrip to resolve names/codes.
    */
   async findMe(id: string): Promise<{
     id: string;
@@ -53,13 +54,15 @@ export class UsersService {
     phone: string | null;
     territory_id: string | null;
     territory: { id: string; name: string; code: string } | null;
+    taro_region_id: string | null;
+    taro_region: { id: string; name: string; code: string; display_path: string } | null;
     is_active: boolean;
     created_at: Date;
     updated_at: Date;
   }> {
     const user = await this.usersRepository.findOne({
       where: { id },
-      relations: { territory: true },
+      relations: { territory: true, taro_region: true },
     });
     if (!user) {
       throw new NotFoundException(`User with ID ${id} not found`);
@@ -73,6 +76,15 @@ export class UsersService {
       territory_id: user.territory_id ?? null,
       territory: user.territory
         ? { id: user.territory.id, name: user.territory.name, code: user.territory.code }
+        : null,
+      taro_region_id: user.taro_region_id ?? null,
+      taro_region: user.taro_region
+        ? {
+            id: user.taro_region.id,
+            name: user.taro_region.name,
+            code: user.taro_region.code,
+            display_path: user.taro_region.display_path,
+          }
         : null,
       is_active: user.is_active,
       created_at: user.created_at,
