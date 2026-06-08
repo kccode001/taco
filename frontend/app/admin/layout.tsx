@@ -26,7 +26,7 @@ type NavItem = {
 
 const SECTION_GROUPS: { label: string; items: NavItem[] }[] = [
   {
-    label: "Orang & Tempat",
+    label: "Organisasi & Jaringan",
     items: [
       { href: "/admin/sales-staff", label: "Sales Staff", icon: UsersIcon },
       { href: "/admin/stores", label: "Toko", icon: StoreIcon },
@@ -34,7 +34,7 @@ const SECTION_GROUPS: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Produk",
+    label: "Katalog Produk",
     items: [
       { href: "/admin/taco-skus", label: "TACO SKU", icon: PackageIcon },
       { href: "/admin/competitor-skus", label: "SKU Kompetitor", icon: TagIcon },
@@ -46,7 +46,7 @@ const SECTION_GROUPS: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Kamus Kunjungan",
+    label: "Konfigurasi Kunjungan",
     items: [
       {
         href: "/admin/burning-questions",
@@ -137,7 +137,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <nav className="flex-1 py-2 overflow-y-auto">
           {SECTION_GROUPS.map((group) => (
             <div key={group.label} className="mb-2">
-              <div className="px-5 pt-3 pb-1.5 text-[11px] font-semibold text-taco-muted uppercase tracking-wider">
+              <div className="px-5 pt-4 pb-2 text-[10px] font-semibold text-taco-muted uppercase tracking-[0.1em]">
                 {group.label}
               </div>
               {group.items.map(({ href, label, icon: Icon }) => {
