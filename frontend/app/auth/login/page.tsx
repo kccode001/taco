@@ -35,6 +35,23 @@ export default function LoginPage() {
     }
   };
 
+  const demoLogin = async (asEmail: string) => {
+    setError("");
+    setLoading(true);
+    try {
+      const res = await authLogin(asEmail, "password123");
+      const { access_token, user } = res.data;
+      setAuth(user, access_token);
+      if (user.role === "rep") router.push("/app/stores");
+      else if (user.role === "manager") router.push("/dashboard");
+      else router.push("/admin");
+    } catch {
+      setError("Demo login gagal — backend belum siap?");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-taco-page flex flex-col items-center justify-center px-5">
       <div className="w-full max-w-[390px]">
@@ -98,8 +115,40 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-5 pt-4 border-t border-taco-divider">
-            <p className="text-[13px] text-taco-muted text-center">Demo: budi@taco.co.id / sari@taco.co.id / admin@taco.co.id — password: taco123</p>
+          <div className="mt-6 pt-5 border-t border-taco-divider">
+            <p className="text-[12px] text-taco-muted text-center mb-3 uppercase tracking-wide font-medium">Demo — Masuk Langsung</p>
+            <div className="grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                onClick={() => demoLogin("rep@taco.id")}
+                disabled={loading}
+                className="w-full h-[52px] bg-white border-2 border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-accent transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-accent-tint text-taco-accent text-[12px] font-bold">R</span>
+                <span>Sales Rep (Sari Dewi)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => demoLogin("manager@taco.id")}
+                disabled={loading}
+                className="w-full h-[52px] bg-white border-2 border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-accent transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-accent-tint text-taco-accent text-[12px] font-bold">M</span>
+                <span>Manager (Budi Santoso)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => demoLogin("admin@taco.id")}
+                disabled={loading}
+                className="w-full h-[52px] bg-white border-2 border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-accent transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-accent-tint text-taco-accent text-[12px] font-bold">A</span>
+                <span>Admin TACO</span>
+              </button>
+            </div>
+            <p className="text-[11px] text-taco-muted text-center mt-3">
+              Manual: gunakan <code className="text-taco-text">rep@taco.id</code> · <code className="text-taco-text">manager@taco.id</code> · <code className="text-taco-text">admin@taco.id</code> dengan password <code className="text-taco-text">password123</code>
+            </p>
           </div>
         </div>
       </div>
