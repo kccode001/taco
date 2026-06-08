@@ -22,13 +22,14 @@ import {
   formatDateTime,
 } from "../../admin/taro-invoices/_components/mockData";
 
-type FilterPill = "all" | "done" | "needs_review" | "processing";
+type FilterPill = "all" | "done" | "needs_review" | "processing" | "failed";
 
 const PILLS: { value: FilterPill; label: string }[] = [
   { value: "all", label: "Semua" },
-  { value: "done", label: "Sudah Selesai" },
+  { value: "done", label: "Selesai" },
   { value: "needs_review", label: "Perlu Review" },
   { value: "processing", label: "Proses" },
+  { value: "failed", label: "Gagal" },
 ];
 
 function statusBadge(status: TaroInvoiceSummary["status"]) {
@@ -41,9 +42,10 @@ function statusBadge(status: TaroInvoiceSummary["status"]) {
       return <Badge tone="info">Proses</Badge>;
     case "failed":
       return <Badge tone="err">Gagal</Badge>;
+    case "queued":
     case "pending":
     default:
-      return <Badge tone="muted">Menunggu</Badge>;
+      return <Badge tone="muted">Antrian</Badge>;
   }
 }
 
@@ -86,8 +88,9 @@ export default function TaroInvoiceListPage() {
   const refetch = useCallback(async () => {
     try {
       const params: Record<string, string> = {};
-      if (pill === "needs_review") params.needs_review = "true";
-      else if (pill !== "all") params.status = pill;
+      // Core ships `?status=needs_review` as the canonical filter — falls back
+      // to the legacy `needs_review=true` for older BE builds.
+      if (pill !== "all") params.status = pill;
       if (search.trim()) params.search = search.trim();
       if (regionFilter !== "all") params.region_id = regionFilter;
       if (dateFrom) params.date_from = dateFrom;
@@ -170,6 +173,7 @@ export default function TaroInvoiceListPage() {
       if (pill === "done" && i.status !== "done") return false;
       if (pill === "needs_review" && i.status !== "needs_review") return false;
       if (pill === "processing" && i.status !== "processing") return false;
+      if (pill === "failed" && i.status !== "failed") return false;
       if (regionFilter !== "all" && i.region_id !== regionFilter) return false;
       if (dateFrom || dateTo) {
         const ts = i.uploaded_at ? new Date(i.uploaded_at).getTime() : NaN;

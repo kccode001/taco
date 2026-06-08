@@ -15,13 +15,16 @@ import { TopBar } from "../../_components/TopBar";
 import { BottomNav } from "../../_components/BottomNav";
 import { useTaroGuard } from "../../_components/useTaroGuard";
 import {
+  AlertTriangleIcon,
   CheckIcon,
   ChevronLeftIcon,
   CloseIcon,
   PencilIcon,
   PinIcon,
   SearchIcon,
+  SpinnerIcon,
   StoreIcon,
+  XCircleIcon,
 } from "../../_components/icons";
 
 interface TacoSkuRow {
@@ -224,6 +227,7 @@ export default function TaroUploadReviewPage() {
     status === "mapping";
   const isFailed = status === "failed";
   const isNeedsReview = status === "needs_review";
+  const reviewCount = summary.perluCek + summary.perluReview;
 
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
@@ -242,26 +246,48 @@ export default function TaroUploadReviewPage() {
           }
         />
 
-        {/* Status banners */}
+        {/* Status banners — status-aware */}
         {isDone && (
           <div className="mx-4 mt-3 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2.5 flex items-start gap-2">
             <span className="text-taco-success mt-0.5">
               <CheckIcon size={16} />
             </span>
             <div className="text-[12px] text-taco-text leading-relaxed">
-              Invoice ini sudah diproses pada {timeFmt(invoice.uploaded_at)}.
-              Edit baris masih bisa dilakukan.
+              Invoice ini sudah diproses dan semua baris terkonfirmasi pada{" "}
+              {timeFmt(invoice.uploaded_at)}. Edit baris masih bisa dilakukan.
+            </div>
+          </div>
+        )}
+        {isNeedsReview && (
+          <div className="mx-4 mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
+            <span className="text-taco-warning mt-0.5">
+              <AlertTriangleIcon size={16} />
+            </span>
+            <div className="text-[12px] text-taco-text leading-relaxed">
+              Invoice butuh review. <strong>{reviewCount}</strong> dari{" "}
+              <strong>{summary.total}</strong> baris perlu dicek manual sebelum
+              dianggap selesai.
             </div>
           </div>
         )}
         {isProcessing && (
-          <div className="mx-4 mt-3 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 text-[12px] text-taco-info">
-            Invoice sedang diproses oleh OCR. Hasil akan muncul otomatis.
+          <div className="mx-4 mt-3 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 flex items-start gap-2">
+            <span className="text-taco-info mt-0.5 animate-spin">
+              <SpinnerIcon size={16} />
+            </span>
+            <div className="text-[12px] text-taco-info leading-relaxed">
+              OCR berjalan… hasil akan muncul otomatis.
+            </div>
           </div>
         )}
         {isFailed && (
-          <div className="mx-4 mt-3 bg-red-50 border border-red-100 rounded-xl px-3 py-2.5 text-[12px] text-taco-error">
-            OCR gagal memproses invoice ini. Coba upload ulang.
+          <div className="mx-4 mt-3 bg-red-50 border border-red-100 rounded-xl px-3 py-2.5 flex items-start gap-2">
+            <span className="text-taco-error mt-0.5">
+              <XCircleIcon size={16} />
+            </span>
+            <div className="text-[12px] text-taco-error leading-relaxed">
+              OCR gagal. Coba upload ulang.
+            </div>
           </div>
         )}
 
@@ -302,7 +328,7 @@ export default function TaroUploadReviewPage() {
         <div className="px-4 pt-3">
           <div className="bg-white border border-taco-border rounded-xl p-3">
             <div className="text-[12px] text-taco-sub mb-2">Ringkasan OCR</div>
-            <div className="flex items-center gap-3 text-[13px]">
+            <div className="flex items-center gap-3 text-[13px] flex-wrap">
               <SummaryPill
                 color="bg-taco-success"
                 label="Yakin"
@@ -310,8 +336,13 @@ export default function TaroUploadReviewPage() {
               />
               <SummaryPill
                 color="bg-taco-warning"
-                label="Perlu cek"
-                value={summary.perluCek + summary.perluReview}
+                label="Perlu Cek"
+                value={summary.perluCek}
+              />
+              <SummaryPill
+                color="bg-taco-error"
+                label="Perlu Review"
+                value={summary.perluReview}
               />
               <div className="ml-auto text-[12px] text-taco-sub">
                 {summary.yakin}/{summary.total} baris siap
@@ -423,8 +454,11 @@ export default function TaroUploadReviewPage() {
             <button
               type="button"
               disabled
-              className="w-full min-h-[52px] rounded-xl bg-taco-page text-taco-info border border-blue-100 font-semibold text-[16px]"
+              className="w-full min-h-[52px] rounded-xl bg-taco-page text-taco-info border border-blue-100 font-semibold text-[16px] flex items-center justify-center gap-2"
             >
+              <span className="animate-spin">
+                <SpinnerIcon size={16} />
+              </span>
               Memproses…
             </button>
           ) : isFailed ? (
@@ -436,13 +470,21 @@ export default function TaroUploadReviewPage() {
               Upload Ulang
             </button>
           ) : isNeedsReview ? (
-            <button
-              type="button"
-              onClick={() => router.push("/taro-app/home")}
-              className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors"
-            >
-              Selesai
-            </button>
+            <div className="space-y-2">
+              <button
+                type="button"
+                disabled
+                title="Selesaikan semua baris yang masih perlu review terlebih dahulu"
+                className="w-full min-h-[52px] rounded-xl bg-taco-page text-taco-warning border border-amber-200 font-semibold text-[16px] flex items-center justify-center gap-2 cursor-not-allowed opacity-90"
+              >
+                <AlertTriangleIcon size={16} />
+                <span>Tandai Selesai ({reviewCount} baris belum siap)</span>
+              </button>
+              <div className="text-center text-[11px] text-taco-sub">
+                Edit baris bertanda <strong>Perlu Review</strong> di atas untuk
+                mengaktifkan tombol ini.
+              </div>
+            </div>
           ) : (
             <button
               type="button"

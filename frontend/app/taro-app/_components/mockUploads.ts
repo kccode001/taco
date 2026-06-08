@@ -108,6 +108,8 @@ export function statusLabel(status: AgentUpload["status"]): string {
       return "Proses";
     case "failed":
       return "Gagal";
+    case "queued":
+    case "pending":
     default:
       return "Antrian";
   }
@@ -115,7 +117,7 @@ export function statusLabel(status: AgentUpload["status"]): string {
 
 export function statusTone(
   status: AgentUpload["status"]
-): "ok" | "warn" | "err" | "info" {
+): "ok" | "warn" | "err" | "info" | "muted" {
   switch (status) {
     case "done":
       return "ok";
@@ -123,6 +125,11 @@ export function statusTone(
       return "warn";
     case "failed":
       return "err";
+    case "processing":
+      return "info";
+    case "queued":
+    case "pending":
+      return "muted";
     default:
       return "info";
   }

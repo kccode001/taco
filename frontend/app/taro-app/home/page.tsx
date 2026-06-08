@@ -15,18 +15,20 @@ import {
 } from "../_components/mockUploads";
 import { FileTextIcon, StoreIcon } from "../_components/icons";
 
-const TONE_BG: Record<"ok" | "warn" | "err" | "info", string> = {
+const TONE_BG: Record<"ok" | "warn" | "err" | "info" | "muted", string> = {
   ok: "bg-emerald-50 text-taco-success",
   warn: "bg-amber-50 text-taco-warning",
   err: "bg-red-50 text-taco-error",
   info: "bg-blue-50 text-taco-info",
+  muted: "bg-taco-page text-taco-sub border border-taco-border",
 };
 
-const TONE_DOT: Record<"ok" | "warn" | "err" | "info", string> = {
+const TONE_DOT: Record<"ok" | "warn" | "err" | "info" | "muted", string> = {
   ok: "bg-taco-success",
   warn: "bg-taco-warning",
   err: "bg-taco-error",
   info: "bg-taco-info",
+  muted: "bg-taco-muted",
 };
 
 const WEEKDAY_SHORT_ID = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
@@ -340,12 +342,14 @@ export default function TaroHomePage() {
                             />
                             {statusLabel(u.status)}
                           </span>
-                          {u.status === "done" && u.line_count > 0 && (
-                            <span className="text-[11px] text-taco-sub">
-                              {u.line_count} baris ·{" "}
-                              {Math.round((u.avg_confidence ?? 0) * 100)}%
-                            </span>
-                          )}
+                          {(u.status === "done" ||
+                            u.status === "needs_review") &&
+                            u.line_count > 0 && (
+                              <span className="text-[11px] text-taco-sub">
+                                {u.line_count} baris ·{" "}
+                                {Math.round((u.avg_confidence ?? 0) * 100)}%
+                              </span>
+                            )}
                           <span className="text-[11px] text-taco-muted ml-auto">
                             {timeAgo(u.uploaded_at)}
                           </span>

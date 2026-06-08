@@ -691,7 +691,15 @@ export const getBurningQuestionsForStore = (storeId: string) =>
 // caller falls back to mock data — the pages render fully with mocks.
 // ──────────────────────────────────────────────────────────────────────────
 
-export type TaroInvoiceStatus = "pending" | "processing" | "done" | "needs_review" | "failed";
+export type TaroInvoiceStatus =
+  | "queued"
+  | "processing"
+  | "done"
+  | "needs_review"
+  | "failed"
+  // Legacy alias — older BE rows or in-flight uploads still emit `pending`.
+  // Treated as `queued` for label/tone purposes.
+  | "pending";
 
 export interface TaroInvoiceLine {
   id: string;

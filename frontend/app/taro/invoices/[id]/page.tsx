@@ -41,9 +41,10 @@ function statusBadge(status: TaroInvoiceDetail["status"]) {
       return <Badge tone="info">Proses</Badge>;
     case "failed":
       return <Badge tone="err">Gagal</Badge>;
+    case "queued":
     case "pending":
     default:
-      return <Badge tone="muted">Menunggu</Badge>;
+      return <Badge tone="muted">Antrian</Badge>;
   }
 }
 
