@@ -49,8 +49,10 @@ function getContentType(filePath: string): string {
  * Taro Invoices — admin/manager-only bulk OCR + SKU mapping.
  * Mounted under `/api/taro-invoices` via the global `api` prefix in main.ts.
  *
- * `taro_agent` role is allowed for `bulk-upload` only (set per-handler below) —
- * admin/manager keep full CRUD access via the class-level @Roles decorator.
+ * `taro_agent` role is allowed for upload + their own read endpoints (set
+ * per-handler below) — admin/manager keep full CRUD access via the class-level
+ * @Roles decorator. For taro_agent, list / detail / my-weekly-stats are
+ * auto-scoped to invoices they uploaded — see service-layer filter.
  */
 @Controller('taro-invoices')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -83,6 +85,12 @@ export class TaroInvoicesController {
   @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
   uploadsInProgress(@CurrentUser('id') userId: string) {
     return this.invoices.inProgressForUser(userId);
+  }
+
+  @Get('my-weekly-stats')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
+  myWeeklyStats(@CurrentUser('id') userId: string) {
+    return this.invoices.myWeeklyStats(userId);
   }
 
   @Get('analytics')
@@ -158,12 +166,24 @@ export class TaroInvoicesController {
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.invoices.findOne(id);
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: UserRole,
+  ) {
+    // taro_agent → auto-scope: derive uploader filter from JWT, ignore client.
+    const scopeUploaderId = role === UserRole.TARO_AGENT ? userId : null;
+    return this.invoices.findOne(id, scopeUploaderId);
   }
 
   @Get()
-  list(@Query() query: ListTaroInvoicesDto) {
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
+  list(
+    @Query() query: ListTaroInvoicesDto,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: UserRole,
+  ) {
     const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '20', 10) || 20));
     const status =
@@ -178,6 +198,9 @@ export class TaroInvoicesController {
     const region_id = typeof query.region_id === 'string' && query.region_id.trim()
       ? query.region_id.trim()
       : undefined;
-    return this.invoices.list({ status, needs_review, region_id, page, limit });
+    // taro_agent → auto-scope to their own uploads. Filter derived from JWT
+    // sub, never from query params, so the agent can't peek at others.
+    const uploaded_by = role === UserRole.TARO_AGENT ? userId : undefined;
+    return this.invoices.list({ status, needs_review, region_id, page, limit, uploaded_by });
   }
 }

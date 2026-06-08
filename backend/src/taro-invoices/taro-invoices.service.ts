@@ -280,6 +280,12 @@ export class TaroInvoicesService {
     region_id?: string;
     page: number;
     limit: number;
+    /**
+     * When set, restricts results to invoices uploaded by this user. Used by
+     * the taro_agent role to scope the listing to their own uploads — the
+     * controller derives this from the JWT, never from a query param.
+     */
+    uploaded_by?: string;
   }): Promise<{
     data: Array<{
       id: string;
@@ -300,7 +306,7 @@ export class TaroInvoicesService {
     page: number;
     limit: number;
   }> {
-    const { status, needs_review, region_id, page, limit } = params;
+    const { status, needs_review, region_id, page, limit, uploaded_by } = params;
     const offset = (page - 1) * limit;
 
     const qb = this.invoicesRepo
@@ -330,6 +336,7 @@ export class TaroInvoicesService {
 
     if (status) qb.andWhere('inv.status = :status', { status });
     if (region_id) qb.andWhere('inv.region_id = :rid', { rid: region_id });
+    if (uploaded_by) qb.andWhere('inv.uploaded_by = :uid', { uid: uploaded_by });
     if (needs_review === true) {
       qb.andHaving('COUNT(li.id) FILTER (WHERE li.needs_review = true) > 0');
     } else if (needs_review === false) {
@@ -340,6 +347,7 @@ export class TaroInvoicesService {
     const totalQb = this.invoicesRepo.createQueryBuilder('inv');
     if (status) totalQb.andWhere('inv.status = :status', { status });
     if (region_id) totalQb.andWhere('inv.region_id = :rid', { rid: region_id });
+    if (uploaded_by) totalQb.andWhere('inv.uploaded_by = :uid', { uid: uploaded_by });
     const total = await totalQb.getCount();
 
     const raw = await qb.offset(offset).limit(limit).getRawMany();
@@ -367,7 +375,15 @@ export class TaroInvoicesService {
 
   // ---- Detail ----
 
-  async findOne(id: string): Promise<TaroInvoice> {
+  /**
+   * @param scopeUploaderId  When non-null, return 404 if the invoice was
+   *                         uploaded by a different user. Used to scope
+   *                         taro_agent reads to their own uploads. We return
+   *                         404 (not 403) on purpose — the agent shouldn't be
+   *                         able to probe for the existence of other agents'
+   *                         invoice IDs.
+   */
+  async findOne(id: string, scopeUploaderId: string | null = null): Promise<TaroInvoice> {
     const inv = await this.invoicesRepo
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.line_items', 'li')
@@ -376,7 +392,70 @@ export class TaroInvoicesService {
       .orderBy('li.line_no', 'ASC')
       .getOne();
     if (!inv) throw new NotFoundException(`TaroInvoice ${id} not found`);
+    if (scopeUploaderId !== null && inv.uploaded_by !== scopeUploaderId) {
+      throw new NotFoundException(`TaroInvoice ${id} not found`);
+    }
     return inv;
+  }
+
+  // ---- Per-agent weekly stats (PWA homescreen chart) ----
+
+  /**
+   * Returns the last 7 days of upload counts for the given user. Always
+   * returns exactly 7 day-buckets (today last) so the FE can render a
+   * fixed-width chart even when some days had zero uploads. Day labels use
+   * 3-letter Indonesian weekday short names (Sen…Min) to match the PWA's
+   * existing locale.
+   */
+  async myWeeklyStats(userId: string | null): Promise<{
+    total_this_week: number;
+    days: Array<{ date: string; weekday_short: string; count: number }>;
+  }> {
+    // Build the 7-day window in JS so we get stable [today-6 … today] regardless
+    // of timezone weirdness in Postgres. Day buckets use the server's local
+    // date — same convention as `uploaded_at::date`.
+    const days: Array<{ date: string; weekday_short: string; count: number }> = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const idWeekdays = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      days.push({
+        date: `${yyyy}-${mm}-${dd}`,
+        weekday_short: idWeekdays[d.getDay()],
+        count: 0,
+      });
+    }
+
+    if (!userId) {
+      return { total_this_week: 0, days };
+    }
+
+    // Group by local-date to align with the JS-built window above.
+    const rows = await this.invoicesRepo.query(
+      `
+      SELECT to_char(inv.uploaded_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
+      FROM taro_invoices inv
+      WHERE inv.uploaded_by = $1
+        AND inv.uploaded_at >= NOW() - INTERVAL '7 days'
+      GROUP BY inv.uploaded_at::date
+      `,
+      [userId],
+    );
+    const byDay = new Map<string, number>();
+    for (const r of rows as Array<{ day: string; count: number }>) {
+      byDay.set(r.day, Number(r.count));
+    }
+    let total = 0;
+    for (const d of days) {
+      d.count = byDay.get(d.date) ?? 0;
+      total += d.count;
+    }
+    return { total_this_week: total, days };
   }
 
   // ---- Line-item patch ----
