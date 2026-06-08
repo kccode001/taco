@@ -24,6 +24,7 @@ import { DigestModule } from './digest/digest.module';
 import { VoiceModule } from './voice/voice.module';
 import { EmbeddingsModule } from './embeddings/embeddings.module';
 import { TaroInvoicesModule } from './taro-invoices/taro-invoices.module';
+import { VisitSchedulesModule } from './visit-schedules/visit-schedules.module';
 
 import { User } from './database/entities/user.entity';
 import { Territory } from './database/entities/territory.entity';
@@ -55,6 +56,7 @@ import { TaroInvoice } from './database/entities/taro-invoice.entity';
 import { TaroInvoiceLineItem } from './database/entities/taro-invoice-line-item.entity';
 import { TaroInvoiceSkuCorrection } from './database/entities/taro-invoice-sku-correction.entity';
 import { TaroInvoiceRecommendation } from './database/entities/taro-invoice-recommendation.entity';
+import { VisitSchedule } from './database/entities/visit-schedule.entity';
 
 @Module({
   imports: [
@@ -74,6 +76,7 @@ import { TaroInvoiceRecommendation } from './database/entities/taro-invoice-reco
           VisitCompetitorPosm, VisitBurningQuestion, VisitSinyalToko,
           FotoKatalog,
           TaroInvoice, TaroInvoiceLineItem, TaroInvoiceSkuCorrection, TaroInvoiceRecommendation,
+          VisitSchedule,
         ],
         synchronize: true,
         logging: false,
@@ -108,6 +111,7 @@ import { TaroInvoiceRecommendation } from './database/entities/taro-invoice-reco
     VoiceModule,
     EmbeddingsModule,
     TaroInvoicesModule,
+    VisitSchedulesModule,
   ],
 })
 export class AppModule {}

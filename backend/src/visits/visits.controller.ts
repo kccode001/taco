@@ -28,6 +28,18 @@ export class VisitsController {
     return this.visitsService.findAll(query, req.user);
   }
 
+  /**
+   * Rep's completed (submitted) visits, paginated. RolesGuard not used on
+   * this controller, so we filter by the auth'd user inside findAll (reps
+   * are already limited to their own rows). Admin/manager hitting this
+   * endpoint gets a global submitted history — by design for cross-staff
+   * review.
+   */
+  @Get('history')
+  history(@Query() query: VisitQueryDto, @Request() req: any) {
+    return this.visitsService.findAll({ ...query, status: 'submitted' }, req.user);
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   create(
