@@ -13,6 +13,8 @@ import {
   StreamableFile,
   Res,
   BadRequestException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
@@ -61,13 +63,22 @@ export class TaroInvoicesController {
   bulkUpload(
     @UploadedFiles() files: Express.Multer.File[],
     @CurrentUser('id') userId: string,
+    @Body('region_id') regionId?: string,
   ) {
-    return this.invoices.bulkUpload(files, userId);
+    const cleaned = typeof regionId === 'string' && regionId.trim().length > 0
+      ? regionId.trim()
+      : null;
+    return this.invoices.bulkUpload(files, userId, cleaned);
+  }
+
+  @Get('uploads/in-progress')
+  uploadsInProgress(@CurrentUser('id') userId: string) {
+    return this.invoices.inProgressForUser(userId);
   }
 
   @Get('analytics')
-  analytics() {
-    return this.invoices.analytics();
+  analytics(@Query('region_id') regionId?: string) {
+    return this.invoices.analytics(regionId);
   }
 
   @Get('recommendations')
@@ -82,6 +93,23 @@ export class TaroInvoicesController {
   @Post('recommendations/regenerate')
   regenerateRecommendations() {
     return this.recommendations.regenerate();
+  }
+
+  @Post('recommendations/:id/apply')
+  async applyRecommendation(@Param('id', ParseUUIDPipe) id: string) {
+    const result = await this.invoices.applyRecommendation(id);
+    if (!result.applied && result.not_implemented) {
+      throw new HttpException(
+        { message: result.not_implemented, recommendation: result.recommendation },
+        HttpStatus.NOT_IMPLEMENTED,
+      );
+    }
+    return result;
+  }
+
+  @Post('recommendations/:id/reject')
+  rejectRecommendation(@Param('id', ParseUUIDPipe) id: string) {
+    return this.invoices.rejectRecommendation(id);
   }
 
   @Patch('line-items/:id')
@@ -124,6 +152,9 @@ export class TaroInvoicesController {
     if (query.needs_review && !['true', 'false'].includes(query.needs_review)) {
       throw new BadRequestException('needs_review must be true|false');
     }
-    return this.invoices.list({ status, needs_review, page, limit });
+    const region_id = typeof query.region_id === 'string' && query.region_id.trim()
+      ? query.region_id.trim()
+      : undefined;
+    return this.invoices.list({ status, needs_review, region_id, page, limit });
   }
 }

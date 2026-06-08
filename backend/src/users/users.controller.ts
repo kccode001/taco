@@ -33,7 +33,7 @@ export class UsersController {
 
   @Get('me')
   getMe(@CurrentUser('id') userId: string) {
-    return this.usersService.findOne(userId);
+    return this.usersService.findMe(userId);
   }
 
   @Post()

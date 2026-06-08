@@ -25,6 +25,7 @@ import { VoiceModule } from './voice/voice.module';
 import { EmbeddingsModule } from './embeddings/embeddings.module';
 import { TaroInvoicesModule } from './taro-invoices/taro-invoices.module';
 import { VisitSchedulesModule } from './visit-schedules/visit-schedules.module';
+import { RegionsModule } from './regions/regions.module';
 
 import { User } from './database/entities/user.entity';
 import { Territory } from './database/entities/territory.entity';
@@ -57,6 +58,8 @@ import { TaroInvoiceLineItem } from './database/entities/taro-invoice-line-item.
 import { TaroInvoiceSkuCorrection } from './database/entities/taro-invoice-sku-correction.entity';
 import { TaroInvoiceRecommendation } from './database/entities/taro-invoice-recommendation.entity';
 import { VisitSchedule } from './database/entities/visit-schedule.entity';
+import { Region } from './database/entities/region.entity';
+import { TaroMappingRule } from './database/entities/taro-mapping-rule.entity';
 
 @Module({
   imports: [
@@ -77,6 +80,7 @@ import { VisitSchedule } from './database/entities/visit-schedule.entity';
           FotoKatalog,
           TaroInvoice, TaroInvoiceLineItem, TaroInvoiceSkuCorrection, TaroInvoiceRecommendation,
           VisitSchedule,
+          Region, TaroMappingRule,
         ],
         synchronize: true,
         logging: false,
@@ -112,6 +116,7 @@ import { VisitSchedule } from './database/entities/visit-schedule.entity';
     EmbeddingsModule,
     TaroInvoicesModule,
     VisitSchedulesModule,
+    RegionsModule,
   ],
 })
 export class AppModule {}

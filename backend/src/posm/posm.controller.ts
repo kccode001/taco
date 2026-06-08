@@ -17,7 +17,9 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../database/entities/user.entity';
 
-@Controller('posm-assets')
+// Mounted on BOTH paths so the admin UI's `/admin/posm` shortcut works alongside
+// the canonical `/posm-assets` resource path.
+@Controller(['posm-assets', 'admin/posm'])
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class PosmController {
   constructor(private readonly service: PosmService) {}

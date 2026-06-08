@@ -31,6 +31,10 @@ export class User {
   @JoinColumn({ name: 'territory_id' })
   territory: Territory;
 
+  /** Indonesian mobile phone, kept as raw user-entered text (e.g. "0812-3456-7890"). */
+  @Column({ type: 'text', nullable: true })
+  phone: string | null;
+
   @Column({ default: true })
   is_active: boolean;
 

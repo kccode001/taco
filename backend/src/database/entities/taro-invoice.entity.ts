@@ -6,10 +6,14 @@ import {
   UpdateDateColumn,
   Index,
   OneToMany,
+  ManyToOne,
+  JoinColumn,
 } from 'typeorm';
 import { TaroInvoiceLineItem } from './taro-invoice-line-item.entity';
+import { Region } from './region.entity';
 
 export enum TaroInvoiceStatus {
+  QUEUED = 'queued',
   PROCESSING = 'processing',
   DONE = 'done',
   FAILED = 'failed',
@@ -58,6 +62,26 @@ export class TaroInvoice {
 
   @Column({ type: 'text', nullable: true })
   file_name: string | null;
+
+  /** Region area tagged at upload time — nullable for back-compat. */
+  @Column({ type: 'uuid', nullable: true })
+  region_id: string | null;
+
+  @ManyToOne(() => Region, { nullable: true, eager: false })
+  @JoinColumn({ name: 'region_id' })
+  region: Region | null;
+
+  /**
+   * Best-effort 0..100 progress so the upload page can recover after refresh.
+   *   queued       = 0
+   *   processing   = 10
+   *   ocr_started  = 20
+   *   ocr_done     = 70
+   *   mapping_done = 90
+   *   done         = 100
+   */
+  @Column({ type: 'int', default: 0 })
+  progress_percent: number;
 
   @CreateDateColumn()
   created_at: Date;

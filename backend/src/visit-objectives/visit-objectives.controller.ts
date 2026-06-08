@@ -17,7 +17,9 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../database/entities/user.entity';
 
-@Controller('visit-objectives')
+// Mounted on BOTH paths so the admin UI's `/admin/visit-objectives` shortcut
+// works alongside the canonical resource path.
+@Controller(['visit-objectives', 'admin/visit-objectives'])
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class VisitObjectivesController {
   constructor(private readonly service: VisitObjectivesService) {}
