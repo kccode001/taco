@@ -7,20 +7,20 @@ import { TopBar } from "../_components/TopBar";
 import { BottomNav } from "../_components/BottomNav";
 import { useTaroGuard } from "../_components/useTaroGuard";
 import {
-  MOCK_AGENT_UPLOADS,
   statusLabel,
   statusTone,
   timeAgo,
-  type AgentUpload,
 } from "../_components/mockUploads";
 import { ChevronLeftIcon, SearchIcon, StoreIcon } from "../_components/icons";
 
 type StatusFilter = "all" | "done" | "processing" | "needs_review" | "failed";
 
-type Row = AgentUpload | TaroInvoiceSummary;
+type Row = TaroInvoiceSummary;
 
 function rowStore(u: Row): string {
-  return ("store_name" in u && (u as AgentUpload).store_name) || u.short_id;
+  return (
+    (u as TaroInvoiceSummary & { store_name?: string }).store_name ?? u.short_id
+  );
 }
 
 const TONE_BG: Record<"ok" | "warn" | "err" | "info", string> = {
@@ -49,19 +49,23 @@ export default function TaroHistoryPage() {
   const { ready } = useTaroGuard();
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await getTaroInvoices({ limit: "100" });
       const data =
         ((res.data as { data?: TaroInvoiceSummary[] })?.data ??
           (res.data as TaroInvoiceSummary[])) ?? [];
-      setRows(data.length ? data : MOCK_AGENT_UPLOADS);
-    } catch {
-      setRows(MOCK_AGENT_UPLOADS);
+      setRows(data);
+    } catch (err) {
+      setRows([]);
+      const message = (err as { message?: string })?.message ?? "Tidak bisa memuat data.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -146,6 +150,19 @@ export default function TaroHistoryPage() {
           {loading ? (
             <div className="bg-white border border-taco-border rounded-xl p-6 text-center text-[14px] text-taco-muted">
               Memuat…
+            </div>
+          ) : error ? (
+            <div className="bg-white border border-taco-border rounded-xl p-6 text-center">
+              <div className="text-[14px] text-taco-error">
+                Gagal memuat: {error}
+              </div>
+              <button
+                type="button"
+                onClick={() => load()}
+                className="mt-3 text-[13px] text-taco-accent font-medium"
+              >
+                Coba lagi
+              </button>
             </div>
           ) : filtered.length === 0 ? (
             <div className="bg-white border border-taco-border rounded-xl p-6 text-center text-[14px] text-taco-muted">

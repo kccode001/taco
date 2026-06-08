@@ -878,18 +878,30 @@ export const getTaroInvoices = (params?: Record<string, string>) =>
 export const getTaroInvoice = (id: string) =>
   api.get<TaroInvoiceDetail>(`/taro-invoices/${id}`);
 
-export const bulkUploadTaroInvoices = (files: File[], regionId?: string) => {
+export const bulkUploadTaroInvoices = (
+  files: File[],
+  regionId?: string,
+  storeName?: string
+) => {
   const form = new FormData();
   files.forEach((f) => form.append("files", f));
   if (regionId) form.append("region_id", regionId);
-  return api.post<{ uploaded: number; invoice_ids?: string[] }>(
-    "/taro-invoices/bulk-upload",
-    form,
-    {
-      headers: { "Content-Type": "multipart/form-data" },
-      timeout: 180_000,
-    }
-  );
+  if (storeName) form.append("store_name", storeName);
+  // BE returns Array<{id, file_name, status, region_id, store_name}> — newer
+  // shape — and the older shape was {uploaded, invoice_ids}. Caller normalizes.
+  return api.post<
+    | { uploaded: number; invoice_ids?: string[] }
+    | Array<{
+        id: string;
+        file_name: string;
+        status: string;
+        region_id: string | null;
+        store_name: string | null;
+      }>
+  >("/taro-invoices/bulk-upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 180_000,
+  });
 };
 
 // Regions / hierarchical ASM areas. Core ships GET /api/regions/areas

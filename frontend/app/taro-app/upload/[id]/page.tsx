@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { AxiosError } from "axios";
 import {
   getTacoSkus,
   getTaroInvoice,
@@ -13,6 +14,7 @@ import { TopBar } from "../../_components/TopBar";
 import { BottomNav } from "../../_components/BottomNav";
 import { useTaroGuard } from "../../_components/useTaroGuard";
 import {
+  CheckIcon,
   ChevronLeftIcon,
   CloseIcon,
   PencilIcon,
@@ -20,11 +22,6 @@ import {
   SearchIcon,
   StoreIcon,
 } from "../../_components/icons";
-import {
-  MOCK_INVOICE_DETAIL,
-  confidenceTone,
-  formatIdr,
-} from "@/app/admin/taro-invoices/_components/mockData";
 
 interface TacoSkuRow {
   id: string;
@@ -33,10 +30,21 @@ interface TacoSkuRow {
   category: string;
 }
 
-function fallback(id: string): TaroInvoiceDetail {
-  const cached = MOCK_INVOICE_DETAIL[id];
-  if (cached) return cached;
-  return Object.values(MOCK_INVOICE_DETAIL)[0];
+function confidenceTone(
+  c: number
+): { tone: "ok" | "warn" | "err"; label: string; dot: string } {
+  if (c >= 0.85) return { tone: "ok", label: "Yakin", dot: "#1D9E75" };
+  if (c >= 0.7) return { tone: "warn", label: "Perlu Cek", dot: "#E07B00" };
+  return { tone: "err", label: "Perlu Review", dot: "#D0342C" };
+}
+
+function formatIdr(value?: number | null) {
+  if (value == null) return "—";
+  return new Intl.NumberFormat("id-ID", {
+    style: "currency",
+    currency: "IDR",
+    maximumFractionDigits: 0,
+  }).format(value);
 }
 
 function timeFmt(iso: string) {
@@ -52,25 +60,44 @@ function timeFmt(iso: string) {
   }
 }
 
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof AxiosError) {
+    const data = err.response?.data as { message?: string | string[] } | undefined;
+    const msg = data?.message;
+    if (Array.isArray(msg)) return msg.join(", ");
+    if (typeof msg === "string") return msg;
+    if (err.message) return err.message;
+  }
+  if (err instanceof Error) return err.message;
+  return "Terjadi kesalahan tidak diketahui.";
+}
+
 export default function TaroUploadReviewPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
   const { ready } = useTaroGuard();
   const [invoice, setInvoice] = useState<TaroInvoiceDetail | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<TaroInvoiceLine | null>(null);
 
   const refetch = useCallback(async () => {
     if (!id) return;
+    setLoading(true);
+    setLoadError(null);
     try {
       const res = await getTaroInvoice(id);
-      if (res.data && (res.data as TaroInvoiceDetail).id) {
-        setInvoice(res.data as TaroInvoiceDetail);
-        return;
+      const data = res.data as TaroInvoiceDetail | null;
+      if (data && data.id) {
+        setInvoice(data);
+      } else {
+        setLoadError("Invoice tidak ditemukan.");
       }
-      setInvoice(fallback(id));
-    } catch {
-      setInvoice(fallback(id));
+    } catch (err) {
+      setLoadError(extractErrorMessage(err));
+    } finally {
+      setLoading(false);
     }
   }, [id]);
 
@@ -78,6 +105,21 @@ export default function TaroUploadReviewPage() {
     if (!ready) return;
     refetch();
   }, [ready, refetch]);
+
+  // Poll while invoice is still processing so the review page reveals lines
+  // the moment the OCR worker finishes.
+  useEffect(() => {
+    if (!ready || !invoice) return;
+    const stillRunning =
+      invoice.status === "pending" ||
+      invoice.status === "processing" ||
+      (invoice.status as string) === "queued" ||
+      (invoice.status as string) === "ocr" ||
+      (invoice.status as string) === "mapping";
+    if (!stillRunning) return;
+    const t = window.setTimeout(refetch, 3000);
+    return () => window.clearTimeout(t);
+  }, [ready, invoice, refetch]);
 
   const summary = useMemo(() => {
     if (!invoice) return { yakin: 0, perluCek: 0, perluReview: 0, total: 0 };
@@ -107,7 +149,7 @@ export default function TaroUploadReviewPage() {
     );
   };
 
-  if (!ready || !invoice) {
+  if (!ready || (loading && !invoice)) {
     return (
       <div className="min-h-screen bg-taco-page flex items-center justify-center text-[13px] text-taco-muted">
         Memuat invoice…
@@ -115,13 +157,56 @@ export default function TaroUploadReviewPage() {
     );
   }
 
+  if (loadError || !invoice) {
+    return (
+      <div className="min-h-screen bg-taco-page flex flex-col">
+        <div className="phone-shell flex flex-col min-h-screen pb-[96px]">
+          <TopBar title="Invoice" />
+          <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+            <div className="text-[15px] font-semibold text-taco-error">
+              Gagal memuat invoice
+            </div>
+            <div className="text-[13px] text-taco-sub mt-1 max-w-[280px]">
+              {loadError ?? "Tidak ada data."}
+            </div>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-4 px-4 py-2 rounded-lg bg-taco-text text-white text-[14px] font-medium"
+            >
+              Coba lagi
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push("/taro-app/home")}
+              className="mt-2 text-[13px] text-taco-sub"
+            >
+              Kembali ke Beranda
+            </button>
+          </div>
+        </div>
+        <BottomNav />
+      </div>
+    );
+  }
+
   const lines = invoice.line_items ?? [];
+  const status = invoice.status as string;
+  const isDone = status === "done";
+  const isProcessing =
+    status === "pending" ||
+    status === "processing" ||
+    status === "queued" ||
+    status === "ocr" ||
+    status === "mapping";
+  const isFailed = status === "failed";
+  const isNeedsReview = status === "needs_review";
 
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
       <div className="phone-shell flex flex-col min-h-screen pb-[96px]">
         <TopBar
-          title={`Invoice ${invoice.short_id}`}
+          title={`Invoice ${invoice.short_id ?? ""}`}
           right={
             <button
               type="button"
@@ -134,8 +219,31 @@ export default function TaroUploadReviewPage() {
           }
         />
 
+        {/* Status banners */}
+        {isDone && (
+          <div className="mx-4 mt-3 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2.5 flex items-start gap-2">
+            <span className="text-taco-success mt-0.5">
+              <CheckIcon size={16} />
+            </span>
+            <div className="text-[12px] text-taco-text leading-relaxed">
+              Invoice ini sudah diproses pada {timeFmt(invoice.uploaded_at)}.
+              Edit baris masih bisa dilakukan.
+            </div>
+          </div>
+        )}
+        {isProcessing && (
+          <div className="mx-4 mt-3 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 text-[12px] text-taco-info">
+            Invoice sedang diproses oleh OCR. Hasil akan muncul otomatis.
+          </div>
+        )}
+        {isFailed && (
+          <div className="mx-4 mt-3 bg-red-50 border border-red-100 rounded-xl px-3 py-2.5 text-[12px] text-taco-error">
+            OCR gagal memproses invoice ini. Coba upload ulang.
+          </div>
+        )}
+
         {/* Invoice meta */}
-        <div className="bg-white border-b border-taco-divider px-4 py-3">
+        <div className="bg-white border-b border-taco-divider px-4 py-3 mt-3">
           <div className="flex items-start gap-3">
             <div className="w-14 h-14 rounded-lg bg-taco-page border border-taco-border flex items-center justify-center text-taco-muted flex-shrink-0">
               {invoice.image_url ? (
@@ -194,7 +302,9 @@ export default function TaroUploadReviewPage() {
           </div>
           {lines.length === 0 ? (
             <div className="bg-white border border-taco-border rounded-xl p-5 text-center text-[14px] text-taco-muted">
-              Belum ada baris terdeteksi.
+              {isProcessing
+                ? "Menunggu hasil OCR…"
+                : "Belum ada baris terdeteksi."}
             </div>
           ) : (
             <div className="flex flex-col gap-2">
@@ -271,15 +381,50 @@ export default function TaroUploadReviewPage() {
           )}
         </section>
 
-        {/* Inline finish CTA — page-level so it scrolls with content */}
+        {/* Bottom CTA — status-aware */}
         <div className="px-4 pt-5">
-          <button
-            type="button"
-            onClick={() => router.push("/taro-app/home")}
-            className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors"
-          >
-            Selesai
-          </button>
+          {isDone ? (
+            <button
+              type="button"
+              disabled
+              className="w-full min-h-[52px] rounded-xl bg-taco-page text-taco-success border border-emerald-200 font-semibold text-[16px] flex items-center justify-center gap-2"
+            >
+              <CheckIcon size={18} />
+              <span>Sudah Selesai</span>
+            </button>
+          ) : isProcessing ? (
+            <button
+              type="button"
+              disabled
+              className="w-full min-h-[52px] rounded-xl bg-taco-page text-taco-info border border-blue-100 font-semibold text-[16px]"
+            >
+              Memproses…
+            </button>
+          ) : isFailed ? (
+            <button
+              type="button"
+              onClick={() => router.push("/taro-app/upload")}
+              className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors"
+            >
+              Upload Ulang
+            </button>
+          ) : isNeedsReview ? (
+            <button
+              type="button"
+              onClick={() => router.push("/taro-app/home")}
+              className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors"
+            >
+              Selesai
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => router.push("/taro-app/home")}
+              className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors"
+            >
+              Selesai
+            </button>
+          )}
         </div>
       </div>
 
@@ -335,6 +480,7 @@ function EditLineSheet({
   );
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -348,40 +494,8 @@ function EditLineSheet({
           const cur = data.find((s) => s.id === line.matched_sku_id);
           if (cur) setSelectedSku(cur);
         }
-      } catch {
-        // Inline minimal fallback so dropdown shows something.
-        setSkus([
-          {
-            id: "fallback-1",
-            code: "TH-001-12-MAP",
-            name: "TACO HPL Maple Solid 12mm",
-            category: "HPL",
-          },
-          {
-            id: "fallback-2",
-            code: "TI-008-3-WAL",
-            name: "TIero HPL Walnut Premium 3mm",
-            category: "HPL",
-          },
-          {
-            id: "fallback-3",
-            code: "ES-002-3-NTR",
-            name: "ECO HPL Natural Oak 3mm",
-            category: "ECO_HPL",
-          },
-          {
-            id: "fallback-4",
-            code: "TE-2MM-W",
-            name: "TACO Edging ABS 2mm Walnut",
-            category: "EDGING",
-          },
-          {
-            id: "fallback-5",
-            code: "FD-MDF-9MM",
-            name: "FIDECO MDF 9mm 1220x2440",
-            category: "SHEET",
-          },
-        ]);
+      } catch (err) {
+        setError(`Tidak bisa memuat daftar SKU: ${extractErrorMessage(err)}`);
       }
     })();
   }, [line.matched_sku_id]);
@@ -404,15 +518,12 @@ function EditLineSheet({
   const handleSave = async () => {
     if (!selectedSku || !canSave) return;
     setBusy(true);
+    setError(null);
     try {
-      try {
-        await updateTaroLineItem(line.id, {
-          matched_sku_id: selectedSku.id,
-          ...(skuChanged ? { reason: reason.trim() } : {}),
-        });
-      } catch {
-        /* swallow — mock-friendly */
-      }
+      await updateTaroLineItem(line.id, {
+        matched_sku_id: selectedSku.id,
+        ...(skuChanged ? { reason: reason.trim() } : {}),
+      });
       onSaved({
         ...line,
         matched_sku_id: selectedSku.id,
@@ -422,6 +533,8 @@ function EditLineSheet({
         quantity: Number(quantity) || line.quantity,
         unit_price: Number(price) || line.unit_price,
       });
+    } catch (err) {
+      setError(`Gagal menyimpan: ${extractErrorMessage(err)}`);
     } finally {
       setBusy(false);
     }
@@ -445,6 +558,12 @@ function EditLineSheet({
         </div>
 
         <div className="px-4 py-4 overflow-y-auto flex-1 space-y-4">
+          {error && (
+            <div className="text-[12px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+
           <div className="bg-taco-page border border-taco-divider rounded-lg p-3">
             <div className="text-[11px] uppercase tracking-wider text-taco-muted font-semibold">
               Teks OCR

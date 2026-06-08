@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AxiosError } from "axios";
 import { useAuthStore } from "@/lib/store";
 import {
   bulkUploadTaroInvoices,
@@ -71,6 +72,21 @@ function writeDraft(d: DraftState | null) {
   }
 }
 
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof AxiosError) {
+    const data = err.response?.data as
+      | { message?: string | string[]; error?: string }
+      | undefined;
+    const msg = data?.message;
+    if (Array.isArray(msg)) return msg.join(", ");
+    if (typeof msg === "string") return msg;
+    if (data?.error) return data.error;
+    if (err.message) return err.message;
+  }
+  if (err instanceof Error) return err.message;
+  return "Terjadi kesalahan tidak diketahui.";
+}
+
 export default function TaroUploadPage() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
@@ -112,11 +128,14 @@ export default function TaroUploadPage() {
     [step, storeName, uploadIds, fileNames]
   );
 
-  // Poll progress while step 3.
+  // Poll real BE progress while step 3.
   useEffect(() => {
     if (step !== 3 || uploadIds.length === 0) return;
     let alive = true;
     let timer: number | undefined;
+    // Drop synthetic local-* placeholder IDs from the polling set — those came
+    // from a partial upload failure path and never get a real BE row.
+    const realIds = uploadIds.filter((id) => !id.startsWith("local-"));
 
     async function tick() {
       try {
@@ -124,74 +143,69 @@ export default function TaroUploadPage() {
         const data =
           ((res.data as { data?: TaroInProgressUpload[] })?.data ??
             (res.data as TaroInProgressUpload[])) ?? [];
-        // Filter to our IDs only.
-        const ours = data.filter((d) => uploadIds.includes(d.id));
+
+        // The /uploads/in-progress endpoint only returns rows still in
+        // queued/processing — when a row finishes (done/failed) it disappears.
+        // So: any of our IDs missing from the response is treated as done.
+        const byId = new Map(data.map((d) => [d.id, d]));
+        const merged: TaroInProgressUpload[] = realIds.map((id, idx) => {
+          const live = byId.get(id);
+          if (live) {
+            return {
+              ...live,
+              stage_label: live.stage_label ?? STAGE_LABEL[live.status],
+            };
+          }
+          // Not in the active set anymore → finished.
+          return {
+            id,
+            file_name: fileNames[idx] ?? `Invoice ${idx + 1}`,
+            region_id: user?.region_id ?? null,
+            region_display: user?.region_display ?? null,
+            status: "done" as TaroProgressStage,
+            progress_percent: 100,
+            stage_label: STAGE_LABEL.done,
+            uploaded_at: new Date().toISOString(),
+          };
+        });
+
         if (!alive) return;
-        if (ours.length > 0) {
-          setProgress(ours);
-          const stillRunning = ours.some(
-            (r) =>
-              r.status === "queued" ||
-              r.status === "processing" ||
-              r.status === "ocr" ||
-              r.status === "mapping"
-          );
-          if (stillRunning) timer = window.setTimeout(tick, 2500);
-          else handleAllDone(ours);
+        setProgress(merged);
+
+        const stillRunning = merged.some(
+          (r) =>
+            r.status === "queued" ||
+            r.status === "processing" ||
+            r.status === "ocr" ||
+            r.status === "mapping"
+        );
+        if (stillRunning) {
+          timer = window.setTimeout(tick, 3000);
         } else {
-          // BE not reporting — simulate forward progress.
-          simulateProgress();
+          handleAllDone(merged);
         }
-      } catch {
-        simulateProgress();
+      } catch (err) {
+        if (!alive) return;
+        setError(`Tidak bisa cek status: ${extractErrorMessage(err)}`);
+        // Keep polling — BE may recover.
+        timer = window.setTimeout(tick, 5000);
       }
     }
 
-    function simulateProgress() {
-      const sim: TaroInProgressUpload[] = uploadIds.map((id, idx) => {
-        const ageSec =
-          (Date.now() - new Date(readDraft()?.startedAt ?? Date.now()).getTime()) /
-            1000 +
-          idx * 0.5;
-        let pct = Math.min(98, Math.round(15 + ageSec * 10));
-        let status: TaroProgressStage = "processing";
-        if (ageSec < 1.5) {
-          status = "queued";
-          pct = Math.min(20, pct);
-        } else if (ageSec < 4) {
-          status = "ocr";
-        } else if (ageSec < 8) {
-          status = "mapping";
-        } else {
-          status = "done";
-          pct = 100;
-        }
-        return {
-          id,
-          file_name: fileNames[idx] ?? `invoice_${idx + 1}.jpg`,
-          region_id: user?.region_id ?? null,
-          region_display: user?.region_display ?? null,
-          status,
-          progress_percent: pct,
-          stage_label: STAGE_LABEL[status],
-          uploaded_at: new Date(Date.now() - ageSec * 1000).toISOString(),
-        };
-      });
-      setProgress(sim);
-      const anyRunning = sim.some(
-        (s) => s.status !== "done" && s.status !== "failed"
-      );
-      if (anyRunning) timer = window.setTimeout(tick, 2000);
-      else handleAllDone(sim);
-    }
-
     function handleAllDone(rows: TaroInProgressUpload[]) {
-      // All done — clear draft, redirect to first invoice review.
       writeDraft(null);
-      const firstId = rows[0]?.id ?? uploadIds[0];
+      const firstDone = rows.find((r) => r.status === "done");
+      const firstId = firstDone?.id ?? rows[0]?.id ?? realIds[0];
+      if (!firstId) return;
       window.setTimeout(() => {
         if (alive) router.push(`/taro-app/upload/${firstId}`);
       }, 800);
+    }
+
+    if (realIds.length === 0) {
+      // Nothing real to poll — surface the error state and let the user retry.
+      setError("Upload tidak menghasilkan invoice. Coba lagi.");
+      return;
     }
 
     tick();
@@ -204,14 +218,14 @@ export default function TaroUploadPage() {
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const list = Array.from(files).filter((f) => ACCEPTED.includes(f.type));
-    const items: QueueItem[] = list.slice(0, 5).map((f) => ({
+    const items: QueueItem[] = list.map((f) => ({
       id: `${f.name}-${f.size}-${Date.now()}-${Math.random()
         .toString(36)
         .slice(2, 6)}`,
       file: f,
       thumbnail: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
     }));
-    setQueue((q) => [...q, ...items].slice(0, 5));
+    setQueue((q) => [...q, ...items]);
     setError(null);
   }, []);
 
@@ -232,35 +246,52 @@ export default function TaroUploadPage() {
     }
     setSubmitting(true);
     setError(null);
-    let ids: string[] = [];
     try {
       const res = await bulkUploadTaroInvoices(
         queue.map((q) => q.file),
-        user?.region_id ?? undefined
+        user?.region_id ?? undefined,
+        storeName.trim()
       );
-      ids = res.data?.invoice_ids ?? [];
-    } catch {
-      ids = [];
+      const payload = res.data as unknown;
+      // BE returns an array of {id, file_name, status, region_id, store_name}
+      // — older shape returned {invoice_ids: []}. Support both.
+      let ids: string[] = [];
+      if (Array.isArray(payload)) {
+        ids = (payload as Array<{ id?: string }>)
+          .map((r) => r?.id)
+          .filter((x): x is string => !!x);
+      } else if (payload && typeof payload === "object") {
+        const obj = payload as { invoice_ids?: string[]; data?: Array<{ id?: string }> };
+        if (Array.isArray(obj.invoice_ids)) ids = obj.invoice_ids;
+        else if (Array.isArray(obj.data))
+          ids = obj.data
+            .map((r) => r?.id)
+            .filter((x): x is string => !!x);
+      }
+
+      if (ids.length === 0) {
+        throw new Error(
+          "Server menerima upload tapi tidak mengembalikan ID invoice."
+        );
+      }
+
+      const names = queue.map((q) => q.file.name);
+      const startedAt = new Date().toISOString();
+      setUploadIds(ids);
+      setFileNames(names);
+      setStep(3);
+      writeDraft({
+        step: 3,
+        storeName,
+        uploadIds: ids,
+        fileNames: names,
+        startedAt,
+      });
+    } catch (err) {
+      setError(`Upload gagal: ${extractErrorMessage(err)}. Coba lagi.`);
+    } finally {
+      setSubmitting(false);
     }
-    if (ids.length < queue.length) {
-      const extra = queue
-        .slice(ids.length)
-        .map((q) => `local-${q.id}`);
-      ids = [...ids, ...extra];
-    }
-    const names = queue.map((q) => q.file.name);
-    const startedAt = new Date().toISOString();
-    setUploadIds(ids);
-    setFileNames(names);
-    setStep(3);
-    writeDraft({
-      step: 3,
-      storeName,
-      uploadIds: ids,
-      fileNames: names,
-      startedAt,
-    });
-    setSubmitting(false);
   };
 
   const removeItem = (id: string) =>
@@ -407,7 +438,7 @@ export default function TaroUploadPage() {
             </div>
 
             <div className="text-[13px] font-medium text-taco-sub mb-1.5">
-              Foto Invoice ({queue.length}/5)
+              Foto Invoice ({queue.length} foto)
             </div>
 
             {/* Picker tiles */}
@@ -415,8 +446,7 @@ export default function TaroUploadPage() {
               <button
                 type="button"
                 onClick={() => cameraRef.current?.click()}
-                disabled={queue.length >= 5}
-                className="min-h-[110px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page disabled:opacity-40"
+                className="min-h-[110px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page"
               >
                 <CameraIcon size={28} />
                 <span className="text-[13px] font-medium">Ambil Foto</span>
@@ -424,8 +454,7 @@ export default function TaroUploadPage() {
               <button
                 type="button"
                 onClick={() => inputRef.current?.click()}
-                disabled={queue.length >= 5}
-                className="min-h-[110px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page disabled:opacity-40"
+                className="min-h-[110px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page"
               >
                 <PlusIcon size={28} />
                 <span className="text-[13px] font-medium">Pilih dari Galeri</span>
@@ -573,7 +602,7 @@ export default function TaroUploadPage() {
             </div>
 
             <div className="mt-3 text-[12px] text-taco-muted text-center">
-              Biasanya selesai dalam 5–10 detik per foto. Anda boleh tutup
+              Biasanya selesai dalam 10–30 detik per foto. Anda boleh tutup
               halaman — kami simpan progresnya.
             </div>
 

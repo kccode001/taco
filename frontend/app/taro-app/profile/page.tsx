@@ -7,7 +7,6 @@ import { getTaroInvoices, type TaroInvoiceSummary } from "@/lib/api";
 import { TopBar } from "../_components/TopBar";
 import { BottomNav } from "../_components/BottomNav";
 import { useTaroGuard } from "../_components/useTaroGuard";
-import { MOCK_AGENT_UPLOADS } from "../_components/mockUploads";
 
 function initials(name?: string): string {
   if (!name) return "T";
@@ -43,9 +42,9 @@ export default function TaroProfilePage() {
       const data =
         ((res.data as { data?: TaroInvoiceSummary[] })?.data ??
           (res.data as TaroInvoiceSummary[])) ?? [];
-      rows = data.length ? data : MOCK_AGENT_UPLOADS;
+      rows = data;
     } catch {
-      rows = MOCK_AGENT_UPLOADS;
+      rows = [];
     }
     const now = new Date();
     const y = now.getFullYear();

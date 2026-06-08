@@ -108,7 +108,15 @@ export default function TaroInvoiceUploadPage() {
         pending.map((p) => p.file),
         regionId
       );
-      invoiceIds = res.data?.invoice_ids ?? [];
+      const payload = res.data as unknown;
+      if (Array.isArray(payload)) {
+        invoiceIds = (payload as Array<{ id?: string }>)
+          .map((r) => r?.id)
+          .filter((x): x is string => !!x);
+      } else if (payload && typeof payload === "object") {
+        const obj = payload as { invoice_ids?: string[] };
+        invoiceIds = obj.invoice_ids ?? [];
+      }
     } catch {
       liveBackend = false;
       // BE bulk-upload not ready — mint client-side ids so progress cards still
