@@ -278,7 +278,6 @@ export default function TaroAgentsPage() {
     <>
       <CrudShell
         title="Taro Sales Agent"
-        description={`${agents.length} agent · multi-wilayah ASM didukung`}
         addLabel="+ Tambah Agent"
         onAdd={() => setModal({ open: true })}
         searchPlaceholder="Cari nama, email, atau wilayah…"

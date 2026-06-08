@@ -51,23 +51,23 @@ function AlertCircleIcon({ size = 16, className = "" }: { size?: number; classNa
 
 const TARO_SECTIONS: NavSection[] = [
   {
-    label: "Overview",
+    // No label = no group header (matches existing Overview pattern).
     items: [
       { href: "/taro/dashboard", label: "Dashboard", icon: Home as IconCmp },
     ],
   },
   {
-    label: "Produk & Koreksi",
+    label: "Operasional",
     items: [
-      { href: "/taro/taco-skus", label: "TACO SKU", icon: PackageIcon },
-      { href: "/taro/recommendations", label: "Rekomendasi", icon: LightbulbIcon },
+      { href: "/taro/invoices", label: "Daftar Invoice", icon: FileTextIcon, exact: true },
       { href: "/taro/failed-ocr", label: "OCR Gagal", icon: AlertCircleIcon },
     ],
   },
   {
-    label: "Invoice & Agen",
+    label: "Master & Pengaturan",
     items: [
-      { href: "/taro/invoices", label: "Daftar Invoice", icon: FileTextIcon, exact: true },
+      { href: "/taro/taco-skus", label: "TACO SKU", icon: PackageIcon },
+      { href: "/taro/recommendations", label: "Rekomendasi", icon: LightbulbIcon },
       { href: "/taro/agents", label: "Sales Agent", icon: UsersIcon },
     ],
   },
@@ -154,18 +154,11 @@ export function TaroDashboardLayout({ children }: { children: React.ReactNode })
             alt="TACO"
             className="h-7"
           />
-          <Link
-            href="/dashboard"
-            className="mt-3 inline-flex items-center gap-1.5 text-[12px] text-taco-sub hover:text-taco-text"
-          >
-            <span aria-hidden>←</span>
-            <span>Kembali ke TACO Dashboard</span>
-          </Link>
         </div>
 
         <nav className="flex-1 py-2 overflow-y-auto">
-          {TARO_SECTIONS.map((group) => (
-            <div key={group.label} className="mb-2">
+          {TARO_SECTIONS.map((group, gi) => (
+            <div key={group.label ?? `__group-${gi}`} className="mb-2">
               {group.label && (
                 <div className="px-5 pt-4 pb-2 text-[10px] font-semibold text-taco-muted uppercase tracking-[0.1em]">
                   {group.label}

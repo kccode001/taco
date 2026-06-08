@@ -1,12 +1,11 @@
 "use client";
 
 import {
-  Badge,
   EmptyRow,
   RowActions,
   TableHeader,
 } from "../../_components/CrudShell";
-import { PRODUCT_LINES, type ProductLineSlug } from "../../_components/constants";
+import type { ProductLineSlug } from "../../_components/constants";
 
 export interface TacoSkuRow {
   id: string;
@@ -32,10 +31,6 @@ export interface TacoSkuRow {
   unit_aliases?: string[] | string;
   /** FE alias / mock seed key. Maps onto `unit_aliases` for the BE. */
   unit_synonyms?: string[] | string;
-}
-
-function lineLabel(slug?: string) {
-  return PRODUCT_LINES.find((p) => p.slug === slug)?.label ?? "—";
 }
 
 function formatIdr(value?: number) {
@@ -71,16 +66,14 @@ export function SkuTable({
           "Kategori",
           "UOM",
           "Harga",
-          "Embedding",
           "Aksi",
         ]}
       />
       <tbody>
         {rows.length === 0 ? (
-          <EmptyRow colSpan={7} label="Tidak ada SKU yang cocok dengan filter." />
+          <EmptyRow colSpan={6} label="Tidak ada SKU yang cocok dengan filter." />
         ) : (
           rows.map((s) => {
-            const status = s.embedding_status ?? (s.embedded ? "done" : "pending");
             // Prefer BE canonical (`product_name_aliases`, `unit_aliases`,
             // `avg_price`); fall back to FE aliases used by mocks.
             const synonyms = normalizeList(s.product_name_aliases ?? s.synonyms);
@@ -96,9 +89,6 @@ export function SkuTable({
                 </td>
                 <td className="px-4 py-3 text-[14px] text-taco-text max-w-[280px] align-top">
                   <div className="truncate font-medium">{s.name}</div>
-                  <div className="text-[11px] text-taco-muted mt-0.5">
-                    {lineLabel(s.product_line)}
-                  </div>
                   {synonyms.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                       {synonyms.slice(0, 4).map((syn) => (
@@ -159,15 +149,6 @@ export function SkuTable({
                       {formatIdr(avg ?? s.min_price)}
                     </div>
                   )}
-                </td>
-                <td className="px-4 py-3 align-top">
-                  <Badge tone={status === "done" ? "ok" : status === "failed" ? "err" : "muted"}>
-                    {status === "done"
-                      ? "Diindeks"
-                      : status === "failed"
-                        ? "Gagal"
-                        : "Menunggu"}
-                  </Badge>
                 </td>
                 <td className="px-4 py-3 align-top">
                   <RowActions

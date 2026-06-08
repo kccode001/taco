@@ -731,7 +731,7 @@ export interface TaroInvoiceDetail extends TaroInvoiceSummary {
 
 export interface TaroRecommendation {
   id: string;
-  type: "synonym" | "new_sku" | "mapping_rule" | "update_sku_knowledge" | "investigate_competitor";
+  type: "synonym" | "new_sku" | "mapping_rule" | "update_sku_knowledge" | "investigate_competitor" | "add_synonym" | "create_sku";
   title: string;
   body: string;
   status: "pending" | "applied" | "rejected";
@@ -747,6 +747,16 @@ export interface TaroRecommendation {
     raw_text?: string;
     occurrence_count?: number;
     regions?: string[];
+  };
+  /** BE canonical jsonb column for apply-time data (sku_id, synonym, rule_text, etc). */
+  suggested_payload?: {
+    sku_id?: string;
+    synonym?: string;
+    rule_text?: string;
+    raw_text?: string;
+    suggested_synonyms?: string[];
+    existing_sku?: { code?: string; name?: string };
+    [key: string]: unknown;
   };
 }
 

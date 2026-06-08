@@ -14,7 +14,9 @@ import { MOCK_RECOMMENDATIONS } from "../_components/mockData";
 
 const TYPE_LABEL: Record<TaroRecommendation["type"], string> = {
   synonym: "Tambah Sinonim",
+  add_synonym: "Tambah Sinonim",
   new_sku: "Buat SKU Baru",
+  create_sku: "Buat SKU Baru",
   mapping_rule: "Aturan Mapping",
   update_sku_knowledge: "Update Product Knowledge",
   investigate_competitor: "Investigasi Kompetitor",
@@ -22,7 +24,9 @@ const TYPE_LABEL: Record<TaroRecommendation["type"], string> = {
 
 const TYPE_TONE: Record<TaroRecommendation["type"], "info" | "ok" | "warn" | "err"> = {
   synonym: "info",
+  add_synonym: "info",
   new_sku: "ok",
+  create_sku: "ok",
   mapping_rule: "warn",
   update_sku_knowledge: "ok",
   investigate_competitor: "err",

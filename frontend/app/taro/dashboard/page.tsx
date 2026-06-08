@@ -200,10 +200,6 @@ export default function TaroDashboardOverviewPage() {
           <h1 className="text-[20px] font-bold text-taco-text leading-tight">
             Taro Dashboard
           </h1>
-          <p className="text-[13px] text-taco-sub mt-1">
-            Produk apa yang populer, apa yang sedang tren, dan apa yang dijual
-            tapi belum ada di katalog TACO.
-          </p>
         </div>
         <Link
           href="/taro/invoices/upload"

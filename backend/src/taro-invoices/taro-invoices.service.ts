@@ -231,7 +231,15 @@ export class TaroInvoicesService {
             'Recommendation payload is missing required keys sku_id/synonym',
           );
         }
-        const sku = await this.skusRepo.findOne({ where: { id: payload.sku_id } });
+        // The recommendation generator sometimes stores the SKU `code`
+        // (e.g. "TH 701 CR") in `sku_id` instead of the UUID. Try UUID first;
+        // fall back to a lookup by code so existing seed data still applies
+        // cleanly. The TacoSku entity has a UNIQUE constraint on `code` so the
+        // resolution is deterministic.
+        const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const sku = uuidRe.test(payload.sku_id)
+          ? await this.skusRepo.findOne({ where: { id: payload.sku_id } })
+          : await this.skusRepo.findOne({ where: { code: payload.sku_id } });
         if (!sku) throw new NotFoundException(`TacoSku ${payload.sku_id} not found`);
         const synonyms = sku.product_name_aliases ?? [];
         const next = synonyms.includes(payload.synonym)
@@ -295,7 +303,11 @@ export class TaroInvoicesService {
           .map((s) => s.trim())
           .filter((s) => s.length > 0);
 
-        const sku = await this.skusRepo.findOne({ where: { id: payload.sku_id } });
+        // Same fallback as ADD_SYNONYM — generator may store the code, not UUID.
+        const uuidReKnowledge = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const sku = uuidReKnowledge.test(payload.sku_id)
+          ? await this.skusRepo.findOne({ where: { id: payload.sku_id } })
+          : await this.skusRepo.findOne({ where: { code: payload.sku_id } });
         if (!sku) throw new NotFoundException(`TacoSku ${payload.sku_id} not found`);
         const existing = sku.product_name_aliases ?? [];
         // Dedupe case-insensitively against the existing list AND within the

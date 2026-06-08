@@ -324,12 +324,8 @@ export default function FailedOcrPage() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-[20px] font-bold text-taco-text leading-tight">
-            OCR Gagal — Apa yang Terjadi di Lapangan
+            OCR Gagal
           </h1>
-          <p className="text-[13px] text-taco-sub mt-1 max-w-[640px]">
-            Pengamatan dari upload sales agent. Mapping dilakukan oleh agent di
-            aplikasi PWA — halaman ini hanya untuk memantau pola di lapangan.
-          </p>
         </div>
         <button
           onClick={handleCopyToRecommendations}

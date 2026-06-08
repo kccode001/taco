@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import { Badge } from "../../admin/_components/CrudShell";
 import { LightbulbIcon, SparkleIcon } from "../../admin/_components/icons";
+import { Modal } from "../../admin/_components/Modal";
 import { MOCK_RECOMMENDATIONS } from "../../admin/taro-invoices/_components/mockData";
 
 /** BE emits a wider set of `type` strings than the FE enum lists (e.g.
@@ -83,6 +84,75 @@ function sourceOf(rec: TaroRecommendation): SourceKey {
   return "admin_correction";
 }
 
+/** Build a human-readable confirm sentence from the recommendation type +
+ *  payload. Keeps the modal copy in lockstep with what the BE apply path
+ *  actually does (see backend taro-invoices.service.ts `applyRecommendation`). */
+function describeApply(rec: TaroRecommendation): React.ReactNode {
+  const p = (rec.suggested_payload ?? {}) as {
+    sku_id?: string;
+    synonym?: string;
+    rule_text?: string;
+    raw_text?: string;
+    suggested_synonyms?: string[];
+    existing_sku?: { code?: string; name?: string };
+  };
+  const legacy = rec.payload ?? {};
+  const sku = p.existing_sku ?? legacy.existing_sku ?? {};
+  const skuLabel =
+    sku.code || sku.name
+      ? `${sku.code ?? ""}${sku.code && sku.name ? " - " : ""}${sku.name ?? ""}`
+      : "SKU terkait";
+  const synonym = p.synonym ?? legacy.suggested_synonym ?? "";
+  switch (rec.type) {
+    case "add_synonym":
+    case "synonym":
+      return (
+        <>
+          Sinonim <b>&ldquo;{synonym}&rdquo;</b> akan ditambahkan ke SKU{" "}
+          <b>{skuLabel}</b>. SKU akan di-embed ulang.
+        </>
+      );
+    case "mapping_rule":
+      return (
+        <>
+          Aturan mapping baru akan disimpan:{" "}
+          <i>{p.rule_text ?? rec.body}</i>
+        </>
+      );
+    case "update_sku_knowledge": {
+      const list = (p.suggested_synonyms ?? []).join(", ");
+      return (
+        <>
+          Product knowledge untuk SKU <b>{sku.code ?? "—"}</b> akan
+          diperbarui dengan informasi: {list || "—"}
+        </>
+      );
+    }
+    case "investigate_competitor":
+      return (
+        <>
+          Rekomendasi ini akan ditandai untuk diinvestigasi sebagai produk
+          kompetitor potensial:{" "}
+          <i>&ldquo;{p.raw_text ?? legacy.raw_text ?? rec.title}&rdquo;</i>.
+          Sistem akan menyimpan catatan; tidak ada perubahan otomatis pada
+          katalog.
+        </>
+      );
+    case "create_sku":
+    case "new_sku":
+      return (
+        <>
+          Sistem belum mendukung pembuatan SKU otomatis (501). Akan menampilkan
+          pesan: silakan tambah SKU manual di TACO SKU.
+        </>
+      );
+    default:
+      return <>Lanjutkan menerapkan rekomendasi ini?</>;
+  }
+}
+
+type ConfirmKind = "apply" | "reject";
+
 export default function TaroRecommendationsPage() {
   const [status, setStatus] = useState<FilterStatus>("pending");
   const [source, setSource] = useState<SourceFilter>("all");
@@ -91,6 +161,10 @@ export default function TaroRecommendationsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [confirmState, setConfirmState] = useState<{
+    rec: TaroRecommendation;
+    kind: ConfirmKind;
+  } | null>(null);
 
   const showToast = (message: string, tone: "ok" | "err") => {
     const id = `t-${Date.now()}`;
@@ -151,44 +225,70 @@ export default function TaroRecommendationsPage() {
     }
   };
 
-  const handleAction = async (id: string, action: "apply" | "reject") => {
-    if (status !== "pending") return;
+  const confirmAction = async () => {
+    if (!confirmState) return;
+    const { rec, kind } = confirmState;
+    const id = rec.id;
+    if (status !== "pending") {
+      setConfirmState(null);
+      return;
+    }
     setBusyId(id);
-    const target = recs.find((r) => r.id === id);
-    if (!target) return;
 
-    setRecs((r) =>
-      r.map((rec) =>
-        rec.id === id
-          ? { ...rec, actedAs: action === "apply" ? "applied" : "rejected" }
-          : rec
-      )
-    );
-
-    let ok = true;
+    let ok = false;
+    let errMsg: string | null = null;
     try {
-      if (action === "apply") await applyTaroRecommendation(id);
-      else await rejectTaroRecommendation(id);
-    } catch {
-      ok = true; // optimistic in mock mode
+      if (kind === "apply") {
+        await applyTaroRecommendation(id);
+      } else {
+        await rejectTaroRecommendation(id);
+      }
+      ok = true;
+    } catch (e: unknown) {
+      // Surface BE message — including the 501 for create_sku / update_sku_knowledge
+      // so the admin sees the real "tidak didukung otomatis" guidance.
+      const err = e as {
+        response?: { status?: number; data?: { message?: string } };
+        message?: string;
+      };
+      const beMsg = err?.response?.data?.message;
+      const httpStatus = err?.response?.status;
+      if (httpStatus === 501 && beMsg) {
+        // 501 = explicitly-not-implemented (create_sku / update_sku_knowledge).
+        // Per spec: surface the BE message in a toast, leave card status alone.
+        errMsg = beMsg;
+        ok = false;
+      } else if (beMsg) {
+        errMsg = beMsg;
+        ok = false;
+      } else {
+        errMsg = err?.message ?? "Gagal — coba lagi.";
+        ok = false;
+      }
     }
 
     if (ok) {
+      // Optimistic fade — mirror old behavior so the card animates out.
+      setRecs((r) =>
+        r.map((rc) =>
+          rc.id === id
+            ? { ...rc, actedAs: kind === "apply" ? "applied" : "rejected" }
+            : rc
+        )
+      );
       window.setTimeout(() => {
-        setRecs((r) => r.filter((rec) => rec.id !== id));
+        setRecs((r) => r.filter((rc) => rc.id !== id));
         setBusyId((b) => (b === id ? null : b));
       }, 320);
       showToast(
-        action === "apply" ? "Rekomendasi diterapkan." : "Rekomendasi ditolak.",
+        kind === "apply" ? "Rekomendasi diterapkan" : "Rekomendasi ditolak",
         "ok"
       );
     } else {
-      setRecs((r) =>
-        r.map((rec) => (rec.id === id ? { ...rec, actedAs: undefined } : rec))
-      );
       setBusyId(null);
-      showToast("Gagal — coba lagi.", "err");
+      showToast(`Gagal: ${errMsg}`, "err");
     }
+    setConfirmState(null);
   };
 
   return (
@@ -198,15 +298,11 @@ export default function TaroRecommendationsPage() {
           <h1 className="text-[20px] font-bold text-taco-text leading-tight">
             Rekomendasi Sistem
           </h1>
-          <p className="text-[13px] text-taco-sub mt-1 max-w-[640px]">
-            Saran sinonim, SKU baru, aturan mapping, dan sinyal kompetitor —
-            berdasarkan koreksi admin + OCR gagal terbaru di lapangan.
-          </p>
         </div>
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
-          className="h-[40px] px-4 inline-flex items-center gap-2 bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-60"
+          className="h-[40px] px-4 inline-flex items-center gap-2 bg-taco-text text-white rounded-lg text-[13px] font-semibold hover:opacity-90 transition-colors disabled:opacity-60"
         >
           <SparkleIcon size={14} />
           {regenerating ? "Menganalisa koreksi + OCR gagal…" : "Regenerate"}
@@ -404,14 +500,14 @@ export default function TaroRecommendationsPage() {
                 {status === "pending" && (
                   <div className="flex items-center gap-2 pt-2 border-t border-taco-divider">
                     <button
-                      onClick={() => handleAction(rec.id, "apply")}
+                      onClick={() => setConfirmState({ rec, kind: "apply" })}
                       disabled={busyId === rec.id}
                       className="flex-1 h-[40px] border border-taco-text rounded-lg text-[13px] font-semibold text-taco-text hover:bg-taco-text hover:text-white transition-colors disabled:opacity-60"
                     >
                       Terapkan
                     </button>
                     <button
-                      onClick={() => handleAction(rec.id, "reject")}
+                      onClick={() => setConfirmState({ rec, kind: "reject" })}
                       disabled={busyId === rec.id}
                       className="flex-1 h-[40px] border border-taco-border rounded-lg text-[13px] font-medium text-taco-sub hover:text-taco-error hover:border-taco-error transition-colors disabled:opacity-60"
                     >
@@ -436,6 +532,51 @@ export default function TaroRecommendationsPage() {
         >
           {toast.message}
         </div>
+      )}
+
+      {confirmState && confirmState.kind === "apply" && (
+        <Modal
+          title="Terapkan Rekomendasi?"
+          onClose={() => (busyId ? null : setConfirmState(null))}
+          onSave={confirmAction}
+          saveLabel="Terapkan"
+          busy={busyId === confirmState.rec.id}
+        >
+          <div className="text-[14px] text-taco-text leading-relaxed">
+            {describeApply(confirmState.rec)}
+          </div>
+        </Modal>
+      )}
+
+      {confirmState && confirmState.kind === "reject" && (
+        <Modal
+          title="Tolak Rekomendasi?"
+          onClose={() => (busyId ? null : setConfirmState(null))}
+          busy={busyId === confirmState.rec.id}
+          footer={
+            <>
+              <button
+                onClick={() => setConfirmState(null)}
+                disabled={busyId === confirmState.rec.id}
+                className="flex-1 h-[44px] border border-taco-border rounded-lg text-[14px] font-medium text-taco-sub hover:text-taco-text disabled:opacity-60"
+              >
+                Batal
+              </button>
+              <button
+                onClick={confirmAction}
+                disabled={busyId === confirmState.rec.id}
+                className="flex-1 h-[44px] border border-taco-error rounded-lg text-[14px] font-semibold text-taco-error hover:bg-taco-error hover:text-white transition-colors disabled:opacity-60"
+              >
+                {busyId === confirmState.rec.id ? "Memproses…" : "Tolak"}
+              </button>
+            </>
+          }
+        >
+          <div className="text-[14px] text-taco-text leading-relaxed">
+            Yakin ingin menolak rekomendasi ini? Tidak ada perubahan yang akan
+            disimpan.
+          </div>
+        </Modal>
       )}
     </div>
   );

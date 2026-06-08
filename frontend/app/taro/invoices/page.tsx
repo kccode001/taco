@@ -213,10 +213,6 @@ export default function TaroInvoiceListPage() {
           <h1 className="text-[20px] font-bold text-taco-text leading-tight">
             Daftar Invoice Taro
           </h1>
-          <p className="text-[13px] text-taco-sub mt-1">
-            {invoices.length} invoice · {filtered.length} cocok dengan filter ·
-            klik baris untuk meninjau line items
-          </p>
         </div>
         <Link
           href="/taro/invoices/upload"

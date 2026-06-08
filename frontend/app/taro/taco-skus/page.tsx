@@ -32,11 +32,6 @@ const MOCK_SKUS: TacoSkuRow[] = [
   { id: "8", code: "FD-MDF-9MM", name: "FIDECO MDF 9mm 1220x2440", catalog_category: "FIDECO", product_line: "fideco", unit: "lembar", min_price: 145000, max_price: 165000, average_price: 155000, synonyms: ["MDF Fideco", "Fideco 9mm"], embedding_status: "pending" },
 ];
 
-function isEmbedded(s: TacoSkuRow): boolean {
-  if (s.embedding_status) return s.embedding_status === "done";
-  return !!s.embedded;
-}
-
 export default function TacoSkusPage() {
   const [skus, setSkus] = useState<TacoSkuRow[]>([]);
   const [search, setSearch] = useState("");
@@ -89,14 +84,6 @@ export default function TacoSkusPage() {
     });
   }, [skus, search, productLine, catalogCategory]);
 
-  // RAG / embedding status across the loaded catalog.
-  const ragStats = useMemo(() => {
-    const total = skus.length;
-    const embedded = skus.filter(isEmbedded).length;
-    const pct = total > 0 ? Math.round((embedded / total) * 100) : 0;
-    return { total, embedded, pct };
-  }, [skus]);
-
   const handleSave = async (payload: Record<string, unknown>) => {
     try {
       if (modal.row?.id) await updateTacoSku(modal.row.id, payload);
@@ -133,43 +120,19 @@ export default function TacoSkusPage() {
     <>
       <CrudShell
         title="Katalog SKU TACO"
-        description={`${skus.length} SKU · Drives OCR matching dan voice extraction`}
         addLabel="+ Tambah SKU"
         onAdd={() => setModal({ open: true })}
         searchPlaceholder="Cari kode, nama, atau sinonim…"
         searchValue={search}
         onSearchChange={setSearch}
         extraActions={
-          <>
-            <div
-              className="inline-flex items-center gap-2 h-[36px] px-3 border border-taco-border rounded-lg bg-white text-[12px]"
-              title="RAG embedding coverage"
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  ragStats.pct >= 80
-                    ? "bg-taco-success"
-                    : ragStats.pct >= 50
-                      ? "bg-taco-warning"
-                      : "bg-taco-error"
-                }`}
-              />
-              <span className="text-taco-sub">RAG</span>
-              <span className="text-taco-text font-semibold">
-                {ragStats.embedded}/{ragStats.total}
-              </span>
-              <span className="text-taco-muted">
-                ({ragStats.pct}%)
-              </span>
-            </div>
-            <button
-              onClick={() => setCsvOpen(true)}
-              className="flex items-center gap-1.5 h-[36px] px-3 border border-taco-border rounded-lg text-[13px] font-medium text-taco-sub hover:text-taco-text hover:border-taco-text bg-white"
-            >
-              <UploadIcon size={13} />
-              Impor CSV
-            </button>
-          </>
+          <button
+            onClick={() => setCsvOpen(true)}
+            className="flex items-center gap-1.5 h-[36px] px-3 border border-taco-border rounded-lg text-[13px] font-medium text-taco-sub hover:text-taco-text hover:border-taco-text bg-white"
+          >
+            <UploadIcon size={13} />
+            Impor CSV
+          </button>
         }
       >
         <div className="px-4 py-3 border-b border-taco-divider flex items-center gap-4 flex-wrap bg-taco-page">
