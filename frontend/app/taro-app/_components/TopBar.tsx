@@ -37,11 +37,6 @@ export function TopBar({ title, hideRegion, right }: Props) {
                 {regionDisplay}
               </span>
             )}
-            {user?.name && (
-              <div className="text-[12px] text-taco-sub truncate max-w-[100px]">
-                {user.name.split(" ")[0]}
-              </div>
-            )}
           </div>
         )}
       </div>
