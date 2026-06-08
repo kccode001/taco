@@ -1,6 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { Territory } from './territory.entity';
 import { Region } from './region.entity';
+import { TaroAgentRegion } from './taro-agent-region.entity';
 
 export enum UserRole {
   REP = 'rep',
@@ -43,6 +44,13 @@ export class User {
   @ManyToOne(() => Region, { nullable: true, eager: false })
   @JoinColumn({ name: 'taro_region_id' })
   taro_region: Region | null;
+
+  /**
+   * Many-to-many region coverage for taro_agent role. Source of truth.
+   * `taro_region_id` above is a denormalized copy of the primary row here.
+   */
+  @OneToMany(() => TaroAgentRegion, (ar) => ar.user)
+  taro_agent_regions?: TaroAgentRegion[];
 
   /** Indonesian mobile phone, kept as raw user-entered text (e.g. "0812-3456-7890"). */
   @Column({ type: 'text', nullable: true })

@@ -32,6 +32,7 @@ import { TaroInvoiceSkuCorrection } from '../entities/taro-invoice-sku-correctio
 import { TaroInvoiceRecommendation } from '../entities/taro-invoice-recommendation.entity';
 import { TaroMappingRule } from '../entities/taro-mapping-rule.entity';
 import { TacoSku } from '../entities/taco-sku.entity';
+import { TaroAgentRegion } from '../entities/taro-agent-region.entity';
 
 const ds = new DataSource({
   type: 'postgres',
@@ -46,6 +47,7 @@ const ds = new DataSource({
     TaroInvoiceRecommendation,
     TaroMappingRule,
     TacoSku,
+    TaroAgentRegion,
   ],
   synchronize: false,
 });
@@ -54,7 +56,10 @@ interface AgentSpec {
   email: string;
   name: string;
   phone: string;
+  /** Primary region code — must be in `extraRegionCodes` set if provided. */
   regionCode: string;
+  /** Optional extra coverage areas (m-to-m). */
+  extraRegionCodes?: string[];
   invoiceShare: number; // count of invoices to tag with this agent
   stores: string[]; // pool of realistic hardware-store names
 }
@@ -65,6 +70,7 @@ const AGENTS: AgentSpec[] = [
     name: 'Budi Santoso',
     phone: '0812-1111-0001',
     regionCode: 'J-BU1-ASM-JKT1',
+    extraRegionCodes: ['J-BU1-ASM-JKT2'], // multi-region demo: covers JKT1 + JKT2
     invoiceShare: 12,
     stores: [
       'TB Sumber Rezeki',
@@ -139,8 +145,9 @@ async function main() {
   const userRepo = ds.getRepository(User);
   const regionRepo = ds.getRepository(Region);
   const invoiceRepo = ds.getRepository(TaroInvoice);
+  const agentRegionRepo = ds.getRepository(TaroAgentRegion);
 
-  // 1. Resolve every required region by code.
+  // 1. Resolve every required region by code (primary + extras).
   const regions = await regionRepo.find({ where: { type: RegionType.AREA } });
   const regionByCode = new Map(regions.map((r) => [r.code, r]));
   for (const a of AGENTS) {
@@ -148,6 +155,13 @@ async function main() {
       throw new Error(
         `Region ${a.regionCode} not found — run \`npm run seed:regions\` first.`,
       );
+    }
+    for (const code of a.extraRegionCodes ?? []) {
+      if (!regionByCode.has(code)) {
+        throw new Error(
+          `Extra region ${code} not found — run \`npm run seed:regions\` first.`,
+        );
+      }
     }
   }
 
@@ -169,7 +183,7 @@ async function main() {
   const password_hash = await bcrypt.hash('password123', 10);
   const createdAgents: Array<{ spec: AgentSpec; user: User }> = [];
   for (const spec of AGENTS) {
-    const region = regionByCode.get(spec.regionCode)!;
+    const primary = regionByCode.get(spec.regionCode)!;
     const user = await userRepo.save(
       userRepo.create({
         email: spec.email,
@@ -177,12 +191,26 @@ async function main() {
         name: spec.name,
         role: UserRole.TARO_AGENT,
         phone: spec.phone,
-        taro_region_id: region.id,
+        taro_region_id: primary.id,
         is_active: true,
       }),
     );
+
+    // m-to-m: write join rows for primary + extras (primary flagged).
+    const extras = spec.extraRegionCodes ?? [];
+    const allCodes = Array.from(new Set([spec.regionCode, ...extras]));
+    const joinRows = allCodes.map((code) =>
+      agentRegionRepo.create({
+        user_id: user.id,
+        region_id: regionByCode.get(code)!.id,
+        is_primary: code === spec.regionCode,
+      }),
+    );
+    await agentRegionRepo.save(joinRows);
+
     createdAgents.push({ spec, user });
-    console.log(`  + ${spec.email.padEnd(20)} ${spec.regionCode}`);
+    const extraLabel = extras.length > 0 ? ` + ${extras.join(', ')}` : '';
+    console.log(`  + ${spec.email.padEnd(20)} ${spec.regionCode}${extraLabel}`);
   }
 
   // 3. Distribute existing taro_invoices across these 5 agents.

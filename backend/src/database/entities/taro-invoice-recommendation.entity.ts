@@ -10,12 +10,19 @@ export enum TaroRecommendationType {
   ADD_SYNONYM = 'add_synonym',
   CREATE_SKU = 'create_sku',
   MAPPING_RULE = 'mapping_rule',
+  UPDATE_SKU_KNOWLEDGE = 'update_sku_knowledge',
+  INVESTIGATE_COMPETITOR = 'investigate_competitor',
 }
 
 export enum TaroRecommendationStatus {
   PENDING = 'pending',
   APPLIED = 'applied',
   DISMISSED = 'dismissed',
+}
+
+export enum TaroRecommendationSource {
+  CORRECTION = 'correction',
+  FAILED_OCR = 'failed_ocr',
 }
 
 /**
@@ -47,6 +54,17 @@ export class TaroInvoiceRecommendation {
     default: TaroRecommendationStatus.PENDING,
   })
   status: TaroRecommendationStatus;
+
+  /**
+   * Which dataset triggered this card — admin corrections vs. failed OCR.
+   * Allows FE to badge cards from the new failed-OCR pipeline differently.
+   */
+  @Column({
+    type: 'enum',
+    enum: TaroRecommendationSource,
+    default: TaroRecommendationSource.CORRECTION,
+  })
+  source: TaroRecommendationSource;
 
   @CreateDateColumn({ name: 'generated_at' })
   generated_at: Date;

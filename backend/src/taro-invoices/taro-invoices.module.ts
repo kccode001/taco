@@ -10,6 +10,8 @@ import { TaroInvoiceRecommendation } from '../database/entities/taro-invoice-rec
 import { TacoSku } from '../database/entities/taco-sku.entity';
 import { Region } from '../database/entities/region.entity';
 import { TaroMappingRule } from '../database/entities/taro-mapping-rule.entity';
+import { TaroAgentRegion } from '../database/entities/taro-agent-region.entity';
+import { User } from '../database/entities/user.entity';
 import { TaroInvoicesService } from './taro-invoices.service';
 import { TaroInvoicesController } from './taro-invoices.controller';
 import { TaroInvoiceOcrProcessor } from './taro-invoice-ocr.processor';
@@ -28,6 +30,8 @@ import { EmbeddingsModule } from '../embeddings/embeddings.module';
       TacoSku,
       Region,
       TaroMappingRule,
+      TaroAgentRegion,
+      User,
     ]),
     BullModule.registerQueue({ name: QUEUE_TARO_OCR }),
     MulterModule.register({ storage: memoryStorage() }),

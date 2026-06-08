@@ -61,6 +61,7 @@ import { TaroInvoiceRecommendation } from './database/entities/taro-invoice-reco
 import { VisitSchedule } from './database/entities/visit-schedule.entity';
 import { Region } from './database/entities/region.entity';
 import { TaroMappingRule } from './database/entities/taro-mapping-rule.entity';
+import { TaroAgentRegion } from './database/entities/taro-agent-region.entity';
 
 @Module({
   imports: [
@@ -82,6 +83,7 @@ import { TaroMappingRule } from './database/entities/taro-mapping-rule.entity';
           TaroInvoice, TaroInvoiceLineItem, TaroInvoiceSkuCorrection, TaroInvoiceRecommendation,
           VisitSchedule,
           Region, TaroMappingRule,
+          TaroAgentRegion,
         ],
         synchronize: true,
         logging: false,

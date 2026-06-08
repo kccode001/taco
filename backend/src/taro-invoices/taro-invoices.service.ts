@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -19,8 +20,11 @@ import {
 } from '../database/entities/taro-invoice-recommendation.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
 import { TaroMappingRule } from '../database/entities/taro-mapping-rule.entity';
+import { TaroAgentRegion } from '../database/entities/taro-agent-region.entity';
+import { User, UserRole } from '../database/entities/user.entity';
 import { QUEUE_TARO_OCR } from './taro-invoices.constants';
 import { RegionsService } from '../regions/regions.service';
+import { parseEmbedding } from '../embeddings/similarity';
 
 const CONFIDENCE_THRESHOLD = 0.85;
 
@@ -45,6 +49,10 @@ export class TaroInvoicesService {
     private readonly skusRepo: Repository<TacoSku>,
     @InjectRepository(TaroMappingRule)
     private readonly mappingRulesRepo: Repository<TaroMappingRule>,
+    @InjectRepository(TaroAgentRegion)
+    private readonly agentRegionsRepo: Repository<TaroAgentRegion>,
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
     @InjectQueue(QUEUE_TARO_OCR) private readonly ocrQueue: Queue,
     private readonly regions: RegionsService,
   ) {
@@ -65,6 +73,23 @@ export class TaroInvoicesService {
 
     if (regionId) {
       await this.regions.assertIsArea(regionId);
+    }
+
+    // For taro_agent uploads, validate region is in their m-to-m set.
+    // Admin/manager bypass this (they upload on behalf of any region).
+    if (uploadedBy && regionId) {
+      const uploader = await this.usersRepo.findOne({ where: { id: uploadedBy } });
+      if (uploader && uploader.role === UserRole.TARO_AGENT) {
+        const allowed = await this.agentRegionsRepo.find({
+          where: { user_id: uploadedBy },
+        });
+        const allowedIds = allowed.map((r) => r.region_id);
+        if (!allowedIds.includes(regionId)) {
+          throw new ForbiddenException(
+            `Agent is not assigned to region ${regionId}. Assigned: [${allowedIds.join(', ')}]`,
+          );
+        }
+      }
     }
 
     const results: Array<{ id: string; file_name: string; status: TaroInvoiceStatus; region_id: string | null; store_name: string | null }> = [];
@@ -204,6 +229,27 @@ export class TaroInvoicesService {
           }),
         );
         result = { rule_id: saved.id };
+        break;
+      }
+      case TaroRecommendationType.UPDATE_SKU_KNOWLEDGE: {
+        // Treat as an informational card the admin reviews + applies manually
+        // through the existing SKU editor. Mark as DISMISSED with a 501 so the
+        // FE knows there's no automated apply path yet.
+        notImplemented = 'TODO: open SKU editor';
+        await this.recsRepo.update(rec.id, {
+          status: TaroRecommendationStatus.DISMISSED,
+        });
+        return {
+          applied: false,
+          recommendation: { ...rec, status: TaroRecommendationStatus.DISMISSED },
+          not_implemented: notImplemented,
+        };
+      }
+      case TaroRecommendationType.INVESTIGATE_COMPETITOR: {
+        // No automated catalog change — this is a "flag for product team"
+        // signal. Mark APPLIED so it leaves the pending queue when the admin
+        // explicitly clicks "I've handed this off".
+        result = { acknowledged: true };
         break;
       }
     }
@@ -432,6 +478,41 @@ export class TaroInvoicesService {
       agent: { id: string; name: string; email: string };
       months: Array<{ month: string; invoices: number }>;
     }>;
+    top_taco_skus: Array<{
+      sku: { code: string; name: string; category: string | null };
+      total_volume: number;
+      total_value: number;
+      invoice_count: number;
+    }>;
+    least_popular_taco_skus: Array<{
+      sku: { code: string; name: string; category: string | null };
+      total_volume: number;
+      invoice_count: number;
+    }>;
+    trending_taco_skus: Array<{
+      sku: { code: string; name: string; category: string | null };
+      current_month_volume: number;
+      previous_month_volume: number;
+      growth_pct: number;
+    }>;
+    taco_sku_monthly: Array<{
+      sku: { code: string; name: string; category: string | null };
+      months: Array<{ month: string; volume: number }>;
+    }>;
+    detected_non_taco_products: Array<{
+      raw_text: string;
+      occurrence_count: number;
+      avg_unit_price: number;
+      likely_taco_sku_match: {
+        sku: { code: string; name: string };
+        similarity: number;
+      } | null;
+      is_likely_competitor: boolean;
+      regions_seen_in: Array<{
+        region: { id: string | null; code: string; name: string; display_path: string };
+        count: number;
+      }>;
+    }>;
   }> {
     // Helper to apply region scope on either an invoice-rooted or a line-item-rooted QB.
     const scopeInvoice = <T extends import('typeorm').SelectQueryBuilder<any>>(qb: T): T => {
@@ -509,6 +590,7 @@ export class TaroInvoicesService {
 
     const regional = await this.computeRegionalAggregates(regionId);
     const agentPanels = await this.computeAgentAggregates(regionId);
+    const skuIntel = await this.computeSkuIntelligence(regionId);
 
     return {
       region_id: regionId ?? null,
@@ -525,6 +607,437 @@ export class TaroInvoicesService {
       region_price_extremes: regional.region_price_extremes,
       agents_summary: agentPanels.agents_summary,
       agent_monthly: agentPanels.agent_monthly,
+      top_taco_skus: skuIntel.top_taco_skus,
+      least_popular_taco_skus: skuIntel.least_popular_taco_skus,
+      trending_taco_skus: skuIntel.trending_taco_skus,
+      taco_sku_monthly: skuIntel.taco_sku_monthly,
+      detected_non_taco_products: skuIntel.detected_non_taco_products,
+    };
+  }
+
+  /**
+   * SKU intelligence panel data for the overview page:
+   *
+   *   top_taco_skus               — top 20 TACO SKUs by total volume (qty)
+   *   least_popular_taco_skus     — bottom 20 TACO SKUs by volume (only ones
+   *                                 that have mapped at least once)
+   *   trending_taco_skus          — top 10 by current/previous month growth %
+   *   taco_sku_monthly            — last-6-months volume series for top 10
+   *                                 by volume
+   *   detected_non_taco_products  — top 20 raw_texts the OCR DIDN'T match
+   *                                 (matched_sku_id NULL or confidence < 0.5),
+   *                                 enriched with closest-TACO embedding hint
+   *                                 + per-region distribution
+   *
+   * All scoped to `regionId` when present.
+   */
+  private async computeSkuIntelligence(regionId?: string): Promise<{
+    top_taco_skus: Array<{
+      sku: { code: string; name: string; category: string | null };
+      total_volume: number;
+      total_value: number;
+      invoice_count: number;
+    }>;
+    least_popular_taco_skus: Array<{
+      sku: { code: string; name: string; category: string | null };
+      total_volume: number;
+      invoice_count: number;
+    }>;
+    trending_taco_skus: Array<{
+      sku: { code: string; name: string; category: string | null };
+      current_month_volume: number;
+      previous_month_volume: number;
+      growth_pct: number;
+    }>;
+    taco_sku_monthly: Array<{
+      sku: { code: string; name: string; category: string | null };
+      months: Array<{ month: string; volume: number }>;
+    }>;
+    detected_non_taco_products: Array<{
+      raw_text: string;
+      occurrence_count: number;
+      avg_unit_price: number;
+      likely_taco_sku_match: {
+        sku: { code: string; name: string };
+        similarity: number;
+      } | null;
+      is_likely_competitor: boolean;
+      regions_seen_in: Array<{
+        region: { id: string | null; code: string; name: string; display_path: string };
+        count: number;
+      }>;
+    }>;
+  }> {
+    const regionWhere = regionId ? 'AND inv.region_id = $1' : '';
+    const regionArgs: string[] = regionId ? [regionId] : [];
+
+    // --- top_taco_skus: top 20 by total volume (qty) ---
+    // GREATEST(qty,1) so rows with NULL/0 quantity still count as one unit —
+    // OCR sometimes drops the qty cell.
+    const topRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        sku.id AS sku_id,
+        sku.code AS sku_code,
+        sku.name AS sku_name,
+        sku.catalog_category AS sku_category,
+        SUM(GREATEST(COALESCE(li.quantity, 0), 1))::float AS total_volume,
+        SUM(COALESCE(li.total_price, 0))::float AS total_value,
+        COUNT(DISTINCT li.invoice_id)::int AS invoice_count
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+      WHERE li.matched_sku_id IS NOT NULL
+        ${regionWhere}
+      GROUP BY sku.id, sku.code, sku.name, sku.catalog_category
+      ORDER BY total_volume DESC
+      LIMIT 20
+      `,
+      regionArgs,
+    );
+    const topTacoSkus = (topRows as Array<{
+      sku_id: string;
+      sku_code: string;
+      sku_name: string;
+      sku_category: string | null;
+      total_volume: number;
+      total_value: number;
+      invoice_count: number;
+    }>).map((r) => ({
+      sku: { code: r.sku_code, name: r.sku_name, category: r.sku_category },
+      total_volume: Number(r.total_volume ?? 0),
+      total_value: Number(r.total_value ?? 0),
+      invoice_count: Number(r.invoice_count ?? 0),
+    }));
+
+    // --- least_popular_taco_skus: bottom 20 (only mapped at least once) ---
+    const leastRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        sku.id AS sku_id,
+        sku.code AS sku_code,
+        sku.name AS sku_name,
+        sku.catalog_category AS sku_category,
+        SUM(GREATEST(COALESCE(li.quantity, 0), 1))::float AS total_volume,
+        COUNT(DISTINCT li.invoice_id)::int AS invoice_count
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+      WHERE li.matched_sku_id IS NOT NULL
+        ${regionWhere}
+      GROUP BY sku.id, sku.code, sku.name, sku.catalog_category
+      ORDER BY total_volume ASC
+      LIMIT 20
+      `,
+      regionArgs,
+    );
+    const leastPopularTacoSkus = (leastRows as Array<{
+      sku_code: string;
+      sku_name: string;
+      sku_category: string | null;
+      total_volume: number;
+      invoice_count: number;
+    }>).map((r) => ({
+      sku: { code: r.sku_code, name: r.sku_name, category: r.sku_category },
+      total_volume: Number(r.total_volume ?? 0),
+      invoice_count: Number(r.invoice_count ?? 0),
+    }));
+
+    // --- trending_taco_skus: current month vs previous month ---
+    // Buckets are computed in SQL with date_trunc so "this month" = current
+    // calendar month, "previous" = preceding month.
+    const trendRows = await this.invoicesRepo.query(
+      `
+      WITH per_sku AS (
+        SELECT
+          sku.id AS sku_id,
+          sku.code AS sku_code,
+          sku.name AS sku_name,
+          sku.catalog_category AS sku_category,
+          SUM(CASE WHEN date_trunc('month', inv.uploaded_at) = date_trunc('month', NOW())
+                   THEN GREATEST(COALESCE(li.quantity, 0), 1)
+                   ELSE 0 END)::float AS curr_vol,
+          SUM(CASE WHEN date_trunc('month', inv.uploaded_at) = date_trunc('month', NOW() - INTERVAL '1 month')
+                   THEN GREATEST(COALESCE(li.quantity, 0), 1)
+                   ELSE 0 END)::float AS prev_vol
+        FROM taro_invoice_line_items li
+        INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+        INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+        WHERE li.matched_sku_id IS NOT NULL
+          ${regionWhere}
+        GROUP BY sku.id, sku.code, sku.name, sku.catalog_category
+      )
+      SELECT sku_id, sku_code, sku_name, sku_category, curr_vol, prev_vol,
+             CASE WHEN prev_vol = 0 AND curr_vol > 0 THEN 9999.0
+                  WHEN prev_vol = 0 THEN 0
+                  ELSE ((curr_vol - prev_vol) / prev_vol) * 100.0
+             END AS growth_pct
+      FROM per_sku
+      WHERE curr_vol > 0
+      ORDER BY growth_pct DESC, curr_vol DESC
+      LIMIT 10
+      `,
+      regionArgs,
+    );
+    const trendingTacoSkus = (trendRows as Array<{
+      sku_code: string;
+      sku_name: string;
+      sku_category: string | null;
+      curr_vol: number;
+      prev_vol: number;
+      growth_pct: number;
+    }>).map((r) => ({
+      sku: { code: r.sku_code, name: r.sku_name, category: r.sku_category },
+      current_month_volume: Number(r.curr_vol ?? 0),
+      previous_month_volume: Number(r.prev_vol ?? 0),
+      growth_pct: Number(r.growth_pct ?? 0),
+    }));
+
+    // --- taco_sku_monthly: 6-month series for top 10 by volume ---
+    const top10Ids = (topRows as Array<{ sku_id: string }>)
+      .slice(0, 10)
+      .map((r) => r.sku_id);
+
+    const monthLabels: string[] = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      monthLabels.push(`${yyyy}-${mm}`);
+    }
+
+    let tacoSkuMonthly: Array<{
+      sku: { code: string; name: string; category: string | null };
+      months: Array<{ month: string; volume: number }>;
+    }> = [];
+
+    if (top10Ids.length > 0) {
+      const monthlyArgs: Array<string | string[]> = [top10Ids];
+      let monthlyWhere = `sku.id = ANY($1)`;
+      if (regionId) {
+        monthlyArgs.push(regionId);
+        monthlyWhere += ` AND inv.region_id = $${monthlyArgs.length}`;
+      }
+
+      const monthlyRows = await this.invoicesRepo.query(
+        `
+        SELECT
+          sku.id AS sku_id,
+          sku.code AS sku_code,
+          sku.name AS sku_name,
+          sku.catalog_category AS sku_category,
+          to_char(date_trunc('month', inv.uploaded_at), 'YYYY-MM') AS month,
+          SUM(GREATEST(COALESCE(li.quantity, 0), 1))::float AS volume
+        FROM taro_invoice_line_items li
+        INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+        INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+        WHERE ${monthlyWhere}
+          AND inv.uploaded_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+        GROUP BY sku.id, sku.code, sku.name, sku.catalog_category, date_trunc('month', inv.uploaded_at)
+        `,
+        monthlyArgs,
+      );
+      const bySku = new Map<string, {
+        code: string;
+        name: string;
+        category: string | null;
+        months: Map<string, number>;
+      }>();
+      for (const r of monthlyRows as Array<{
+        sku_id: string;
+        sku_code: string;
+        sku_name: string;
+        sku_category: string | null;
+        month: string;
+        volume: number;
+      }>) {
+        const entry =
+          bySku.get(r.sku_id) ??
+          {
+            code: r.sku_code,
+            name: r.sku_name,
+            category: r.sku_category,
+            months: new Map<string, number>(),
+          };
+        entry.months.set(r.month, Number(r.volume));
+        bySku.set(r.sku_id, entry);
+      }
+
+      tacoSkuMonthly = top10Ids
+        .filter((id) => bySku.has(id))
+        .map((id) => {
+          const e = bySku.get(id)!;
+          return {
+            sku: { code: e.code, name: e.name, category: e.category },
+            months: monthLabels.map((m) => ({ month: m, volume: e.months.get(m) ?? 0 })),
+          };
+        });
+    }
+
+    // --- detected_non_taco_products ---
+    // Pull top 20 raw_texts where OCR didn't match a TACO SKU with confidence.
+    // Then in-memory: compute closest TACO SKU via stored embeddings; tag
+    // is_likely_competitor when similarity < 0.65 (or no embeddings).
+    const failedArgs: Array<string | number> = [0.5];
+    let failedWhere = `(li.matched_sku_id IS NULL OR li.confidence_score < $1)`;
+    if (regionId) {
+      failedArgs.push(regionId);
+      failedWhere += ` AND inv.region_id = $${failedArgs.length}`;
+    }
+    const failedRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        li.raw_text AS raw_text,
+        COUNT(*)::int AS occurrence_count,
+        COALESCE(AVG(NULLIF(li.unit_price::float, 0)), 0)::float AS avg_unit_price
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      WHERE ${failedWhere}
+      GROUP BY li.raw_text
+      ORDER BY occurrence_count DESC, raw_text ASC
+      LIMIT 20
+      `,
+      failedArgs,
+    );
+
+    const rawTexts = (failedRows as Array<{ raw_text: string }>).map((r) => r.raw_text);
+
+    // Per-region distribution.
+    let regionDistRows: Array<{
+      raw_text: string;
+      region_id: string | null;
+      region_code: string | null;
+      region_name: string | null;
+      region_path: string | null;
+      count: number;
+    }> = [];
+    if (rawTexts.length > 0) {
+      const distArgs: Array<string[] | number | string> = [rawTexts, 0.5];
+      let distWhere = `li.raw_text = ANY($1) AND (li.matched_sku_id IS NULL OR li.confidence_score < $2)`;
+      if (regionId) {
+        distArgs.push(regionId);
+        distWhere += ` AND inv.region_id = $${distArgs.length}`;
+      }
+      regionDistRows = await this.invoicesRepo.query(
+        `
+        SELECT
+          li.raw_text AS raw_text,
+          inv.region_id AS region_id,
+          r.code AS region_code,
+          r.name AS region_name,
+          r.display_path AS region_path,
+          COUNT(*)::int AS count
+        FROM taro_invoice_line_items li
+        INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+        LEFT JOIN regions r ON r.id = inv.region_id
+        WHERE ${distWhere}
+        GROUP BY li.raw_text, inv.region_id, r.code, r.name, r.display_path
+        ORDER BY count DESC
+        `,
+        distArgs,
+      );
+    }
+    const regionsByRaw = new Map<string, Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      count: number;
+    }>>();
+    for (const r of regionDistRows) {
+      const list = regionsByRaw.get(r.raw_text) ?? [];
+      list.push({
+        region: {
+          id: r.region_id,
+          code: r.region_code ?? 'TANPA-REGION',
+          name: r.region_name ?? 'Tanpa Region',
+          display_path: r.region_path ?? 'Tanpa Region',
+        },
+        count: Number(r.count),
+      });
+      regionsByRaw.set(r.raw_text, list);
+    }
+
+    // Embedding-based closest TACO SKU per raw_text.
+    let allSkus: TacoSku[] = [];
+    if (rawTexts.length > 0) {
+      allSkus = await this.skusRepo
+        .createQueryBuilder('sku')
+        .where('sku.embedding IS NOT NULL')
+        .getMany();
+    }
+    const skuVecs = allSkus
+      .map((s) => ({ sku: s, vec: parseEmbedding(s.embedding) }))
+      .filter((x): x is { sku: TacoSku; vec: number[] } => !!x.vec);
+
+    // For each raw_text: fetch the matched_sku_id if any has one (low_conf
+    // case) — its confidence_score doubles as similarity. For pure no-match,
+    // we'd need to embed the raw_text on the fly; that's expensive. To stay
+    // synchronous we use the matched-sku-confidence as a best-effort
+    // similarity, which lines up with the existing failed-OCR shape.
+    const matchedRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        li.raw_text AS raw_text,
+        sku.id AS sku_id,
+        sku.code AS sku_code,
+        sku.name AS sku_name,
+        AVG(li.confidence_score)::float AS similarity
+      FROM taro_invoice_line_items li
+      INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+      WHERE li.raw_text = ANY($1)
+      GROUP BY li.raw_text, sku.id, sku.code, sku.name
+      ORDER BY similarity DESC
+      `,
+      [rawTexts.length > 0 ? rawTexts : ['__none__']],
+    );
+    const bestByRaw = new Map<string, {
+      sku: { code: string; name: string };
+      similarity: number;
+    }>();
+    for (const r of matchedRows as Array<{
+      raw_text: string;
+      sku_code: string;
+      sku_name: string;
+      similarity: number;
+    }>) {
+      const cur = bestByRaw.get(r.raw_text);
+      const sim = Number(r.similarity ?? 0);
+      if (!cur || sim > cur.similarity) {
+        bestByRaw.set(r.raw_text, {
+          sku: { code: r.sku_code, name: r.sku_name },
+          similarity: sim,
+        });
+      }
+    }
+
+    const detectedNonTaco = (failedRows as Array<{
+      raw_text: string;
+      occurrence_count: number;
+      avg_unit_price: number;
+    }>).map((r) => {
+      // Suggest match only when similarity is in [0.65, 0.85] — below that
+      // it's likely a different product, above that the OCR already matched
+      // (so it wouldn't be in this bucket).
+      const best = bestByRaw.get(r.raw_text) ?? null;
+      const likely =
+        best && best.similarity >= 0.65 && best.similarity <= 0.85 ? best : null;
+      const isCompetitor = !best || best.similarity < 0.5;
+      return {
+        raw_text: r.raw_text,
+        occurrence_count: Number(r.occurrence_count ?? 0),
+        avg_unit_price: Number(r.avg_unit_price ?? 0),
+        likely_taco_sku_match: likely,
+        is_likely_competitor: isCompetitor,
+        regions_seen_in: regionsByRaw.get(r.raw_text) ?? [],
+      };
+    });
+    void skuVecs; // kept loaded for future embed-on-the-fly upgrade
+
+    return {
+      top_taco_skus: topTacoSkus,
+      least_popular_taco_skus: leastPopularTacoSkus,
+      trending_taco_skus: trendingTacoSkus,
+      taco_sku_monthly: tacoSkuMonthly,
+      detected_non_taco_products: detectedNonTaco,
     };
   }
 
@@ -1086,13 +1599,23 @@ export class TaroInvoicesService {
       failure_reason: 'no_match' | 'low_confidence' | 'ambiguous';
       occurrence_count: number;
       latest_uploaded_at: Date | null;
+      last_seen_at: Date | null;
       avg_confidence: number;
+      is_likely_taco: boolean;
       closest_sku_candidate: {
         id: string;
         code: string;
         name: string;
         similarity: number;
       } | null;
+      regions_seen: Array<{
+        region: { id: string | null; code: string; name: string; display_path: string };
+        count: number;
+      }>;
+      agents_seen: Array<{
+        agent: { id: string; name: string; email: string };
+        count: number;
+      }>;
       sample_line_items: Array<{
         line_item_id: string;
         invoice_id: string;
@@ -1298,6 +1821,90 @@ export class TaroInvoicesService {
       });
     }
 
+    // 4. Per-raw_text region distribution (regions_seen).
+    const regionDistRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        li.raw_text AS raw_text,
+        inv.region_id AS region_id,
+        r.code AS region_code,
+        r.name AS region_name,
+        r.display_path AS region_path,
+        COUNT(*)::int AS count
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      LEFT JOIN regions r ON r.id = inv.region_id
+      WHERE li.raw_text = ANY($1)
+        AND (li.matched_sku_id IS NULL OR li.confidence_score < $2)
+      GROUP BY li.raw_text, inv.region_id, r.code, r.name, r.display_path
+      ORDER BY count DESC
+      `,
+      [rawTexts, FAILED_THRESHOLD],
+    );
+    const regionsByText = new Map<string, Array<{
+      region: { id: string | null; code: string; name: string; display_path: string };
+      count: number;
+    }>>();
+    for (const r of regionDistRows as Array<{
+      raw_text: string;
+      region_id: string | null;
+      region_code: string | null;
+      region_name: string | null;
+      region_path: string | null;
+      count: number;
+    }>) {
+      const list = regionsByText.get(r.raw_text) ?? [];
+      list.push({
+        region: {
+          id: r.region_id,
+          code: r.region_code ?? 'TANPA-REGION',
+          name: r.region_name ?? 'Tanpa Region',
+          display_path: r.region_path ?? 'Tanpa Region',
+        },
+        count: Number(r.count),
+      });
+      regionsByText.set(r.raw_text, list);
+    }
+
+    // 5. Per-raw_text agent distribution (agents_seen) — only when uploaded_by
+    //    is non-null; system uploads don't surface.
+    const agentDistRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        li.raw_text AS raw_text,
+        inv.uploaded_by AS agent_id,
+        u.name AS agent_name,
+        u.email AS agent_email,
+        COUNT(*)::int AS count
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      INNER JOIN users u ON u.id = inv.uploaded_by
+      WHERE li.raw_text = ANY($1)
+        AND (li.matched_sku_id IS NULL OR li.confidence_score < $2)
+      GROUP BY li.raw_text, inv.uploaded_by, u.name, u.email
+      ORDER BY count DESC
+      `,
+      [rawTexts, FAILED_THRESHOLD],
+    );
+    const agentsByText = new Map<string, Array<{
+      agent: { id: string; name: string; email: string };
+      count: number;
+    }>>();
+    for (const r of agentDistRows as Array<{
+      raw_text: string;
+      agent_id: string;
+      agent_name: string;
+      agent_email: string;
+      count: number;
+    }>) {
+      const list = agentsByText.get(r.raw_text) ?? [];
+      list.push({
+        agent: { id: r.agent_id, name: r.agent_name, email: r.agent_email },
+        count: Number(r.count),
+      });
+      agentsByText.set(r.raw_text, list);
+    }
+
     const data = (groupRows as Array<{
       raw_text: string;
       occurrence_count: number;
@@ -1314,18 +1921,113 @@ export class TaroInvoicesService {
       if (g.has_low_conf && !g.has_no_match) failureReason = 'low_confidence';
       else if (g.has_low_conf && g.has_no_match) failureReason = 'low_confidence';
 
+      // is_likely_taco — similarity >= 0.6 means embedding/conf says this is
+      // probably a TACO SKU that's missing a synonym. False when we have no
+      // candidate at all (pure no_match without prior mapping history).
+      const candidate = candidateByText.get(g.raw_text) ?? null;
+      const isLikelyTaco = !!candidate && candidate.similarity >= 0.6;
+
       return {
         raw_text: g.raw_text,
         failure_reason: failureReason,
         occurrence_count: Number(g.occurrence_count ?? 0),
         latest_uploaded_at: g.latest_uploaded_at,
+        last_seen_at: g.latest_uploaded_at,
         avg_confidence: Number(g.avg_confidence ?? 0),
-        closest_sku_candidate: candidateByText.get(g.raw_text) ?? null,
+        is_likely_taco: isLikelyTaco,
+        closest_sku_candidate: candidate,
+        regions_seen: regionsByText.get(g.raw_text) ?? [],
+        agents_seen: agentsByText.get(g.raw_text) ?? [],
         sample_line_items: samplesByText.get(g.raw_text) ?? [],
       };
     });
 
     return { data, total, page: params.page, limit: params.limit };
+  }
+
+  /**
+   * Internal helper for the Recommendations 2.0 pipeline — same grouping
+   * logic as `failedOcr` but returns a flat, embedding-keyed list of the
+   * top-N most-frequent failed raw_texts with their closest TACO SKU hint.
+   */
+  async topFailedOcrForRecommendations(limit: number): Promise<Array<{
+    raw_text: string;
+    occurrence_count: number;
+    closest_sku_candidate: {
+      id: string;
+      code: string;
+      name: string;
+      similarity: number;
+    } | null;
+  }>> {
+    const FAILED_THRESHOLD = 0.5;
+    const groupRows = await this.invoicesRepo.query(
+      `
+      SELECT
+        li.raw_text AS raw_text,
+        COUNT(*)::int AS occurrence_count
+      FROM taro_invoice_line_items li
+      INNER JOIN taro_invoices inv ON inv.id = li.invoice_id
+      WHERE (li.matched_sku_id IS NULL OR li.confidence_score < $1)
+      GROUP BY li.raw_text
+      ORDER BY occurrence_count DESC, raw_text ASC
+      LIMIT $2
+      `,
+      [FAILED_THRESHOLD, limit],
+    );
+    const rawTexts = (groupRows as Array<{ raw_text: string }>).map((r) => r.raw_text);
+    if (rawTexts.length === 0) return [];
+
+    const candidateRows = await this.invoicesRepo.query(
+      `
+      SELECT raw_text, sku_id, code, name, similarity
+      FROM (
+        SELECT
+          li.raw_text AS raw_text,
+          sku.id AS sku_id,
+          sku.code AS code,
+          sku.name AS name,
+          AVG(li.confidence_score)::float AS similarity,
+          ROW_NUMBER() OVER (
+            PARTITION BY li.raw_text
+            ORDER BY AVG(li.confidence_score) DESC, COUNT(*) DESC
+          ) AS rn
+        FROM taro_invoice_line_items li
+        INNER JOIN taco_skus sku ON sku.id = li.matched_sku_id
+        WHERE li.raw_text = ANY($1)
+          AND li.matched_sku_id IS NOT NULL
+        GROUP BY li.raw_text, sku.id, sku.code, sku.name
+      ) ranked
+      WHERE rn = 1
+      `,
+      [rawTexts],
+    );
+    const byText = new Map<string, {
+      id: string;
+      code: string;
+      name: string;
+      similarity: number;
+    }>();
+    for (const r of candidateRows as Array<{
+      raw_text: string;
+      sku_id: string;
+      code: string;
+      name: string;
+      similarity: number;
+    }>) {
+      byText.set(r.raw_text, {
+        id: r.sku_id,
+        code: r.code,
+        name: r.name,
+        similarity: Number(r.similarity ?? 0),
+      });
+    }
+
+    return (groupRows as Array<{ raw_text: string; occurrence_count: number }>).map((g) => ({
+      raw_text: g.raw_text,
+      occurrence_count: Number(g.occurrence_count ?? 0),
+      closest_sku_candidate: byText.get(g.raw_text) ?? null,
+    }));
   }
 
   // ---- Image streaming ----
