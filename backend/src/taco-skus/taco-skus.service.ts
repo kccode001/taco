@@ -1,8 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike } from 'typeorm';
 import { parse } from 'csv-parse/sync';
-import OpenAI from 'openai';
 import {
   TacoSku,
   TacoSkuCategory,
@@ -12,6 +11,7 @@ import { CreateTacoSkuDto } from './dto/create-taco-sku.dto';
 import { UpdateTacoSkuDto } from './dto/update-taco-sku.dto';
 import { SkuQueryDto } from './dto/sku-query.dto';
 import { SkuEmbeddingCache } from '../embeddings/sku-embedding-cache.service';
+import { EmbeddingsService } from '../embeddings/embeddings.service';
 
 export interface BulkImportRowResult {
   row: number;
@@ -37,17 +37,14 @@ export interface BulkImportResult {
 
 @Injectable()
 export class TacoSkusService {
-  private readonly openai?: OpenAI;
+  private readonly logger = new Logger(TacoSkusService.name);
 
   constructor(
     @InjectRepository(TacoSku)
     private readonly tacoSkusRepo: Repository<TacoSku>,
     private readonly skuCache: SkuEmbeddingCache,
-  ) {
-    if (process.env.OPENAI_API_KEY) {
-      this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    }
-  }
+    private readonly embeddings: EmbeddingsService,
+  ) {}
 
   async findAll(query: SkuQueryDto): Promise<TacoSku[]> {
     const qb = this.tacoSkusRepo
@@ -94,9 +91,8 @@ export class TacoSkusService {
 
     const saved = await this.tacoSkusRepo.save(sku);
     this.skuCache.invalidate().catch(() => {});
-    this.generateEmbedding(saved).catch((err) =>
-      console.error(`Failed to generate embedding for SKU ${saved.id}:`, err),
-    );
+    // KC directive: every create embeds. No manual status, no pending state.
+    await this.queueEmbedding(saved.id);
     return saved;
   }
 
@@ -186,9 +182,7 @@ export class TacoSkusService {
           const saved = await this.tacoSkusRepo.save(existing);
           action = 'update';
           updated++;
-          this.generateEmbedding(saved).catch((err) =>
-            console.error(`Embedding refresh failed for ${saved.code}:`, err),
-          );
+          await this.queueEmbedding(saved.id);
         } else {
           const sku = this.tacoSkusRepo.create({
             code,
@@ -200,9 +194,7 @@ export class TacoSkusService {
           const saved = await this.tacoSkusRepo.save(sku);
           action = 'insert';
           inserted++;
-          this.generateEmbedding(saved).catch((err) =>
-            console.error(`Embedding failed for ${saved.code}:`, err),
-          );
+          await this.queueEmbedding(saved.id);
         }
       } else {
         const existing = await this.tacoSkusRepo.findOne({ where: { code } });
@@ -237,17 +229,13 @@ export class TacoSkusService {
   async update(id: string, dto: UpdateTacoSkuDto): Promise<TacoSku> {
     const sku = await this.findOne(id);
 
-    const nameChanged = dto.name !== undefined && dto.name !== sku.name;
-    const categoryChanged = dto.category !== undefined && dto.category !== sku.category;
-
     Object.assign(sku, dto);
     const saved = await this.tacoSkusRepo.save(sku);
 
-    if (nameChanged || categoryChanged) {
-      this.generateEmbedding(saved).catch((err) =>
-        console.error(`Failed to regenerate embedding for SKU ${saved.id}:`, err),
-      );
-    }
+    // KC directive: every edit re-embeds. The embedding text composes name +
+    // aliases + category + unit + price band, so any patch can shift the vector
+    // — always re-queue, never inspect which field changed.
+    await this.queueEmbedding(saved.id);
 
     // Any update could change prompt-visible fields (name, aliases, price band,
     // unit, etc.) — invalidate the cache so the next OCR job sees fresh data.
@@ -261,21 +249,23 @@ export class TacoSkusService {
     this.skuCache.invalidate().catch(() => {});
   }
 
-  async generateEmbedding(sku: TacoSku): Promise<void> {
-    if (!this.openai) return; // OPENAI_API_KEY not configured — skip silently.
-    const text = `${sku.code} ${sku.name} ${sku.category}`;
-
-    const response = await this.openai.embeddings.create({
-      model: 'text-embedding-3-large',
-      input: text,
-    });
-
-    const embedding = response.data[0].embedding;
-    await this.tacoSkusRepo.update(sku.id, {
-      embedding: JSON.stringify(embedding),
-    });
-    // Refresh the in-memory cache so the new vector is visible to the OCR
-    // hot path without a restart.
-    this.skuCache.invalidate().catch(() => {});
+  /**
+   * Enqueue a re-embed job for the given SKU. Single source of truth — every
+   * create/update/bulk-import row routes through here. The worker
+   * (`TacoSkuEmbeddingProcessor`) composes the canonical text (name + aliases
+   * + catalog_category + unit + price band), calls OpenAI, persists the new
+   * vector, and invalidates the OCR cache.
+   *
+   * Never throws — embedding is best-effort and must not block a SKU write.
+   */
+  private async queueEmbedding(id: string): Promise<void> {
+    try {
+      await this.embeddings.enqueueTacoSku(id);
+      this.logger.log(`Queued embedding refresh for taco_sku ${id}`);
+    } catch (err) {
+      this.logger.error(
+        `Failed to enqueue embedding for taco_sku ${id}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 }

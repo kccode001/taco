@@ -27,6 +27,8 @@ import { User, UserRole } from '../database/entities/user.entity';
 import { QUEUE_TARO_OCR } from './taro-invoices.constants';
 import { RegionsService } from '../regions/regions.service';
 import { parseEmbedding } from '../embeddings/similarity';
+import { EmbeddingsService } from '../embeddings/embeddings.service';
+import { SkuEmbeddingCache } from '../embeddings/sku-embedding-cache.service';
 
 const CONFIDENCE_THRESHOLD = 0.85;
 
@@ -59,6 +61,8 @@ export class TaroInvoicesService {
     private readonly regions: RegionsService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly embeddings: EmbeddingsService,
+    private readonly skuCache: SkuEmbeddingCache,
   ) {
     fs.mkdirSync(this.uploadDir, { recursive: true });
   }
@@ -234,7 +238,10 @@ export class TaroInvoicesService {
           ? synonyms
           : [...synonyms, payload.synonym];
         await this.skusRepo.update(sku.id, { product_name_aliases: next });
-        result = { sku_id: sku.id, synonyms_count: next.length };
+        // Adding a synonym shifts the embedding text → re-embed + cache flush.
+        await this.embeddings.enqueueTacoSku(sku.id);
+        this.skuCache.invalidate().catch(() => {});
+        result = { sku_id: sku.id, synonyms_count: next.length, embedding_queued: true };
         break;
       }
       case TaroRecommendationType.CREATE_SKU: {
@@ -267,18 +274,52 @@ export class TaroInvoicesService {
         break;
       }
       case TaroRecommendationType.UPDATE_SKU_KNOWLEDGE: {
-        // Treat as an informational card the admin reviews + applies manually
-        // through the existing SKU editor. Mark as DISMISSED with a 501 so the
-        // FE knows there's no automated apply path yet.
-        notImplemented = 'TODO: open SKU editor';
-        await this.recsRepo.update(rec.id, {
-          status: TaroRecommendationStatus.DISMISSED,
-        });
-        return {
-          applied: false,
-          recommendation: { ...rec, status: TaroRecommendationStatus.DISMISSED },
-          not_implemented: notImplemented,
+        // Payload: { sku_id, suggested_synonyms: string[] }.
+        // Append every unique, trimmed, non-empty synonym to the SKU's
+        // product_name_aliases, then queue a re-embed so the new synonyms
+        // immediately affect OCR matching.
+        const payload = rec.suggested_payload as {
+          sku_id?: string;
+          suggested_synonyms?: unknown;
         };
+        if (!payload.sku_id) {
+          throw new BadRequestException(
+            'Recommendation payload is missing required key sku_id',
+          );
+        }
+        const rawSynonyms = Array.isArray(payload.suggested_synonyms)
+          ? (payload.suggested_synonyms as unknown[])
+          : [];
+        const incoming = rawSynonyms
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+
+        const sku = await this.skusRepo.findOne({ where: { id: payload.sku_id } });
+        if (!sku) throw new NotFoundException(`TacoSku ${payload.sku_id} not found`);
+        const existing = sku.product_name_aliases ?? [];
+        // Dedupe case-insensitively against the existing list AND within the
+        // incoming list. Preserve original casing of the first occurrence.
+        const seenLower = new Set(existing.map((s) => s.toLowerCase()));
+        const additions: string[] = [];
+        for (const syn of incoming) {
+          const lower = syn.toLowerCase();
+          if (seenLower.has(lower)) continue;
+          seenLower.add(lower);
+          additions.push(syn);
+        }
+        const next = [...existing, ...additions];
+        await this.skusRepo.update(sku.id, { product_name_aliases: next });
+        // Always re-embed — synonyms feed the embedding text directly.
+        await this.embeddings.enqueueTacoSku(sku.id);
+        this.skuCache.invalidate().catch(() => {});
+        result = {
+          sku_id: sku.id,
+          synonyms_added: additions.length,
+          synonyms_count: next.length,
+          embedding_queued: true,
+        };
+        break;
       }
       case TaroRecommendationType.INVESTIGATE_COMPETITOR: {
         // No automated catalog change — this is a "flag for product team"
