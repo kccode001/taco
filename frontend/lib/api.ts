@@ -753,7 +753,11 @@ export interface TaroRecommendation {
 export interface TaroAnalytics {
   total_invoices: number;
   processed: number;
+  /** BE-canonical alias for `processed`. Kept for raw payload typing. */
+  processed_count?: number;
   needs_review: number;
+  /** BE-canonical alias for `needs_review`. Kept for raw payload typing. */
+  needs_review_count?: number;
   avg_confidence: number;
   monthly_volume: { month: string; count: number }[];
   top_uploaded_skus: { sku_code: string; sku_name: string; count: number }[];
@@ -869,14 +873,173 @@ export interface TaroRegionPriceExtremeRow {
   is_max: boolean;
 }
 
-export const getTaroInvoices = (params?: Record<string, string>) =>
-  api.get<{ data?: TaroInvoiceSummary[] } | TaroInvoiceSummary[]>(
+/** BE summary list omits `short_id`, `avg_confidence`, and `region_display` —
+ *  it returns the row ID, low_confidence_count, and `region_id`. Bridge to the
+ *  FE shape so Home + History render real codes and percentages. */
+type BERawSummary = TaroInvoiceSummary & {
+  short_id?: string;
+  low_confidence_count?: number;
+  needs_review_count?: number;
+  avg_confidence?: number;
+  store_name?: string | null;
+  file_name?: string | null;
+  taro_region?: { display_path?: string } | null;
+};
+
+function normalizeTaroInvoiceSummary(raw: BERawSummary): TaroInvoiceSummary {
+  const total = raw.line_count ?? 0;
+  const lowConf = raw.low_confidence_count ?? 0;
+  const fallbackConf =
+    typeof raw.avg_confidence === "number"
+      ? raw.avg_confidence
+      : total > 0
+        ? // Treat "not flagged low" as ≥0.85 and flagged as 0.6 — gives a
+          // visually meaningful percent while BE catches up with avg_confidence.
+          (0.85 * (total - lowConf) + 0.6 * lowConf) / total
+        : 0;
+  // Prefer human-readable `file_name` (without extension) over a UUID slice so
+  // the invoice list shows "demo-invoice-34" instead of "2fd8c5d0".
+  const fileName = (raw.file_name ?? "").replace(/\.[^.]+$/, "");
+  return {
+    ...raw,
+    short_id: raw.short_id ?? fileName ?? raw.id?.slice(0, 8) ?? "",
+    avg_confidence: fallbackConf,
+    region_display:
+      raw.region_display ?? raw.taro_region?.display_path ?? null,
+  };
+}
+
+export const getTaroInvoices = async (params?: Record<string, string>) => {
+  const res = await api.get<{ data?: BERawSummary[] } | BERawSummary[]>(
     "/taro-invoices",
     { params }
   );
+  const raw = res.data;
+  const list: BERawSummary[] = Array.isArray(raw)
+    ? raw
+    : ((raw as { data?: BERawSummary[] })?.data ?? []);
+  const normalized = list.map(normalizeTaroInvoiceSummary);
+  // Preserve original envelope shape so existing callers keep working.
+  const data = Array.isArray(raw)
+    ? (normalized as TaroInvoiceSummary[])
+    : ({ ...(raw as { data?: TaroInvoiceSummary[] }), data: normalized } as {
+        data?: TaroInvoiceSummary[];
+      });
+  return { ...res, data };
+};
 
-export const getTaroInvoice = (id: string) =>
-  api.get<TaroInvoiceDetail>(`/taro-invoices/${id}`);
+/** BE returns nested `matched_sku: {code,name}`, `confidence_score`, and the
+ *  region join under `taro_region.display_path`. The FE was authored against
+ *  a flat shape (matched_sku_code/name, confidence, region_display) — bridge
+ *  the two here so the review page renders matched SKU codes + real % values
+ *  instead of "Belum cocok" + NaN%. */
+type BERawLine = {
+  id: string;
+  line_no: number;
+  raw_text: string;
+  matched_sku_id?: string | null;
+  matched_sku?:
+    | { code?: string; name?: string; id?: string }
+    | null;
+  matched_sku_code?: string | null;
+  matched_sku_name?: string | null;
+  confidence?: number;
+  confidence_score?: number;
+  quantity?: number | string;
+  unit?: string;
+  unit_price?: number | string;
+  total?: number | string;
+  total_price?: number | string;
+};
+
+type BERawDetail = Omit<TaroInvoiceDetail, "line_items"> & {
+  taro_region?: { display_path?: string; code?: string } | null;
+  line_items?: BERawLine[];
+  processed_at?: string | null;
+  store_name?: string | null;
+  raw_image_url?: string | null;
+  file_name?: string | null;
+};
+
+function normalizeTaroInvoiceDetail(raw: BERawDetail): TaroInvoiceDetail {
+  const region_display =
+    raw.region_display ?? raw.taro_region?.display_path ?? null;
+  // BE ships the image under `raw_image_url` as a server-relative path. The
+  // FE expects an absolute `image_url` because the FE host (4014) is not the
+  // BE host (5013).
+  const rawImg = raw.image_url ?? raw.raw_image_url ?? undefined;
+  const apiBase =
+    process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
+  const apiOrigin = apiBase.replace(/\/api\/?$/, "");
+  const image_url =
+    rawImg && rawImg.startsWith("/") ? `${apiOrigin}${rawImg}` : rawImg;
+  // `total_amount` arrives as a numeric string ("0.00"). Cast so formatIdr
+  // and any sum math get a real number.
+  const total_amount =
+    raw.total_amount == null
+      ? undefined
+      : typeof raw.total_amount === "number"
+        ? raw.total_amount
+        : Number.parseFloat(String(raw.total_amount)) || 0;
+  // BE detail payload doesn't include `short_id`. Prefer file_name (without
+  // extension), then the UUID slice as a final fallback.
+  const fileName = (raw.file_name ?? "").replace(/\.[^.]+$/, "");
+  const short_id = raw.short_id ?? fileName ?? raw.id?.slice(0, 8) ?? "";
+  const line_items: TaroInvoiceLine[] = (raw.line_items ?? []).map((li) => {
+    const code =
+      li.matched_sku_code ?? li.matched_sku?.code ?? null;
+    const name =
+      li.matched_sku_name ?? li.matched_sku?.name ?? null;
+    // BE ships these as Postgres numeric strings ("0.600", "5.000", "64000.00")
+    // — coerce every numeric field through parseFloat to handle both shapes.
+    const toNum = (v: unknown): number => {
+      if (typeof v === "number") return v;
+      if (v == null) return 0;
+      const n = Number.parseFloat(String(v));
+      return Number.isFinite(n) ? n : 0;
+    };
+    const conf = toNum(li.confidence ?? li.confidence_score);
+    const qty = toNum(li.quantity);
+    const price = toNum(li.unit_price);
+    const total = toNum(li.total ?? li.total_price);
+    return {
+      id: li.id,
+      line_no: li.line_no,
+      raw_text: li.raw_text,
+      matched_sku_id: li.matched_sku_id ?? li.matched_sku?.id ?? null,
+      matched_sku_code: code,
+      matched_sku_name: name,
+      confidence: conf,
+      quantity: qty,
+      unit: li.unit ?? "",
+      unit_price: price,
+      total,
+    };
+  });
+  const line_count = raw.line_count ?? line_items.length;
+  const avg_confidence =
+    typeof raw.avg_confidence === "number"
+      ? raw.avg_confidence
+      : line_items.length
+        ? line_items.reduce((sum, li) => sum + (li.confidence ?? 0), 0) /
+          line_items.length
+        : 0;
+  return {
+    ...raw,
+    region_display,
+    line_items,
+    image_url,
+    total_amount,
+    short_id,
+    line_count,
+    avg_confidence,
+  } as TaroInvoiceDetail;
+}
+
+export const getTaroInvoice = async (id: string) => {
+  const res = await api.get<BERawDetail>(`/taro-invoices/${id}`);
+  return { ...res, data: normalizeTaroInvoiceDetail(res.data) };
+};
 
 export const bulkUploadTaroInvoices = (
   files: File[],

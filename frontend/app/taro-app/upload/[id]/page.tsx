@@ -259,13 +259,17 @@ export default function TaroUploadReviewPage() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[15px] font-semibold text-taco-text truncate">
-                {invoice.region_display ?? "Tanpa Region"}
+                {(invoice as TaroInvoiceDetail & { store_name?: string | null })
+                  .store_name ?? "Toko Tidak Disebutkan"}
               </div>
-              <div className="text-[12px] text-taco-sub flex items-center gap-1 mt-0.5">
-                <PinIcon size={12} />
-                <span className="truncate">
-                  Diunggah {timeFmt(invoice.uploaded_at)}
-                </span>
+              {invoice.region_display && (
+                <div className="text-[12px] text-taco-sub flex items-center gap-1 mt-0.5">
+                  <PinIcon size={12} />
+                  <span className="truncate">{invoice.region_display}</span>
+                </div>
+              )}
+              <div className="text-[12px] text-taco-muted mt-0.5 truncate">
+                Diunggah {timeFmt(invoice.uploaded_at)}
               </div>
             </div>
           </div>
