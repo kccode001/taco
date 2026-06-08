@@ -69,7 +69,7 @@ export function SkuTable({
           "Kode",
           "Nama Produk",
           "Kategori",
-          "Sinonim",
+          "UOM",
           "Harga",
           "Embedding",
           "Aksi",
@@ -94,20 +94,13 @@ export function SkuTable({
                 <td className="px-4 py-3 font-mono text-[12px] text-taco-muted whitespace-nowrap align-top">
                   {s.code}
                 </td>
-                <td className="px-4 py-3 text-[14px] text-taco-text max-w-[260px] align-top">
-                  <div className="truncate">{s.name}</div>
+                <td className="px-4 py-3 text-[14px] text-taco-text max-w-[280px] align-top">
+                  <div className="truncate font-medium">{s.name}</div>
                   <div className="text-[11px] text-taco-muted mt-0.5">
                     {lineLabel(s.product_line)}
                   </div>
-                </td>
-                <td className="px-4 py-3 text-[13px] text-taco-sub whitespace-nowrap align-top">
-                  {s.catalog_category ?? "—"}
-                </td>
-                <td className="px-4 py-3 align-top max-w-[220px]">
-                  {synonyms.length === 0 && unitSyns.length === 0 ? (
-                    <span className="text-[12px] text-taco-muted">—</span>
-                  ) : (
-                    <div className="flex flex-wrap gap-1">
+                  {synonyms.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
                       {synonyms.slice(0, 4).map((syn) => (
                         <span
                           key={`s-${syn}`}
@@ -117,19 +110,35 @@ export function SkuTable({
                         </span>
                       ))}
                       {synonyms.length > 4 && (
-                        <span className="text-[11px] text-taco-muted px-1">
+                        <span className="text-[11px] text-taco-muted px-1 self-center">
                           +{synonyms.length - 4}
                         </span>
                       )}
-                      {unitSyns.slice(0, 2).map((u) => (
+                    </div>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-[13px] text-taco-sub whitespace-nowrap align-top">
+                  {s.catalog_category ?? "—"}
+                </td>
+                <td className="px-4 py-3 align-top max-w-[180px]">
+                  <div className="text-[13px] text-taco-text font-medium">
+                    {s.unit ?? "—"}
+                  </div>
+                  {unitSyns.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {unitSyns.slice(0, 3).map((u) => (
                         <span
                           key={`u-${u}`}
                           className="text-[11px] px-2 py-0.5 rounded-full bg-[#EBF3FD] text-taco-info"
-                          title="Sinonim UOM"
                         >
                           {u}
                         </span>
                       ))}
+                      {unitSyns.length > 3 && (
+                        <span className="text-[11px] text-taco-muted px-1 self-center">
+                          +{unitSyns.length - 3}
+                        </span>
+                      )}
                     </div>
                   )}
                 </td>
@@ -149,9 +158,6 @@ export function SkuTable({
                     <div>
                       {formatIdr(avg ?? s.min_price)}
                     </div>
-                  )}
-                  {s.unit && (
-                    <div className="text-[11px] text-taco-muted">/{s.unit}</div>
                   )}
                 </td>
                 <td className="px-4 py-3 align-top">
