@@ -15,9 +15,12 @@ import { TaroInvoiceSkuCorrection } from '../database/entities/taro-invoice-sku-
 import {
   TaroInvoiceRecommendation,
   TaroRecommendationStatus,
+  TaroRecommendationType,
 } from '../database/entities/taro-invoice-recommendation.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
+import { TaroMappingRule } from '../database/entities/taro-mapping-rule.entity';
 import { QUEUE_TARO_OCR } from './taro-invoices.constants';
+import { RegionsService } from '../regions/regions.service';
 
 const CONFIDENCE_THRESHOLD = 0.85;
 
@@ -40,7 +43,10 @@ export class TaroInvoicesService {
     private readonly recsRepo: Repository<TaroInvoiceRecommendation>,
     @InjectRepository(TacoSku)
     private readonly skusRepo: Repository<TacoSku>,
+    @InjectRepository(TaroMappingRule)
+    private readonly mappingRulesRepo: Repository<TaroMappingRule>,
     @InjectQueue(QUEUE_TARO_OCR) private readonly ocrQueue: Queue,
+    private readonly regions: RegionsService,
   ) {
     fs.mkdirSync(this.uploadDir, { recursive: true });
   }
@@ -50,12 +56,17 @@ export class TaroInvoicesService {
   async bulkUpload(
     files: Express.Multer.File[],
     uploadedBy: string | null,
-  ): Promise<Array<{ id: string; file_name: string; status: TaroInvoiceStatus }>> {
+    regionId: string | null,
+  ): Promise<Array<{ id: string; file_name: string; status: TaroInvoiceStatus; region_id: string | null }>> {
     if (!files || files.length === 0) {
       throw new BadRequestException('At least one file is required (multipart field "files")');
     }
 
-    const results: Array<{ id: string; file_name: string; status: TaroInvoiceStatus }> = [];
+    if (regionId) {
+      await this.regions.assertIsArea(regionId);
+    }
+
+    const results: Array<{ id: string; file_name: string; status: TaroInvoiceStatus; region_id: string | null }> = [];
     for (const file of files) {
       // Insert a row first so we get the UUID, then persist the file under the
       // canonical name `${id}${ext}`. Image streaming resolves by id prefix —
@@ -63,9 +74,11 @@ export class TaroInvoicesService {
       const invoice = await this.invoicesRepo.save(
         this.invoicesRepo.create({
           uploaded_by: uploadedBy,
-          status: TaroInvoiceStatus.PROCESSING,
+          status: TaroInvoiceStatus.QUEUED,
+          progress_percent: 0,
           raw_image_url: '',
           file_name: file.originalname,
+          region_id: regionId,
         }),
       );
       const ext = path.extname(file.originalname).toLowerCase() || '.bin';
@@ -80,9 +93,134 @@ export class TaroInvoicesService {
         imagePath: canonicalPath,
       });
 
-      results.push({ id: invoice.id, file_name: file.originalname, status: invoice.status });
+      results.push({
+        id: invoice.id,
+        file_name: file.originalname,
+        status: invoice.status,
+        region_id: regionId,
+      });
     }
     return results;
+  }
+
+  // ---- Upload progress (refresh-resilient) ----
+
+  async inProgressForUser(userId: string | null): Promise<Array<{
+    id: string;
+    file_name: string | null;
+    status: TaroInvoiceStatus;
+    progress_percent: number;
+    uploaded_at: Date;
+    region: { id: string; code: string; name: string; display_path: string } | null;
+  }>> {
+    if (!userId) return [];
+    const rows = await this.invoicesRepo
+      .createQueryBuilder('inv')
+      .leftJoinAndSelect('inv.region', 'region')
+      .where('inv.uploaded_by = :uid', { uid: userId })
+      .andWhere(`inv.status IN ('processing', 'queued')`)
+      .andWhere(`inv.uploaded_at > NOW() - INTERVAL '24 hours'`)
+      .orderBy('inv.uploaded_at', 'DESC')
+      .getMany();
+
+    return rows.map((r) => ({
+      id: r.id,
+      file_name: r.file_name,
+      status: r.status,
+      progress_percent: r.progress_percent ?? 0,
+      uploaded_at: r.uploaded_at,
+      region: r.region
+        ? {
+            id: r.region.id,
+            code: r.region.code,
+            name: r.region.name,
+            display_path: r.region.display_path,
+          }
+        : null,
+    }));
+  }
+
+  // ---- Recommendation apply/reject ----
+
+  async applyRecommendation(
+    id: string,
+  ): Promise<{ applied: boolean; recommendation: TaroInvoiceRecommendation; result?: unknown; not_implemented?: string }> {
+    const rec = await this.recsRepo.findOne({ where: { id } });
+    if (!rec) throw new NotFoundException(`Recommendation ${id} not found`);
+    if (rec.status !== TaroRecommendationStatus.PENDING) {
+      throw new BadRequestException(
+        `Recommendation already ${rec.status} — only pending can be applied.`,
+      );
+    }
+
+    let result: unknown = undefined;
+    let notImplemented: string | undefined;
+
+    switch (rec.type) {
+      case TaroRecommendationType.ADD_SYNONYM: {
+        const payload = rec.suggested_payload as { sku_id?: string; synonym?: string };
+        if (!payload.sku_id || !payload.synonym) {
+          throw new BadRequestException(
+            'Recommendation payload is missing required keys sku_id/synonym',
+          );
+        }
+        const sku = await this.skusRepo.findOne({ where: { id: payload.sku_id } });
+        if (!sku) throw new NotFoundException(`TacoSku ${payload.sku_id} not found`);
+        const synonyms = sku.product_name_aliases ?? [];
+        const next = synonyms.includes(payload.synonym)
+          ? synonyms
+          : [...synonyms, payload.synonym];
+        await this.skusRepo.update(sku.id, { product_name_aliases: next });
+        result = { sku_id: sku.id, synonyms_count: next.length };
+        break;
+      }
+      case TaroRecommendationType.CREATE_SKU: {
+        notImplemented = 'TODO: create SKU';
+        // Mark as DISMISSED (stays out of the queue) and 501 the caller.
+        await this.recsRepo.update(rec.id, {
+          status: TaroRecommendationStatus.DISMISSED,
+        });
+        return {
+          applied: false,
+          recommendation: { ...rec, status: TaroRecommendationStatus.DISMISSED },
+          not_implemented: notImplemented,
+        };
+      }
+      case TaroRecommendationType.MAPPING_RULE: {
+        const payload = rec.suggested_payload as { rule_text?: string };
+        const text = (payload.rule_text ?? rec.body ?? '').trim();
+        if (!text) {
+          throw new BadRequestException(
+            'Recommendation payload is missing rule_text and body is empty',
+          );
+        }
+        const saved = await this.mappingRulesRepo.save(
+          this.mappingRulesRepo.create({
+            rule_text: text,
+            source_recommendation_id: rec.id,
+          }),
+        );
+        result = { rule_id: saved.id };
+        break;
+      }
+    }
+
+    rec.status = TaroRecommendationStatus.APPLIED;
+    rec.applied_at = new Date();
+    const updated = await this.recsRepo.save(rec);
+    return { applied: true, recommendation: updated, result };
+  }
+
+  async rejectRecommendation(id: string): Promise<TaroInvoiceRecommendation> {
+    const rec = await this.recsRepo.findOne({ where: { id } });
+    if (!rec) throw new NotFoundException(`Recommendation ${id} not found`);
+    if (rec.status !== TaroRecommendationStatus.PENDING) {
+      throw new BadRequestException(
+        `Recommendation already ${rec.status} — only pending can be dismissed.`,
+      );
+    }
+    rec.status = TaroRecommendationStatus.DISMISSED;
+    return this.recsRepo.save(rec);
   }
 
   // ---- Listing ----
@@ -90,6 +228,7 @@ export class TaroInvoicesService {
   async list(params: {
     status?: TaroInvoiceStatus;
     needs_review?: boolean;
+    region_id?: string;
     page: number;
     limit: number;
   }): Promise<{
@@ -101,6 +240,7 @@ export class TaroInvoicesService {
       invoice_date: string | null;
       total_amount: string | null;
       file_name: string | null;
+      region_id: string | null;
       line_count: number;
       low_confidence_count: number;
       needs_review_count: number;
@@ -109,7 +249,7 @@ export class TaroInvoicesService {
     page: number;
     limit: number;
   }> {
-    const { status, needs_review, page, limit } = params;
+    const { status, needs_review, region_id, page, limit } = params;
     const offset = (page - 1) * limit;
 
     const qb = this.invoicesRepo
@@ -122,6 +262,7 @@ export class TaroInvoicesService {
       .addSelect('inv.invoice_date', 'invoice_date')
       .addSelect('inv.total_amount', 'total_amount')
       .addSelect('inv.file_name', 'file_name')
+      .addSelect('inv.region_id', 'region_id')
       .addSelect('COUNT(li.id)::int', 'line_count')
       .addSelect(
         `COUNT(li.id) FILTER (WHERE li.confidence_score < ${CONFIDENCE_THRESHOLD})::int`,
@@ -135,6 +276,7 @@ export class TaroInvoicesService {
       .orderBy('inv.uploaded_at', 'DESC');
 
     if (status) qb.andWhere('inv.status = :status', { status });
+    if (region_id) qb.andWhere('inv.region_id = :rid', { rid: region_id });
     if (needs_review === true) {
       qb.andHaving('COUNT(li.id) FILTER (WHERE li.needs_review = true) > 0');
     } else if (needs_review === false) {
@@ -143,7 +285,8 @@ export class TaroInvoicesService {
 
     // Total — separate count query so the GROUP BY doesn't break pagination math.
     const totalQb = this.invoicesRepo.createQueryBuilder('inv');
-    if (status) totalQb.where('inv.status = :status', { status });
+    if (status) totalQb.andWhere('inv.status = :status', { status });
+    if (region_id) totalQb.andWhere('inv.region_id = :rid', { rid: region_id });
     const total = await totalQb.getCount();
 
     const raw = await qb.offset(offset).limit(limit).getRawMany();
@@ -156,6 +299,7 @@ export class TaroInvoicesService {
         invoice_date: r.invoice_date,
         total_amount: r.total_amount,
         file_name: r.file_name,
+        region_id: r.region_id ?? null,
         line_count: r.line_count ?? 0,
         low_confidence_count: r.low_confidence_count ?? 0,
         needs_review_count: r.needs_review_count ?? 0,
@@ -237,7 +381,8 @@ export class TaroInvoicesService {
 
   // ---- Analytics ----
 
-  async analytics(): Promise<{
+  async analytics(regionId?: string): Promise<{
+    region_id: string | null;
     total_invoices: number;
     processed_count: number;
     needs_review_count: number;
@@ -246,22 +391,33 @@ export class TaroInvoicesService {
     low_confidence_skus: Array<{ sku_id: string; sku_code: string; sku_name: string; avg_confidence: number; line_count: number }>;
     monthly_volume: Array<{ month: string; count: number }>;
   }> {
-    const totals = await this.invoicesRepo
-      .createQueryBuilder('inv')
-      .select('COUNT(*)::int', 'total_invoices')
-      .addSelect(
-        `COUNT(*) FILTER (WHERE inv.status = 'done')::int`,
-        'processed_count',
-      )
-      .getRawOne();
+    // Helper to apply region scope on either an invoice-rooted or a line-item-rooted QB.
+    const scopeInvoice = <T extends import('typeorm').SelectQueryBuilder<any>>(qb: T): T => {
+      if (regionId) qb.andWhere('inv.region_id = :rid', { rid: regionId });
+      return qb;
+    };
 
-    const reviewRow = await this.lineItemsRepo
+    const totals = await scopeInvoice(
+      this.invoicesRepo
+        .createQueryBuilder('inv')
+        .select('COUNT(*)::int', 'total_invoices')
+        .addSelect(
+          `COUNT(*) FILTER (WHERE inv.status = 'done')::int`,
+          'processed_count',
+        ),
+    ).getRawOne();
+
+    const reviewQb = this.lineItemsRepo
       .createQueryBuilder('li')
       .select('COUNT(*) FILTER (WHERE li.needs_review = true)::int', 'needs_review_count')
-      .addSelect('COALESCE(AVG(li.confidence_score), 0)::float', 'avg_confidence')
-      .getRawOne();
+      .addSelect('COALESCE(AVG(li.confidence_score), 0)::float', 'avg_confidence');
+    if (regionId) {
+      reviewQb.innerJoin('taro_invoices', 'inv', 'inv.id = li.invoice_id')
+        .andWhere('inv.region_id = :rid', { rid: regionId });
+    }
+    const reviewRow = await reviewQb.getRawOne();
 
-    const topSkus = await this.lineItemsRepo
+    const topSkusQb = this.lineItemsRepo
       .createQueryBuilder('li')
       .innerJoin(TacoSku, 'sku', 'sku.id = li.matched_sku_id')
       .select('sku.id', 'sku_id')
@@ -272,10 +428,14 @@ export class TaroInvoicesService {
       .addGroupBy('sku.code')
       .addGroupBy('sku.name')
       .orderBy('count', 'DESC')
-      .limit(10)
-      .getRawMany();
+      .limit(10);
+    if (regionId) {
+      topSkusQb.innerJoin('taro_invoices', 'inv', 'inv.id = li.invoice_id')
+        .andWhere('inv.region_id = :rid', { rid: regionId });
+    }
+    const topSkus = await topSkusQb.getRawMany();
 
-    const lowConfSkus = await this.lineItemsRepo
+    const lowConfQb = this.lineItemsRepo
       .createQueryBuilder('li')
       .innerJoin(TacoSku, 'sku', 'sku.id = li.matched_sku_id')
       .select('sku.id', 'sku_id')
@@ -288,18 +448,25 @@ export class TaroInvoicesService {
       .addGroupBy('sku.name')
       .having('AVG(li.confidence_score) < :t', { t: CONFIDENCE_THRESHOLD })
       .orderBy('avg_confidence', 'ASC')
-      .limit(10)
-      .getRawMany();
+      .limit(10);
+    if (regionId) {
+      lowConfQb.innerJoin('taro_invoices', 'inv', 'inv.id = li.invoice_id')
+        .andWhere('inv.region_id = :rid', { rid: regionId });
+    }
+    const lowConfSkus = await lowConfQb.getRawMany();
 
-    const monthly = await this.invoicesRepo
-      .createQueryBuilder('inv')
-      .select(`to_char(date_trunc('month', inv.uploaded_at), 'YYYY-MM')`, 'month')
-      .addSelect('COUNT(*)::int', 'count')
+    const monthly = await scopeInvoice(
+      this.invoicesRepo
+        .createQueryBuilder('inv')
+        .select(`to_char(date_trunc('month', inv.uploaded_at), 'YYYY-MM')`, 'month')
+        .addSelect('COUNT(*)::int', 'count'),
+    )
       .groupBy(`date_trunc('month', inv.uploaded_at)`)
       .orderBy(`date_trunc('month', inv.uploaded_at)`, 'ASC')
       .getRawMany();
 
     return {
+      region_id: regionId ?? null,
       total_invoices: totals?.total_invoices ?? 0,
       processed_count: totals?.processed_count ?? 0,
       needs_review_count: reviewRow?.needs_review_count ?? 0,

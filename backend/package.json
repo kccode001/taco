@@ -19,7 +19,10 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed.ts",
-    "seed:visit-schedules": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-visit-schedules.ts"
+    "seed:visit-schedules": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-visit-schedules.ts",
+    "seed:regions": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-regions.ts",
+    "seed:taco-sku-embeddings": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taco-sku-embeddings.ts",
+    "seed:visit-history": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-visit-history.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",

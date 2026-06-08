@@ -12,6 +12,7 @@ import {
 } from '../database/entities/visit-schedule.entity';
 import { User, UserRole } from '../database/entities/user.entity';
 import { Visit, VisitStatus } from '../database/entities/visit.entity';
+import { Territory } from '../database/entities/territory.entity';
 import { CreateVisitScheduleDto } from './dto/create-visit-schedule.dto';
 import { UpdateVisitScheduleDto } from './dto/update-visit-schedule.dto';
 import { VisitScheduleQueryDto } from './dto/visit-schedule-query.dto';
@@ -47,6 +48,8 @@ export class VisitSchedulesService {
     private readonly usersRepo: Repository<User>,
     @InjectRepository(Visit)
     private readonly visitsRepo: Repository<Visit>,
+    @InjectRepository(Territory)
+    private readonly territoriesRepo: Repository<Territory>,
   ) {}
 
   // ---------- Admin CRUD ----------
@@ -193,7 +196,14 @@ export class VisitSchedulesService {
    */
   async bySalesStaff(): Promise<
     Array<{
-      sales_staff: { id: string; name: string; email: string };
+      sales_staff: {
+        id: string;
+        name: string;
+        email: string;
+        phone: string | null;
+        territory_id: string | null;
+        territory_name: string | null;
+      };
       schedules: VisitSchedule[];
       store_count: number;
     }>
@@ -209,6 +219,15 @@ export class VisitSchedulesService {
       order: { created_at: 'DESC' },
     });
 
+    // Resolve every territory_id → name in a single query.
+    const territoryIds = Array.from(
+      new Set(reps.map((r) => r.territory_id).filter((t): t is string => !!t)),
+    );
+    const territories = territoryIds.length
+      ? await this.territoriesRepo.find({ where: { id: In(territoryIds) } })
+      : [];
+    const territoryName = new Map<string, string>(territories.map((t) => [t.id, t.name]));
+
     const byRep = new Map<string, VisitSchedule[]>();
     for (const s of schedules) {
       const list = byRep.get(s.sales_staff_id) ?? [];
@@ -219,7 +238,14 @@ export class VisitSchedulesService {
     return reps.map((r) => {
       const list = byRep.get(r.id) ?? [];
       return {
-        sales_staff: { id: r.id, name: r.name, email: r.email },
+        sales_staff: {
+          id: r.id,
+          name: r.name,
+          email: r.email,
+          phone: r.phone ?? null,
+          territory_id: r.territory_id ?? null,
+          territory_name: r.territory_id ? territoryName.get(r.territory_id) ?? null : null,
+        },
         schedules: list,
         store_count: list.length,
       };
@@ -235,19 +261,32 @@ export class VisitSchedulesService {
   }
 
   async thisWeekForRep(repId: string): Promise<
-    Array<{ date: string; weekday: number; items: ResolvedPlannedVisit[] }>
+    Array<{ date: string; weekday: number; weekday_short: string; items: ResolvedPlannedVisit[] }>
   > {
     const { start, end } = weekRange(new Date());
     const items = await this.resolveForRep(repId, start, end);
 
+    // Indonesian short weekday labels keyed by JS getDay() (0=Sun..6=Sat).
+    const SHORT_ID: Record<number, string> = {
+      0: 'Min', // Minggu
+      1: 'Sen', // Senin
+      2: 'Sel', // Selasa
+      3: 'Rab', // Rabu
+      4: 'Kam', // Kamis
+      5: 'Jum', // Jumat
+      6: 'Sab', // Sabtu
+    };
+
     // Build 7 day buckets Mon..Sun.
-    const days: Array<{ date: string; weekday: number; items: ResolvedPlannedVisit[] }> = [];
+    const days: Array<{ date: string; weekday: number; weekday_short: string; items: ResolvedPlannedVisit[] }> = [];
     const cursor = new Date(start);
     for (let i = 0; i < 7; i++) {
       const dStr = formatLocalDate(cursor);
+      const dow = cursor.getDay();
       days.push({
         date: dStr,
-        weekday: cursor.getDay(),
+        weekday: dow,
+        weekday_short: SHORT_ID[dow],
         items: items.filter((it) => it.scheduled_for === dStr),
       });
       cursor.setDate(cursor.getDate() + 1);

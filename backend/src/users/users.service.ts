@@ -41,6 +41,45 @@ export class UsersService {
     return user;
   }
 
+  /**
+   * `/users/me` payload — same as findOne but eagerly joins territory
+   * so the FE doesn't need a second roundtrip to resolve the name/code.
+   */
+  async findMe(id: string): Promise<{
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+    phone: string | null;
+    territory_id: string | null;
+    territory: { id: string; name: string; code: string } | null;
+    is_active: boolean;
+    created_at: Date;
+    updated_at: Date;
+  }> {
+    const user = await this.usersRepository.findOne({
+      where: { id },
+      relations: { territory: true },
+    });
+    if (!user) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      phone: user.phone ?? null,
+      territory_id: user.territory_id ?? null,
+      territory: user.territory
+        ? { id: user.territory.id, name: user.territory.name, code: user.territory.code }
+        : null,
+      is_active: user.is_active,
+      created_at: user.created_at,
+      updated_at: user.updated_at,
+    };
+  }
+
   async findByEmail(email: string): Promise<User | null> {
     return this.usersRepository.findOne({ where: { email } });
   }

@@ -3,11 +3,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { VisitSchedule } from '../database/entities/visit-schedule.entity';
 import { User } from '../database/entities/user.entity';
 import { Visit } from '../database/entities/visit.entity';
+import { Territory } from '../database/entities/territory.entity';
 import { VisitSchedulesService } from './visit-schedules.service';
 import { VisitSchedulesController } from './visit-schedules.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([VisitSchedule, User, Visit])],
+  imports: [TypeOrmModule.forFeature([VisitSchedule, User, Visit, Territory])],
   providers: [VisitSchedulesService],
   controllers: [VisitSchedulesController],
   exports: [VisitSchedulesService],
