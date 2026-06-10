@@ -524,3 +524,47 @@ change needed** — didn't route anything to Grout.
   in-session).
 
 **Status:** FE complete + pushed. status.json `tile: idle`. Pinged Yumi w/ commit.
+
+---
+
+## 2026-06-10 — Dashboard invoice list: "Invoice ID" column shows real id (not file_name)
+
+**Scope (mine):** FE-only. File: `app/taro/invoices/page.tsx` (dashboard table
+`/taro/invoices` "Daftar Invoice Taro" — NOT the PWA `/taro-app/*`).
+
+### The ask (KC)
+The "Invoice ID" column rendered the uploaded **image/file name** (e.g. "U001.
+Nota Alfalah Tegal.jpeg") instead of the actual invoice identifier. Also confirm
+the newest-upload-first default sort is in place.
+
+### What I changed — Invoice ID column
+The row mapper built `short_id` with a `file_name` fallback:
+`short_id = r.short_id ?? (fileName ? fileName.replace(/\.[^.]+$/,"") : id.slice(0,8))`.
+The BE list query (`taro-invoices.service.ts:683-695`) serializes **no** `short_id`,
+so that fallback resolved to the **filename** — exactly KC's bug. Replaced it with
+`short_id = (r.short_id) ?? id.slice(0,8)` — the canonical 8-char invoice id prefix
+the team refers to invoices by (e.g. `2af91218`), derived from the same `id` the
+detail link (`/taro/invoices/${inv.id}`) uses, so the shown id always matches the
+record. The cell render (`inv.short_id`, font-mono, line ~405) was already correct;
+only the value source changed. Chose the 8-char prefix over the full UUID — it's the
+team's canonical handle and keeps the table column readable on mobile + desktop.
+
+### Sort — already in place (confirmed, no change)
+Default newest-upload-first sort shipped previously (`d8ef003c`): the `filtered`
+useMemo ends with `rows.sort((a,b) => uploadedAtMs(b) - uploadedAtMs(a))` (descending)
+using the `uploadedAtMs` helper (`uploaded_at` → epoch ms, invalid→0→bottom). Intact
+after the `fae57f16` revert (that revert only touched `taro-app/home/page.tsx`).
+Recomputed from re-fetched data every mount → survives reload.
+
+### Quality / verification
+- `tsc --noEmit`: 0 errors from the file. `eslint`: clean.
+- Live click-through is Scout's smoke pass (no interactive browser in-session).
+
+### ⚠️ Heads-up flagged to Yumi (unrelated to this task)
+My last commit `cf178752` (home owner-filter fix, "show all BE-scoped uploads") was
+**reverted** at `fae57f16`. The home list now shows the client owner re-filter again
+— i.e. the `/taro-app/home` "missing invoice" bug (`2af91218` shown in Riwayat but
+not home) is likely **back**. Did not touch it (out of scope here); flagged for Yumi
+to decide whether to re-apply or pursue the BE-side identity reconciliation instead.
+
+**Status:** FE complete + pushed. status.json `tile: idle`. Pinged Yumi w/ commit.

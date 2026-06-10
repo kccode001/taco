@@ -126,13 +126,15 @@ export default function TaroInvoiceListPage() {
           (r.supplier_name as string | undefined) ??
           (r.supplier as string | undefined) ??
           null;
-        // Prefer BE-supplied `short_id`. Otherwise use `file_name` (without
-        // extension) so the list shows a human-readable identifier rather
-        // than the first 12 chars of a UUID. Last fallback is the UUID slice.
-        const fileName = (r.file_name as string | undefined) ?? "";
-        const short_id =
-          (r.short_id as string | undefined) ??
-          (fileName ? fileName.replace(/\.[^.]+$/, "") : id.slice(0, 8));
+        // "Invoice ID" must show the canonical invoice identifier, never the
+        // uploaded image/file name (KC). The BE list query serializes no
+        // `short_id` (taro-invoices.service.ts:683-695 returns `id`, `file_name`
+        // etc.), so the previous `file_name` fallback meant this column rendered
+        // the filename. Derive from the real invoice `id` instead — the 8-char
+        // UUID prefix the team refers to invoices by (e.g. `2af91218`). It comes
+        // from the same canonical `id` the detail link uses, so the shown id
+        // always matches the row's record.
+        const short_id = (r.short_id as string | undefined) ?? id.slice(0, 8);
         return {
           id,
           short_id,
