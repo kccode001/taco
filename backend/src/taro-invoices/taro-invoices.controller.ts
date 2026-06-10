@@ -83,8 +83,12 @@ export class TaroInvoicesController {
 
   @Get('uploads/in-progress')
   @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
-  uploadsInProgress(@CurrentUser('id') userId: string) {
-    return this.invoices.inProgressForUser(userId);
+  uploadsInProgress(
+    @CurrentUser('id') userId: string,
+    @CurrentUser('email') email: string,
+    @CurrentUser('role') role: UserRole,
+  ) {
+    return this.invoices.inProgressForUser({ id: userId, email, role });
   }
 
   @Get('my-weekly-stats')
@@ -201,6 +205,7 @@ export class TaroInvoicesController {
   list(
     @Query() query: ListTaroInvoicesDto,
     @CurrentUser('id') userId: string,
+    @CurrentUser('email') email: string,
     @CurrentUser('role') role: UserRole,
   ) {
     const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
@@ -223,6 +228,15 @@ export class TaroInvoicesController {
     // taro_agent → auto-scope to their own uploads. Filter derived from JWT
     // sub, never from query params, so the agent can't peek at others.
     const uploaded_by = role === UserRole.TARO_AGENT ? userId : undefined;
-    return this.invoices.list({ status, needs_review, region_id, page, limit, uploaded_by, search });
+    return this.invoices.list({
+      status,
+      needs_review,
+      region_id,
+      page,
+      limit,
+      uploaded_by,
+      search,
+      user: { id: userId, email, role },
+    });
   }
 }

@@ -207,6 +207,19 @@ export class TaroInvoicesService implements OnModuleInit {
   async signImageUrl(id: string, user: { id: string; email: string; role: string }): Promise<string> {
     // Confirm the file exists so we don't hand out a token for a 404.
     this.imagePath(id);
+    return this.signImageToken(id, user);
+  }
+
+  /**
+   * Mint the signed `/:id/image?token=` URL without re-checking the file on
+   * disk. `signImageUrl` does the existence check first; list serialization
+   * (`withImageUrls`) checks existence in bulk via `storedImageIds`, so it
+   * calls this directly to avoid a `readdirSync` per row.
+   */
+  private async signImageToken(
+    id: string,
+    user: { id: string; email: string; role: string },
+  ): Promise<string> {
     const token = await this.jwt.signAsync(
       {
         sub: user.id,
@@ -221,6 +234,46 @@ export class TaroInvoicesService implements OnModuleInit {
       },
     );
     return `/api/taro-invoices/${id}/image?token=${encodeURIComponent(token)}`;
+  }
+
+  /**
+   * Set of invoice ids that have an image file on disk. Images are stored as
+   * `${invoice.id}${ext}`, so the basename (extension stripped) is the id.
+   * One directory read serves a whole list page — much cheaper than calling
+   * `imagePath` (which `readdirSync`s) once per row.
+   */
+  private storedImageIds(): Set<string> {
+    let files: string[];
+    try {
+      files = fs.readdirSync(this.uploadDir);
+    } catch {
+      // Upload dir may not exist yet (fresh install / empty volume).
+      return new Set();
+    }
+    return new Set(files.map((f) => path.basename(f, path.extname(f))));
+  }
+
+  /**
+   * Attach a short-lived signed `image_url` to each list row so the PWA home
+   * screen can render the invoice photo as the thumbnail in one call, instead
+   * of a per-row round-trip to `/:id/image-url`. Rows whose image file isn't
+   * on disk get `image_url: null` so the FE falls back to the placeholder icon
+   * cleanly — never a 404 URL. One directory read per page; one 15-minute JWT
+   * per row, matching the detail signed-URL scheme.
+   */
+  private async withImageUrls<T extends { id: string }>(
+    rows: T[],
+    user: { id: string; email: string; role: string },
+  ): Promise<Array<T & { image_url: string | null }>> {
+    const stored = this.storedImageIds();
+    return Promise.all(
+      rows.map(async (row) => ({
+        ...row,
+        image_url: stored.has(row.id)
+          ? await this.signImageToken(row.id, user)
+          : null,
+      })),
+    );
   }
 
   // ---- Upload ----
@@ -297,39 +350,45 @@ export class TaroInvoicesService implements OnModuleInit {
 
   // ---- Upload progress (refresh-resilient) ----
 
-  async inProgressForUser(userId: string | null): Promise<Array<{
+  async inProgressForUser(
+    user: { id: string; email: string; role: string } | null,
+  ): Promise<Array<{
     id: string;
     file_name: string | null;
     status: TaroInvoiceStatus;
     progress_percent: number;
     uploaded_at: Date;
     region: { id: string; code: string; name: string; display_path: string } | null;
+    image_url: string | null;
   }>> {
-    if (!userId) return [];
+    if (!user?.id) return [];
     const rows = await this.invoicesRepo
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.region', 'region')
-      .where('inv.uploaded_by = :uid', { uid: userId })
+      .where('inv.uploaded_by = :uid', { uid: user.id })
       .andWhere(`inv.status IN ('processing', 'queued')`)
       .andWhere(`inv.uploaded_at > NOW() - INTERVAL '24 hours'`)
       .orderBy('inv.uploaded_at', 'DESC')
       .getMany();
 
-    return rows.map((r) => ({
-      id: r.id,
-      file_name: r.file_name,
-      status: r.status,
-      progress_percent: r.progress_percent ?? 0,
-      uploaded_at: r.uploaded_at,
-      region: r.region
-        ? {
-            id: r.region.id,
-            code: r.region.code,
-            name: r.region.name,
-            display_path: r.region.display_path,
-          }
-        : null,
-    }));
+    return this.withImageUrls(
+      rows.map((r) => ({
+        id: r.id,
+        file_name: r.file_name,
+        status: r.status,
+        progress_percent: r.progress_percent ?? 0,
+        uploaded_at: r.uploaded_at,
+        region: r.region
+          ? {
+              id: r.region.id,
+              code: r.region.code,
+              name: r.region.name,
+              display_path: r.region.display_path,
+            }
+          : null,
+      })),
+      user,
+    );
   }
 
   // ---- Recommendation apply/reject ----
@@ -505,6 +564,12 @@ export class TaroInvoicesService implements OnModuleInit {
      * the fields are OR'd together so any one hit qualifies.
      */
     search?: string;
+    /**
+     * The authenticated requester, used to mint the per-row signed
+     * `image_url`. The home screen renders the invoice photo as the list
+     * thumbnail straight off this payload — no per-row `/:id/image-url` call.
+     */
+    user: { id: string; email: string; role: string };
   }): Promise<{
     data: Array<{
       id: string;
@@ -520,12 +585,13 @@ export class TaroInvoicesService implements OnModuleInit {
       line_count: number;
       low_confidence_count: number;
       needs_review_count: number;
+      image_url: string | null;
     }>;
     total: number;
     page: number;
     limit: number;
   }> {
-    const { status, needs_review, region_id, page, limit, uploaded_by, search } = params;
+    const { status, needs_review, region_id, page, limit, uploaded_by, search, user } = params;
     const offset = (page - 1) * limit;
     const trimmedSearch = typeof search === 'string' ? search.trim() : '';
     const hasSearch = trimmedSearch.length > 0;
@@ -608,8 +674,8 @@ export class TaroInvoicesService implements OnModuleInit {
     const total = await totalQb.getCount();
 
     const raw = await qb.offset(offset).limit(limit).getRawMany();
-    return {
-      data: raw.map((r) => ({
+    const data = await this.withImageUrls(
+      raw.map((r) => ({
         id: r.id,
         uploaded_at: r.uploaded_at,
         status: r.status,
@@ -624,6 +690,10 @@ export class TaroInvoicesService implements OnModuleInit {
         low_confidence_count: r.low_confidence_count ?? 0,
         needs_review_count: r.needs_review_count ?? 0,
       })),
+      user,
+    );
+    return {
+      data,
       total,
       page,
       limit,

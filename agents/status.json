@@ -1,8 +1,15 @@
 {
   "grout": {
     "status": "idle",
-    "task": "2026-06-10-pwa-line-item-resolution",
+    "task": "2026-06-10-taro-list-image-url",
     "role": "backend",
     "updated_at": "2026-06-10"
+  },
+  "scout": {
+    "state": "idle",
+    "lastSeen": "2026-06-10T06:35:00.000Z",
+    "currentTask": null,
+    "assignedProject": "taco",
+    "note": "RE-GATE 4 TACO line-item resolution: FAIL (no-op re-dispatch). git HEAD still e414f84d — main has NOT moved since RE-GATE 3 FAIL; cited commits f1c88b33/e414f84 were already merged then. AC-3/AC-4/AC-1/2/6 pass; AC-5 still FAILs. Re-confirmed LIVE: seed-taro-sales-agents still crashes (exit 1, brand metadata), 0/42 owned; 25/42 done invoices hold needs_review lines. BUG-3 + BUG-2 sibling NEVER LANDED. Routed back to Grout. DB pristine 42/234."
   }
 }
