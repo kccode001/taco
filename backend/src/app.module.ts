@@ -62,6 +62,14 @@ import { VisitSchedule } from './database/entities/visit-schedule.entity';
 import { Region } from './database/entities/region.entity';
 import { TaroMappingRule } from './database/entities/taro-mapping-rule.entity';
 import { TaroAgentRegion } from './database/entities/taro-agent-region.entity';
+// --- TACO v2 entities (new tables, prefix taro_v2_; v1 left frozen) ---
+import { AreaV2 } from './database/entities/v2/area-v2.entity';
+import { StoreV2 } from './database/entities/v2/store-v2.entity';
+import { SalesAgentV2 } from './database/entities/v2/sales-agent-v2.entity';
+import { InvoiceV2 } from './database/entities/v2/invoice-v2.entity';
+import { InvoiceImageV2 } from './database/entities/v2/invoice-image-v2.entity';
+import { InvoiceLineItemV2 } from './database/entities/v2/invoice-line-item-v2.entity';
+import { TaroV2Module } from './taro-v2/taro-v2.module';
 
 @Module({
   imports: [
@@ -84,6 +92,8 @@ import { TaroAgentRegion } from './database/entities/taro-agent-region.entity';
           VisitSchedule,
           Region, TaroMappingRule,
           TaroAgentRegion,
+          AreaV2, StoreV2, SalesAgentV2,
+          InvoiceV2, InvoiceImageV2, InvoiceLineItemV2,
         ],
         synchronize: true,
         logging: false,
@@ -121,6 +131,7 @@ import { TaroAgentRegion } from './database/entities/taro-agent-region.entity';
     TaroSalesAgentsModule,
     VisitSchedulesModule,
     RegionsModule,
+    TaroV2Module,
   ],
 })
 export class AppModule {}
