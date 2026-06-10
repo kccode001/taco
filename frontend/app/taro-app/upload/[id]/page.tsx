@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AxiosError } from "axios";
 import {
@@ -849,11 +849,13 @@ export default function TaroUploadReviewPage() {
   );
 }
 
-// Full-screen invoice photo preview. Dismiss via backdrop tap, the X button,
-// Esc, or the device back gesture (a history entry is pushed on open so the
-// back gesture pops the lightbox instead of leaving the review screen). Body
-// scroll is locked while open. The image is object-contain so the full invoice
-// is legible and never cropped; the scroll container allows native pinch-zoom.
+// Full-screen invoice photo preview. Dismiss four ways: backdrop tap, the X
+// button, Esc, or the device back gesture. X / Esc / backdrop unmount the
+// lightbox DIRECTLY via parent state (no history round-trip) so a close always
+// sticks; the back gesture is an additive convenience backed by a single pushed
+// history entry. Body scroll is locked while open. The image is object-contain
+// so the full invoice is legible and never cropped; the scroll container allows
+// native pinch-zoom.
 function ImageLightbox({
   src,
   onClose,
@@ -861,18 +863,27 @@ function ImageLightbox({
   src: string;
   onClose: () => void;
 }) {
-  // Single close funnel: Esc / X / backdrop all step history back, and the
-  // popstate handler is the one place that flips the parent state off — so the
-  // device back gesture and explicit closes behave identically.
-  const requestClose = useCallback(() => {
-    window.history.back();
-  }, []);
+  // Let the long-lived listeners below call the latest onClose without listing
+  // it as an effect dep — that unstable identity is exactly what made the old
+  // effect re-run and re-push history entries (the RE-GATE 6 trap).
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
-    window.history.pushState({ tacoLightbox: true }, "");
-    const onPop = () => onClose();
+    // Push a SINGLE history entry so the device back gesture pops the lightbox
+    // rather than leaving the review screen. The history.state guard makes this
+    // idempotent: it survives React StrictMode's dev double-invoke and reuses a
+    // leftover entry across re-opens, so we never stack phantom entries. Merge
+    // the existing state so we don't clobber Next's router routing keys.
+    if (!window.history.state?.tacoLightbox) {
+      window.history.pushState(
+        { ...window.history.state, tacoLightbox: true },
+        "",
+      );
+    }
+    const onPop = () => onCloseRef.current();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") requestClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("popstate", onPop);
     window.addEventListener("keydown", onKey);
@@ -885,7 +896,7 @@ function ImageLightbox({
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [onClose, requestClose]);
+  }, []);
 
   return (
     <div
@@ -893,14 +904,14 @@ function ImageLightbox({
       role="dialog"
       aria-modal="true"
       aria-label="Foto invoice"
-      onClick={requestClose}
+      onClick={() => onClose()}
     >
       <div className="flex justify-end px-3 pt-3 pb-1">
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            requestClose();
+            onClose();
           }}
           aria-label="Tutup"
           className="w-11 h-11 rounded-full bg-white/10 text-white flex items-center justify-center active:bg-white/20"

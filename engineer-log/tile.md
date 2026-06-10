@@ -278,3 +278,52 @@ the list payload (this morning's lesson). `TaroInvoiceSummary.image_url?` alread
 declared at `lib/api.ts:758`.
 
 **Status (Part A):** Pushed. status.json working→idle. Pinged Yumi w/ commit.
+
+---
+
+## 2026-06-10 — RE-GATE 6 / BUG-6: image lightbox un-dismissable (trap fix)
+
+**Scope (mine):** FE-only. File: `app/taro-app/upload/[id]/page.tsx` (`ImageLightbox`,
++ `useRef` import). Features 2 (competitor re-edit) + 3 (home thumbs) PASSED clean
+in RE-GATE 6; this was the sole blocker.
+
+### The bug (Scout's instrumentation, confirmed)
+The lightbox couldn't be dismissed by ANY of its four paths (X / Esc / backdrop /
+back-gesture) — rep tapping an invoice photo was trapped full-screen. Root cause:
+the close funnel routed everything through `window.history.back()`, and the mount
+`useEffect` had deps `[onClose, requestClose]` where `onClose={() =>
+setPreviewOpen(false)}` is a **fresh identity every render** → the effect re-ran and
+re-`pushState`'d on each render; under React StrictMode (dev) it double-pushed, so
+the `popstate`→unmount handshake desynced and `onClose` never fired.
+
+### The fix (Scout's recommended path)
+- **X / Esc / backdrop now unmount DIRECTLY via parent state** (`onClose()` →
+  `setPreviewOpen(false)`), with **no `history.back()` round-trip** — a close always
+  sticks. Removed the `requestClose` funnel entirely.
+- **History entry pushed exactly ONCE**, guarded by `window.history.state?.tacoLightbox`
+  so it's idempotent under StrictMode's dev double-invoke and reuses a leftover entry
+  across re-opens (never stacks phantom entries). Merge existing state into the push so
+  Next's router routing keys aren't clobbered.
+- **Dropped the unstable effect deps → `[]`** (runs once on mount). The long-lived
+  `popstate`/`keydown` listeners call the latest `onClose` via an `onCloseRef` (ref,
+  not a dep) so the effect never re-runs.
+- **Back-gesture kept as additive convenience:** `popstate` → `onCloseRef.current()`.
+  No `history.back()` in cleanup (that would self-close on StrictMode's throwaway
+  unmount). Leftover dummy entry on explicit close is harmless — absorbs one silent
+  back press, self-corrects on next open via the guard; never traps.
+- Did NOT regress F1-1/2/3/5: open, object-contain, pinch-zoom (`touchAction`
+  unchanged), tap-image-doesn't-close (`stopPropagation` on img kept), no-image
+  non-interactive thumb (untouched).
+
+### Quality / verification
+- `tsc --noEmit`: 0 errors from my file (only the 2 pre-existing
+  `DashboardLayout.tsx` lucide errors remain — unrelated, predate this, flagged in
+  the task). `eslint`: clean on the file.
+- **Live browser click-through NOT run by me** — `openclaw browser` navigation is
+  policy-blocked in my session (returns "browser navigation blocked by policy"). The
+  four-path dismiss check in a real browser is Scout's re-gate (he has the tooling +
+  cleared the stale `.next` on :4014). Verified the fix by logic + static checks.
+- `next build` still fails on the pre-existing `DashboardLayout.tsx` lucide type
+  errors (not mine) so prod-build couldn't be exercised — flagged, unchanged by me.
+
+**Status:** FE complete + pushed. Pinged Scout (re-gate) + Yumi w/ commit SHA.
