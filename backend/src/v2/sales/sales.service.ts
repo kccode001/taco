@@ -52,7 +52,7 @@ export class SalesService {
       email: dto.email?.trim() || null,
       area_id: dto.area_id ?? null,
       user_id: dto.user_id ?? null,
-      is_active: true,
+      is_active: dto.active ?? true,
     });
     return this.agents.save(agent);
   }

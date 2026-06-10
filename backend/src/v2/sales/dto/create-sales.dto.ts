@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEmail,
   IsOptional,
   IsString,
@@ -38,4 +39,9 @@ export class CreateSalesDto {
   @IsOptional()
   @IsUUID()
   user_id?: string;
+
+  /** Active status on create. Defaults to true when omitted (Aktif). */
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 }
