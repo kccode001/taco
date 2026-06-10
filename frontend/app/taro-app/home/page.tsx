@@ -330,9 +330,11 @@ export default function TaroHomePage() {
                           {(u as TaroInvoiceSummary & { store_name?: string })
                             .store_name ?? u.short_id ?? u.id}
                         </div>
-                        <div className="text-[12px] text-taco-sub mt-0.5 truncate">
-                          {u.region_display ?? "—"}
-                        </div>
+                        {u.region_display ? (
+                          <div className="text-[12px] text-taco-sub mt-0.5 truncate">
+                            {u.region_display}
+                          </div>
+                        ) : null}
                         <div className="flex items-center gap-2 mt-2 flex-wrap">
                           <span
                             className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full ${TONE_BG[tone]}`}

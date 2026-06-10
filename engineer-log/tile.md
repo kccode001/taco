@@ -250,3 +250,31 @@ mode.
   smoke-check. Live click-through is Scout's pass.
 
 **Status:** FE complete + pushed. status.json working→idle. Pinged Yumi.
+
+---
+
+## 2026-06-10 — Home-card polish: drop stray region dash (Part A) + invoice thumb (Part B)
+
+**Scope (mine):** AC-1..AC-3, FE-only. File: `app/taro-app/home/page.tsx`.
+Two parts; Part B depends on Grout adding `image_url` to the recent/in-progress
+list payload (in flight) — Yumi gating my go on Part B. Shipped Part A now.
+
+### Part A — region dash fix (AC-1) ✅ DONE
+`{u.region_display ?? "—"}` (line ~334) rendered a lonely em-dash under the store
+name when an invoice had no region (KC saw a meaningless "--"). Fix: **omit the
+row entirely** when `region_display` is absent rather than show a placeholder —
+`region_display ? <div>…</div> : null`. Audited the rest of the card: `store_name`
+already falls back to `short_id`/`id` (never blank), and the line-count/time rows
+are already conditionally rendered, so 334 was the only stray placeholder.
+
+**Quality:** `tsc --noEmit` clean for my file (only pre-existing
+DashboardLayout/lucide errors remain, unrelated); `eslint` clean.
+
+### Part B — invoice photo thumbnail (AC-2) — HOLDING for Grout
+Awaiting Yumi's go: render `u.image_url` as `<img object-cover>` in the 40×40
+thumb box (lines ~325–327), `StoreIcon` fallback when null, lazy-load. Won't
+render against the unpopulated field until Grout confirms `image_url` is live in
+the list payload (this morning's lesson). `TaroInvoiceSummary.image_url?` already
+declared at `lib/api.ts:758`.
+
+**Status (Part A):** Pushed. status.json working→idle. Pinged Yumi w/ commit.
