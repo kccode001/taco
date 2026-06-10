@@ -32,6 +32,7 @@ import { TaroInvoiceSkuCorrection } from '../entities/taro-invoice-sku-correctio
 import { TaroInvoiceRecommendation } from '../entities/taro-invoice-recommendation.entity';
 import { TaroMappingRule } from '../entities/taro-mapping-rule.entity';
 import { TacoSku } from '../entities/taco-sku.entity';
+import { CompetitorBrand } from '../entities/competitor-brand.entity';
 import { TaroAgentRegion } from '../entities/taro-agent-region.entity';
 
 const ds = new DataSource({
@@ -47,6 +48,7 @@ const ds = new DataSource({
     TaroInvoiceRecommendation,
     TaroMappingRule,
     TacoSku,
+    CompetitorBrand,
     TaroAgentRegion,
   ],
   synchronize: false,
