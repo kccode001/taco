@@ -70,6 +70,9 @@ import { InvoiceV2 } from './database/entities/v2/invoice-v2.entity';
 import { InvoiceImageV2 } from './database/entities/v2/invoice-image-v2.entity';
 import { InvoiceLineItemV2 } from './database/entities/v2/invoice-line-item-v2.entity';
 import { TaroV2Module } from './taro-v2/taro-v2.module';
+import { V2ManagementModule } from './v2/v2-management.module';
+// --- TACO v2 MANAGEMENT surface entity (Mortar-owned: reason-derived recs) ---
+import { RecommendationV2 } from './database/entities/v2/recommendation-v2.entity';
 
 @Module({
   imports: [
@@ -94,6 +97,7 @@ import { TaroV2Module } from './taro-v2/taro-v2.module';
           TaroAgentRegion,
           AreaV2, StoreV2, SalesAgentV2,
           InvoiceV2, InvoiceImageV2, InvoiceLineItemV2,
+          RecommendationV2,
         ],
         synchronize: true,
         logging: false,
@@ -132,6 +136,7 @@ import { TaroV2Module } from './taro-v2/taro-v2.module';
     VisitSchedulesModule,
     RegionsModule,
     TaroV2Module,
+    V2ManagementModule,
   ],
 })
 export class AppModule {}

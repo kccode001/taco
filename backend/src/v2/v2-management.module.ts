@@ -1,0 +1,64 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+
+import { AreaV2 } from '../database/entities/v2/area-v2.entity';
+import { StoreV2 } from '../database/entities/v2/store-v2.entity';
+import { SalesAgentV2 } from '../database/entities/v2/sales-agent-v2.entity';
+import { InvoiceV2 } from '../database/entities/v2/invoice-v2.entity';
+import { InvoiceLineItemV2 } from '../database/entities/v2/invoice-line-item-v2.entity';
+import { RecommendationV2 } from '../database/entities/v2/recommendation-v2.entity';
+import { TacoSku } from '../database/entities/taco-sku.entity';
+
+import { AreasController } from './areas/areas.controller';
+import { AreasService } from './areas/areas.service';
+import { StoresController } from './stores/stores.controller';
+import { StoresService } from './stores/stores.service';
+import { SalesController } from './sales/sales.controller';
+import { SalesService } from './sales/sales.service';
+import { V2DashboardController } from './dashboard/v2-dashboard.controller';
+import { V2DashboardService } from './dashboard/v2-dashboard.service';
+import { RecommendationsController } from './recommendations/recommendations.controller';
+import { RecommendationsService } from './recommendations/recommendations.service';
+
+/**
+ * TACO v2 MANAGEMENT surface (Pair B — Mortar BE / Mosaic FE).
+ *
+ * Owns: Areas/Stores/Sales CRUD, market-demand Dashboard (recap/trending/
+ * ai-insight), reason-derived Recommendation engine. All routes under /api/v2/*.
+ *
+ * Most entities here are Grout's CANONICAL v2 tables (already registered in
+ * the root TypeOrmModule) — `forFeature` only requests repositories, it does
+ * NOT re-declare/fork tables. `RecommendationV2` is this surface's own table
+ * (`taro_v2_recommendations`); `TacoSku` is the shared v1 catalog read/written
+ * by the recommendation apply path. Areas/Stores/Sales CRUD, the demand
+ * Dashboard (recap/trending/ai-insight) and the reason-derived Recommendation
+ * engine are all live.
+ */
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([
+      AreaV2,
+      StoreV2,
+      SalesAgentV2,
+      InvoiceV2,
+      InvoiceLineItemV2,
+      RecommendationV2,
+      TacoSku,
+    ]),
+  ],
+  controllers: [
+    AreasController,
+    StoresController,
+    SalesController,
+    V2DashboardController,
+    RecommendationsController,
+  ],
+  providers: [
+    AreasService,
+    StoresService,
+    SalesService,
+    V2DashboardService,
+    RecommendationsService,
+  ],
+})
+export class V2ManagementModule {}
