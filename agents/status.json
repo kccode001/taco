@@ -18,8 +18,8 @@
     "updated_at": "2026-06-11"
   },
   "mosaic": {
-    "status": "working",
-    "task": "2026-06-11-scout-taco-v2-crud-hardgate — E1 FE fix (Vane delete-semantics ruling): Hapus→Nonaktifkan (Aktif rows only) + Aktifkan action (Nonaktif rows, PATCH active:true) + toasts dinonaktifkan/diaktifkan, confirm 'Nonaktifkan sales ini?'. No row removal on deactivate.",
+    "status": "idle",
+    "task": "2026-06-11-scout-taco-v2-crud-hardgate — DONE (commit daabbdc1, pushed): E1 FE fix per Vane soft-delete ruling. Hapus→Nonaktifkan (Aktif rows only, soft-delete) + Aktifkan (Nonaktif rows, PATCH active:true) + toasts dinonaktifkan/diaktifkan, confirm 'Nonaktifkan sales ini?', dropped 'Sales dihapus'. List keeps both Aktif+Nonaktif. RowActions extra-slot (kit unforked). tsc+eslint clean, route 200. Mortar's BE TACO-CRUD-01 landed in parallel — both live, Scout can re-run E1.",
     "role": "frontend",
     "updated_at": "2026-06-11"
   },
