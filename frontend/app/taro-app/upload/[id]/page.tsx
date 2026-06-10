@@ -211,7 +211,17 @@ export default function TaroUploadReviewPage() {
       const res = await getTaroInvoice(id);
       const data = res.data as TaroInvoiceDetail | null;
       if (data && data.id) {
-        setInvoice(data);
+        // Belt-and-suspenders: recompute the invoice-level status from the live
+        // line items on initial load — same rule used post-mutation — so the
+        // banner, per-line badges, and summary count agree on first render. If a
+        // stray "done" payload still carries needs_review lines (e.g. before
+        // Grout's seed fix lands), the FE corrects to needs_review instead of
+        // contradicting itself. recomputeStatus is a no-op for in-flight
+        // (processing/queued/pending/failed) states.
+        setInvoice({
+          ...data,
+          status: recomputeStatus(data.line_items ?? [], data.status),
+        });
       } else {
         setLoadError("Invoice tidak ditemukan.");
       }

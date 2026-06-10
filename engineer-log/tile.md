@@ -112,3 +112,25 @@ on reload. Applied Scout's recommended FE fix (aligns with Decision 1):
 contradiction — one classifier change, per Scout.
 
 **Status:** Pushed. Pinged Scout to re-gate + Yumi.
+
+### 2026-06-10 (later) — BELT-FIX: recompute invoice status on initial load (RE-GATE 4)
+RE-GATE 4 confirmed BUG-1 (`f1c88b33`) holds — AC-1/2/3/4/6 pass. Scout routed
+one remaining FE defensive ask: `resolveLine()` reads `needs_review` correctly on
+mutation, but on initial page load the banner/badge/summary rendered straight from
+the GET payload's `status`. A stray "done" invoice still carrying `needs_review`
+lines would render a contradictory screen (green "all done" banner + orange "Perlu
+Dicek" lines).
+- **Fix:** `refetch()` now normalizes the loaded invoice's status through the same
+  `recomputeStatus(line_items, status)` rule used post-mutation, so banner +
+  per-line badges + summary count agree on first render. `recomputeStatus` already
+  no-ops for in-flight states (processing/queued/pending/failed), so OCR-in-progress
+  invoices are untouched. One-line change in the `refetch` success branch
+  (`page.tsx` ~:213).
+- Belt-and-suspenders alongside Grout's seed-data fix (parallel, data-source side).
+
+**Quality:** `tsc --noEmit` clean for my file (only the pre-existing
+DashboardLayout/lucide errors remain, unrelated); `eslint` clean. Scope: 1 FE file
++ ledger.
+
+**Status:** Pushed. Pinged Yumi with the commit SHA to verify HEAD moved before
+re-gate.
