@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuthStore } from "@/lib/store";
 import { getTaroInvoices, type TaroInvoiceSummary } from "@/lib/api";
 import { TopBar } from "../_components/TopBar";
 import { BottomNav } from "../_components/BottomNav";
@@ -191,6 +192,7 @@ function WeeklyChart({ buckets }: { buckets: DayBucket[] }) {
 
 export default function TaroHomePage() {
   const router = useRouter();
+  const user = useAuthStore((s) => s.user);
   const { ready } = useTaroGuard();
   const [uploads, setUploads] = useState<TaroInvoiceSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -220,18 +222,20 @@ export default function TaroHomePage() {
     load();
   }, [ready, load]);
 
-  // Trust the BE's JWT ownership scope. `GET /api/taro-invoices` auto-filters a
-  // taro_agent to their OWN uploads, derived from the JWT sub and never from
-  // query params (taro-invoices.controller.ts:230 → service.ts:626) — the exact
-  // scope the Riwayat screen already relies on. The previous client-side
-  // re-filter compared each row's `uploaded_by` against the locally-stored
-  // `user.id`, which is NOT guaranteed to equal the BE user id that owns the
-  // upload: `user.id` is set at login and the /me enrichment that would correct
-  // it is skipped once region_id is present (useTaroGuard.ts:45). When the two
-  // ids diverged, a genuine upload that Riwayat happily renders was wrongly
-  // hidden here. Re-filtering added no security (the BE already enforces the
-  // scope) and only introduced this bug, so we drop it and trust the BE.
-  const myUploads = uploads;
+  const myUploads = useMemo(() => {
+    if (!user?.id) return uploads;
+    return uploads.filter((u) => {
+      const uploaderId =
+        (u as TaroInvoiceSummary & { uploaded_by_user_id?: string; uploaded_by?: string })
+          .uploaded_by_user_id ??
+        (u as TaroInvoiceSummary & { uploaded_by_user_id?: string; uploaded_by?: string })
+          .uploaded_by;
+      // When BE doesn't return uploader info, fall back to all rows (BE
+      // already scopes via JWT in most cases).
+      if (!uploaderId) return true;
+      return uploaderId === user.id;
+    });
+  }, [uploads, user?.id]);
 
   const todayCount = myUploads.filter((u) => isToday(u.uploaded_at)).length;
   const recent = myUploads.slice(0, 10);
