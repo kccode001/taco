@@ -31,7 +31,10 @@ import { UpdateAreaDto } from './dto/update-area.dto';
 export class AreasController {
   constructor(private readonly service: AreasService) {}
 
+  // List/read are also needed by the PWA upload selector (step 1: pick Area),
+  // which runs as TARO_AGENT. Mutations stay admin/manager-only (class default).
   @Get()
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
   list(@Query('search') search?: string) {
     return this.service.list({
       search: search && search.trim() ? search.trim() : undefined,
@@ -39,6 +42,7 @@ export class AreasController {
   }
 
   @Get(':id')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.TARO_AGENT)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
   }
