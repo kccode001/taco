@@ -23,6 +23,7 @@ import {
   TaroRecommendationType,
 } from '../database/entities/taro-invoice-recommendation.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
+import { CompetitorBrand } from '../database/entities/competitor-brand.entity';
 import { TaroMappingRule } from '../database/entities/taro-mapping-rule.entity';
 import { TaroAgentRegion } from '../database/entities/taro-agent-region.entity';
 import { User, UserRole } from '../database/entities/user.entity';
@@ -54,6 +55,8 @@ export class TaroInvoicesService implements OnModuleInit {
     private readonly recsRepo: Repository<TaroInvoiceRecommendation>,
     @InjectRepository(TacoSku)
     private readonly skusRepo: Repository<TacoSku>,
+    @InjectRepository(CompetitorBrand)
+    private readonly competitorBrandsRepo: Repository<CompetitorBrand>,
     @InjectRepository(TaroMappingRule)
     private readonly mappingRulesRepo: Repository<TaroMappingRule>,
     @InjectRepository(TaroAgentRegion)
@@ -112,9 +115,14 @@ export class TaroInvoicesService implements OnModuleInit {
   }
 
   /**
-   * Single-statement backfill: any invoice currently at `done` whose line
-   * items show review-worthy signals is flipped to `needs_review`. Returns
-   * the number of rows updated.
+   * Single-statement backfill: any invoice currently at `done` that still has a
+   * line flagged `needs_review = true` is flipped to `needs_review`. Returns the
+   * number of rows updated.
+   *
+   * Keyed on `needs_review` alone (not `matched_sku_id IS NULL`) so that lines
+   * resolved as a competitor brand / competitor-but-unknown — which carry no
+   * `matched_sku_id` by design — don't drag a fully-resolved invoice back to
+   * `needs_review` on every boot.
    */
   private async backfillNeedsReviewStatus(): Promise<number> {
     const result = await this.invoicesRepo.query(
@@ -125,11 +133,7 @@ export class TaroInvoicesService implements OnModuleInit {
         AND EXISTS (
           SELECT 1 FROM taro_invoice_line_items li
           WHERE li.invoice_id = inv.id
-            AND (
-              li.needs_review = true
-              OR li.matched_sku_id IS NULL
-              OR li.confidence_score < ${CONFIDENCE_THRESHOLD}
-            )
+            AND li.needs_review = true
         )
       `,
     );
@@ -146,9 +150,14 @@ export class TaroInvoicesService implements OnModuleInit {
    * Rules:
    *   - status='failed' or 'queued' or 'processing' → leave alone (terminal
    *     OCR pipeline states; not affected by line edits).
-   *   - any line with needs_review=true OR matched_sku_id IS NULL OR
-   *     confidence_score < 0.85 → status = 'needs_review'.
+   *   - any line with needs_review=true → status = 'needs_review'.
    *   - otherwise → status = 'done'.
+   *
+   * `needs_review` is the single source of truth here: the OCR processor sets it
+   * on insert (confidence < 0.85 OR no match) and `patchLineItem` maintains it
+   * for every resolution path. We deliberately do NOT re-derive it from
+   * `matched_sku_id IS NULL` — a line resolved as a competitor brand or
+   * competitor-but-unknown legitimately has no `matched_sku_id` yet is resolved.
    *
    * Returns the resolved status (already persisted).
    */
@@ -169,15 +178,11 @@ export class TaroInvoicesService implements OnModuleInit {
 
     const row = await this.invoicesRepo.query(
       `
-      SELECT COUNT(*) FILTER (
-        WHERE li.needs_review = true
-           OR li.matched_sku_id IS NULL
-           OR li.confidence_score < $2
-      )::int AS review_count
+      SELECT COUNT(*) FILTER (WHERE li.needs_review = true)::int AS review_count
       FROM taro_invoice_line_items li
       WHERE li.invoice_id = $1
       `,
-      [invoiceId, CONFIDENCE_THRESHOLD],
+      [invoiceId],
     );
     const reviewCount = Number(row?.[0]?.review_count ?? 0);
     const next = reviewCount > 0 ? TaroInvoiceStatus.NEEDS_REVIEW : TaroInvoiceStatus.DONE;
@@ -713,12 +718,42 @@ export class TaroInvoicesService implements OnModuleInit {
 
   // ---- Line-item patch ----
 
+  /**
+   * Resolve a Taro line item one of four ways (PWA "belum-cocok / perlu-dicek"
+   * flow), then recompute the parent invoice status and return it inline.
+   *
+   * Exactly one action runs per call; when several fields are present, precedence
+   * is confirm_as_is → matched_sku_id → is_unknown → brand_id. Each path clears
+   * the others so the three resolution states stay mutually exclusive:
+   *
+   *   - confirm_as_is  "Sudah benar"           → keep the current match, just
+   *                                               clear needs_review.
+   *   - matched_sku_id  confirmed TACO match    → set the SKU, clear competitor
+   *                                               fields; needs_review cleared
+   *                                               (a human confirmed it). Pass
+   *                                               null to unmatch (re-flags).
+   *   - is_unknown      competitor, brand n/a   → clear SKU + brand;
+   *                                               needs_review cleared.
+   *   - brand_id        competitor brand match  → look up competitor_brands,
+   *                                               snapshot brand_name, clear SKU
+   *                                               + is_unknown; needs_review
+   *                                               cleared.
+   *
+   * Returns the saved line item plus the recomputed top-level `invoice_status`
+   * so the FE doesn't need a second fetch of the invoice header.
+   */
   async patchLineItem(
     lineItemId: string,
     correctedBy: string | null,
-    body: { matched_sku_id?: string | null; reason?: string },
+    body: {
+      matched_sku_id?: string | null;
+      brand_id?: string | null;
+      is_unknown?: boolean;
+      confirm_as_is?: boolean;
+      reason?: string;
+    },
     actor: { id: string; role: UserRole } | null = null,
-  ): Promise<TaroInvoiceLineItem> {
+  ): Promise<TaroInvoiceLineItem & { invoice_status: TaroInvoiceStatus }> {
     const li = await this.lineItemsRepo.findOne({ where: { id: lineItemId } });
     if (!li) throw new NotFoundException(`TaroInvoiceLineItem ${lineItemId} not found`);
 
@@ -736,44 +771,79 @@ export class TaroInvoicesService implements OnModuleInit {
       }
     }
 
-    const skuChanged =
-      body.matched_sku_id !== undefined && body.matched_sku_id !== li.matched_sku_id;
-
-    if (skuChanged && (!body.reason || body.reason.trim().length === 0)) {
-      throw new BadRequestException('reason is required when changing matched_sku_id');
-    }
-
     const originalSkuId = li.matched_sku_id;
+    // Only the TACO-match path records a SKU correction.
+    let skuCorrection: { corrected_sku_id: string; reason: string } | null = null;
 
-    if (body.matched_sku_id !== undefined) {
+    if (body.confirm_as_is === true) {
+      // "Sudah benar": the existing match (TACO / competitor / unknown / none)
+      // is correct — just clear the review flag.
+      li.needs_review = false;
+    } else if (body.matched_sku_id !== undefined) {
+      // Confirmed TACO match. A human picked the SKU, so clear competitor state
+      // and the review flag. matched_sku_id === null means "unmatch" → re-flag.
+      const skuChanged = body.matched_sku_id !== li.matched_sku_id;
+      if (skuChanged && (!body.reason || body.reason.trim().length === 0)) {
+        throw new BadRequestException('reason is required when changing matched_sku_id');
+      }
       li.matched_sku_id = body.matched_sku_id;
+      li.brand_id = null;
+      li.brand_name = null;
+      li.is_unknown = false;
+      li.needs_review = !body.matched_sku_id;
+      if (skuChanged && body.matched_sku_id) {
+        skuCorrection = {
+          corrected_sku_id: body.matched_sku_id,
+          reason: (body.reason ?? '').trim(),
+        };
+      }
+    } else if (body.is_unknown === true) {
+      // Competitor product, brand unknown.
+      li.is_unknown = true;
+      li.matched_sku_id = null;
+      li.brand_id = null;
+      li.brand_name = null;
+      li.needs_review = false;
+    } else if (body.brand_id) {
+      // Competitor brand match — resolve against the canonical brand list.
+      const brand = await this.competitorBrandsRepo.findOne({
+        where: { id: body.brand_id },
+      });
+      if (!brand) {
+        throw new BadRequestException(`Competitor brand ${body.brand_id} not found`);
+      }
+      li.brand_id = brand.id;
+      li.brand_name = brand.name;
+      li.matched_sku_id = null;
+      li.is_unknown = false;
+      li.needs_review = false;
+    } else {
+      throw new BadRequestException(
+        'No resolution action: provide one of matched_sku_id, brand_id, is_unknown, or confirm_as_is',
+      );
     }
-    li.edited = true;
-    // Recompute needs_review using current confidence + new mapping.
-    const conf = parseFloat(li.confidence_score);
-    li.needs_review = (Number.isNaN(conf) ? 0 : conf) < CONFIDENCE_THRESHOLD || !li.matched_sku_id;
 
+    li.edited = true;
     const saved = await this.lineItemsRepo.save(li);
 
-    if (skuChanged && body.matched_sku_id) {
+    if (skuCorrection) {
       await this.correctionsRepo.save(
         this.correctionsRepo.create({
           line_item_id: saved.id,
           original_sku_id: originalSkuId,
-          corrected_sku_id: body.matched_sku_id,
-          reason: (body.reason ?? '').trim(),
+          corrected_sku_id: skuCorrection.corrected_sku_id,
+          reason: skuCorrection.reason,
           corrected_by: correctedBy,
         }),
       );
     }
 
-    // Aggregate-level effect: an admin fix may have cleared the last review
-    // flag on this invoice, or (when matched_sku_id was set back to null /
-    // confidence stays low) re-introduced one. Recompute so the FE doesn't
-    // need a separate refresh of the invoice header.
-    await this.recomputeInvoiceStatus(saved.invoice_id);
+    // Resolving this line may have cleared (or, on unmatch, re-introduced) the
+    // last review flag on the invoice. Recompute so the FE gets the fresh
+    // header status without a second round-trip.
+    const invoice_status = await this.recomputeInvoiceStatus(saved.invoice_id);
 
-    return saved;
+    return { ...saved, invoice_status };
   }
 
   // ---- Recommendations ----

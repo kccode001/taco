@@ -9,6 +9,7 @@ import { TaroInvoiceLineItem } from '../database/entities/taro-invoice-line-item
 import { TaroInvoiceSkuCorrection } from '../database/entities/taro-invoice-sku-correction.entity';
 import { TaroInvoiceRecommendation } from '../database/entities/taro-invoice-recommendation.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
+import { CompetitorBrand } from '../database/entities/competitor-brand.entity';
 import { Region } from '../database/entities/region.entity';
 import { TaroMappingRule } from '../database/entities/taro-mapping-rule.entity';
 import { TaroAgentRegion } from '../database/entities/taro-agent-region.entity';
@@ -29,6 +30,7 @@ import { EmbeddingsModule } from '../embeddings/embeddings.module';
       TaroInvoiceSkuCorrection,
       TaroInvoiceRecommendation,
       TacoSku,
+      CompetitorBrand,
       Region,
       TaroMappingRule,
       TaroAgentRegion,

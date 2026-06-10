@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { TaroInvoice } from './taro-invoice.entity';
 import { TacoSku } from './taco-sku.entity';
+import { CompetitorBrand } from './competitor-brand.entity';
 
 /**
  * One row per OCR-extracted line from a Taro invoice page.
@@ -54,6 +55,31 @@ export class TaroInvoiceLineItem {
   @ManyToOne(() => TacoSku, { nullable: true })
   @JoinColumn({ name: 'matched_sku_id' })
   matched_sku?: TacoSku | null;
+
+  /**
+   * Competitor-brand resolution (PWA four-way resolve). When a rep marks a
+   * line as "this is a competitor's product", `brand_id` points at the matched
+   * `competitor_brands` row and `brand_name` snapshots its display name. A
+   * competitor line is mutually exclusive with a TACO match: setting one path
+   * clears `matched_sku_id`. Both null on a fresh OCR line.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  brand_id: string | null;
+
+  @ManyToOne(() => CompetitorBrand, { nullable: true })
+  @JoinColumn({ name: 'brand_id' })
+  brand?: CompetitorBrand | null;
+
+  @Column({ type: 'text', nullable: true })
+  brand_name: string | null;
+
+  /**
+   * "Competitor but unknown which brand" — the rep confirms the line is not a
+   * TACO product but can't name the brand. Mutually exclusive with both
+   * `matched_sku_id` and `brand_id`.
+   */
+  @Column({ type: 'boolean', default: false })
+  is_unknown: boolean;
 
   @Column({ type: 'numeric', precision: 4, scale: 3, default: 0 })
   confidence_score: string;
