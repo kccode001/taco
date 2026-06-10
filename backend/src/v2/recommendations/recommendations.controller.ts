@@ -34,6 +34,13 @@ export class RecommendationsController {
     return this.service.list(query);
   }
 
+  /** Force a re-scan of mismatch reasons → derive any new recommendations. */
+  @Post('generate')
+  @HttpCode(HttpStatus.OK)
+  generate() {
+    return this.service.generate();
+  }
+
   @Post(':id/apply')
   @HttpCode(HttpStatus.OK)
   apply(@Param('id', ParseUUIDPipe) id: string) {
