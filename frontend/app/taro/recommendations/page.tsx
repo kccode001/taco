@@ -297,7 +297,7 @@ export default function TaroRecommendationsPage() {
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
-          className="h-[40px] px-4 inline-flex items-center gap-2 bg-taco-text text-white rounded-lg text-[13px] font-semibold hover:opacity-90 transition-colors disabled:opacity-60"
+          className="h-[40px] px-4 inline-flex items-center gap-2 bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-60"
         >
           <SparkleIcon size={14} />
           {regenerating ? "Menganalisa koreksi + OCR gagal…" : "Regenerate"}

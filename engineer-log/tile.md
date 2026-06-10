@@ -668,3 +668,31 @@ needed and nothing to flag. FE-only stayed FE-only.
 - `eslint app/taro/failed-ocr/page.tsx`: exit 0, clean (no unused var/import).
 
 **Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.
+
+---
+
+## 2026-06-10 — Recolor "Regenerate" button to brand orange on `/taro/recommendations`
+
+**Scope (mine):** FE-only. File: `app/taro/recommendations/page.tsx`
+(`/taro/recommendations` — NOT the PWA `/taro-app/*`). Fourth item in the batch.
+
+### The ask (KC)
+Make the "Regenerate" button the primary brand orange — using the existing token,
+not a one-off hex; hover/active/disabled consistent with other primary buttons.
+
+### What I changed
+Button at `page.tsx:300`. Was `bg-taco-text` (dark) + `hover:opacity-90`. Swapped
+to the app's canonical primary-action recipe:
+`bg-taco-accent` + `hover:bg-taco-accent-dark` (kept `disabled:opacity-60`).
+
+- `taco-accent` = `#F04E23` (orange) — the brand primary token defined in
+  `tailwind.config.ts:22`; `taco-accent-dark` = `#C93A10` (`:23`) is the standard
+  hover. Same classes the other TACO primary buttons use (the Upload Invoice /
+  Salin buttons I just touched all used `bg-taco-accent hover:bg-taco-accent-dark
+  disabled:opacity-60`). No new hex introduced — token only.
+- Only the color/hover classes changed; geometry, icon, label, handler untouched.
+
+### Quality / verification
+- `tsc --noEmit`: clean. `eslint`: exit 0, clean.
+
+**Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.
