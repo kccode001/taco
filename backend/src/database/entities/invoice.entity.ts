@@ -6,6 +6,9 @@ import { InvoiceLineItem } from './invoice-line-item.entity';
 export enum InvoiceStatus {
   PROCESSING = 'processing',
   DONE = 'done',
+  // Set once OCR finishes but one or more line items are still unresolved
+  // (belum cocok / perlu dicek). Surfaced to the rep as "Perlu Review".
+  NEEDS_REVIEW = 'needs_review',
   FAILED = 'failed',
 }
 

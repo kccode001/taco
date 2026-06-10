@@ -20,6 +20,7 @@ import type { Response } from 'express';
 import { InvoicesService } from './invoices.service';
 import { UploadInvoiceDto } from './dto/upload-invoice.dto';
 import { UploadFotoKatalogDto } from './dto/upload-foto-katalog.dto';
+import { PatchInvoiceLineItemDto } from './dto/patch-line-item.dto';
 
 function getContentType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -96,12 +97,13 @@ export class InvoicesController {
     return this.invoicesService.findOne(id);
   }
 
-  // AC-22 — rep can attach a note / mark unclear / edit brand without leaving the flow.
+  // Resolve a line item one of four ways (competitor brand / unknown / TACO
+  // match / "Sudah benar") and return the recomputed invoice status so the PWA
+  // can update the badge without a second request.
   @Patch('invoice-line-items/:id')
   patchLineItem(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body()
-    body: { note?: string; is_unclear?: boolean; brand_id?: string | null; brand_name?: string | null },
+    @Body() body: PatchInvoiceLineItemDto,
   ) {
     return this.invoicesService.updateLineItem(id, body);
   }
