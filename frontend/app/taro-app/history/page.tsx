@@ -23,6 +23,30 @@ function rowStore(u: Row): string {
   );
 }
 
+// Mirror of the home-screen RowThumbnail (home/page.tsx): show the real invoice
+// photo (BE-serialized, absolutized `image_url` from getTaroInvoices) and fall
+// back to the StoreIcon when it's null or the signed URL fails to load.
+function RowThumbnail({ src }: { src?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const showImage = Boolean(src) && !failed;
+  return (
+    <div className="w-10 h-10 rounded-lg bg-taco-page border border-taco-divider flex items-center justify-center text-taco-sub flex-shrink-0 overflow-hidden">
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src as string}
+          alt=""
+          loading="lazy"
+          className="w-full h-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <StoreIcon size={18} />
+      )}
+    </div>
+  );
+}
+
 const TONE_BG: Record<"ok" | "warn" | "err" | "info" | "muted", string> = {
   ok: "bg-emerald-50 text-taco-success",
   warn: "bg-amber-50 text-taco-warning",
@@ -170,9 +194,7 @@ export default function TaroHistoryPage() {
                     className="w-full bg-white border border-taco-border rounded-xl px-4 py-3 text-left active:bg-taco-page min-h-[80px]"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-taco-page border border-taco-divider flex items-center justify-center text-taco-sub flex-shrink-0">
-                        <StoreIcon size={18} />
-                      </div>
+                      <RowThumbnail src={u.image_url} />
                       <div className="flex-1 min-w-0">
                         <div className="text-[15px] font-medium text-taco-text truncate">
                           {rowStore(u)}

@@ -79,7 +79,7 @@ export default function TaroProfilePage() {
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
       <div className="phone-shell flex flex-col min-h-screen pb-[96px]">
-        <TopBar title="Profil" hideRegion />
+        <TopBar title="Profil" />
 
         {/* Identity */}
         <div className="px-4 pt-4">

@@ -428,3 +428,62 @@ task is scoped to the back button), but it's a candidate for the same `? : null`
 fix if KC wants the dash gone here too.
 
 **Status:** FE complete + pushed. status.json already `tile: idle`. Pinged Yumi w/ commit.
+
+---
+
+## 2026-06-10 — 3-item batch: BUG-6 (already done) + history thumbnails + remove header region badge
+
+Yumi dispatched three FE items. Item 1 turned out already-shipped; items 2 & 3 done together.
+
+### Item 1 — BUG-6 lightbox dismiss: ALREADY LANDED (no-op)
+Re-dispatched, but my RE-GATE 6 fix is already in main (`0a5aa251`, see the
+"RE-GATE 6 / BUG-6" entry above). Verified the **current** `ImageLightbox`
+(`upload/[id]/page.tsx:866-944`) already has Scout's recommended shape:
+`onCloseRef` stabilizes onClose; a single `pushState` guarded by
+`window.history.state?.tacoLightbox` (idempotent under StrictMode); X/Esc/backdrop
+call `onClose()` directly (state-driven unmount, **no** `history.back()` round-trip);
+back-gesture additive via `popstate`; deps `[]`. Did NOT redo it. Flagged to Yumi
+that Scout likely re-gated against a stale HEAD (the "HEAD never moved" pattern from
+RE-GATE 4) — needs a re-gate against current main, not new code from me.
+
+### Item 2 — History (Riwayat) row thumbnails ✅
+`/taro-app/history` rows showed the `StoreIcon`. Now render the real invoice photo,
+same treatment as home (`8179006d`).
+- **Endpoint check (Yumi asked):** history calls `getTaroInvoices({limit:"100"})` →
+  `GET /api/taro-invoices` — the **same** endpoint Grout added `image_url` to
+  (`bdc786f4`), and `normalizeTaroInvoiceSummary` (lib/api.ts:944-965) already
+  absolutizes `image_url` per row. So history **does** carry `image_url` — no BE
+  gap, no stop/ping needed.
+- Added a `RowThumbnail` to `history/page.tsx` mirroring home's component
+  (`w-10 h-10`, `object-cover`, `overflow-hidden`, `loading="lazy"`), `StoreIcon`
+  fallback on null/`onError`. Replaced the inline icon box. `StoreIcon` import stays
+  (used in fallback).
+
+### Item 3 — Remove "Wilayah ASM" region badge from the header ✅
+KC: header shows the region ("Wilayah ASM") up top; doesn't want it — and "check
+other screens too." The header region badge lived in **one** place: `TopBar`'s
+default right slot (`region_display ?? region_code`). Removed it there → kills it
+on **every** screen at once: home, history, notifications, upload, upload-detail
+(all use `<TopBar/>`'s default slot). Single-point fix, exactly "wherever it appears."
+- `TopBar.tsx`: dropped the region `<span>`, the `useAuthStore` import, the
+  `regionDisplay`/`user` logic, and the now-unused `hideRegion` prop. `right` is
+  still honored (upload-detail's back button etc. unaffected). Default right slot
+  now renders nothing.
+- `profile/page.tsx`: removed the now-invalid `hideRegion` prop from its `<TopBar>`.
+- **Left intact + flagged for KC:** the **Profil body** field labeled "Wilayah ASM"
+  (`profile/page.tsx:107`, a deliberate profile detail row, NOT a header element)
+  and the per-invoice region shown inside home/detail **cards** (row content, not
+  header). KC's ask was the header badge; flagged these so he can say if he wants
+  them gone too.
+
+### Quality / verification
+- `tsc --noEmit`: 0 errors from my files (only the 2 pre-existing
+  `DashboardLayout`/lucide errors remain). `eslint`: clean — the one warning is the
+  pre-existing TACO-logo `<img>` in TopBar (untouched, `next/image` advisory, not an
+  error). Impeccable pass on the diff — no blockers.
+- **Live browser click-through NOT run by me** — no interactive browser in-session;
+  the visual check (history rows show photos w/ icon fallback; no region badge in any
+  header; detail back button still present) is Scout's smoke pass.
+
+**Status:** Items 2+3 FE complete + pushed; item 1 already in main (no change).
+status.json `tile: idle`. Pinged Yumi w/ commit + endpoint answer.
