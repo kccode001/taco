@@ -1,44 +1,522 @@
-import { Injectable, NotImplementedException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
+import Anthropic from '@anthropic-ai/sdk';
+
+import { InvoiceLineItemV2 } from '../../database/entities/v2/invoice-line-item-v2.entity';
 import {
   AiInsightQueryDto,
   RecapQueryDto,
   TrendingQueryDto,
+  V2Period,
 } from '../dto/period.dto';
 
+/** Sonnet — the AI-insight card runs the latest Sonnet over pre-aggregated rollups. */
+const INSIGHT_MODEL = 'claude-sonnet-4-6';
+
+interface DateRange {
+  from: Date | null;
+  to: Date;
+  label: V2Period;
+}
+
+export interface AreaRecapRow {
+  area_id: string | null;
+  area_name: string;
+  invoice_count: number;
+  line_item_count: number;
+  total_qty: number;
+  taco_qty: number;
+  competitor_qty: number;
+}
+
+export interface TimeBucket {
+  date: string; // YYYY-MM-DD
+  total_qty: number;
+  line_item_count: number;
+}
+
+export interface TrendingItem {
+  name: string;
+  sku_id: string | null;
+  is_competitor: boolean;
+  total_qty: number;
+  line_count: number;
+}
+
+// Raw shapes returned by the aggregation query builders (Postgres returns
+// COUNT/SUM as strings; bool_or as a JS boolean).
+interface RawAreaRecap {
+  area_id: string | null;
+  area_name: string | null;
+  invoice_count: string;
+  line_item_count: string;
+  total_qty: string;
+  taco_qty: string;
+  competitor_qty: string;
+}
+interface RawSeries {
+  date: string;
+  total_qty: string;
+  line_item_count: string;
+}
+interface RawTrending {
+  area_id: string | null;
+  area_name: string | null;
+  item_name: string;
+  sku_id: string | null;
+  is_competitor: boolean;
+  total_qty: string;
+  line_count: string;
+}
+interface RawPriorArea {
+  area_id: string | null;
+  total_qty: string;
+}
+
 /**
- * v2 MANAGEMENT — Dashboard aggregation + AI insight.
+ * v2 MANAGEMENT — Dashboard aggregation + AI insight (market-demand surface).
  *
- * SCAFFOLD ONLY — throws 501 until Grout's InvoiceV2 / InvoiceLineItemV2 +
- * Area schema lands. Aggregations read those tables (qty + classification +
- * area joins); the AI-insight endpoint runs Claude (claude-opus-4-8) over the
- * PRE-AGGREGATED rollups for the selected period — never over raw rows.
+ * Reads Grout's canonical InvoiceV2 / InvoiceLineItemV2 (joined to AreaV2 +
+ * TacoSku) and rolls them up:
+ *   - recap     items logged split by area + quantity sold over the period.
+ *   - trending  top items per area for the window.
+ *   - aiInsight Sonnet over the PRE-AGGREGATED rollups (never raw rows) →
+ *               a Bahasa-Indonesia market-demand brief for TACO management.
  *
- * Anthropic client wiring (when implemented):
- *   new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })  // key is set in .env
+ * All aggregations are window-scoped (period) and degrade gracefully to empty
+ * structures when no invoices exist yet — the FE always gets a valid shape.
  */
 @Injectable()
 export class V2DashboardService {
-  private notWired(): never {
-    throw new NotImplementedException(
-      'TACO v2 Dashboard: endpoint scaffolded, awaiting Grout canonical invoice/area schema.',
-    );
+  private readonly logger = new Logger(V2DashboardService.name);
+  private readonly anthropic: Anthropic | null;
+
+  constructor(
+    @InjectRepository(InvoiceLineItemV2)
+    private readonly lineItems: Repository<InvoiceLineItemV2>,
+  ) {
+    this.anthropic = process.env.ANTHROPIC_API_KEY
+      ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+      : null;
   }
+
+  // ---- period → date range -------------------------------------------------
+
+  private resolveRange(period?: V2Period): DateRange {
+    const to = new Date();
+    const label: V2Period = period ?? '30d';
+
+    let from: Date | null;
+    switch (label) {
+      case '7d':
+        from = new Date(to.getTime() - 7 * 864e5);
+        break;
+      case '30d':
+        from = new Date(to.getTime() - 30 * 864e5);
+        break;
+      case '90d':
+        from = new Date(to.getTime() - 90 * 864e5);
+        break;
+      case 'this_month':
+        from = new Date(to.getFullYear(), to.getMonth(), 1);
+        break;
+      case 'last_month':
+        return {
+          from: new Date(to.getFullYear(), to.getMonth() - 1, 1),
+          to: new Date(to.getFullYear(), to.getMonth(), 1),
+          label,
+        };
+      case 'this_quarter':
+        from = new Date(to.getFullYear(), Math.floor(to.getMonth() / 3) * 3, 1);
+        break;
+      case 'ytd':
+        from = new Date(to.getFullYear(), 0, 1);
+        break;
+      case 'all':
+        from = null;
+        break;
+      default:
+        from = new Date(to.getTime() - 30 * 864e5);
+    }
+    return { from, to, label };
+  }
+
+  private num(v: unknown): number {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    if (typeof v === 'string') {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
+  }
+
+  /** Apply the period window + optional area filter to a line-item query. */
+  private applyScope<T extends import('typeorm').ObjectLiteral>(
+    qb: SelectQueryBuilder<T>,
+    range: DateRange,
+    area?: string,
+  ): SelectQueryBuilder<T> {
+    if (range.from) {
+      qb.andWhere('inv.created_at >= :from', {
+        from: range.from.toISOString(),
+      });
+    }
+    qb.andWhere('inv.created_at < :to', { to: range.to.toISOString() });
+    if (area) qb.andWhere('inv.area_id = :area', { area });
+    return qb;
+  }
+
+  // ---- recap ---------------------------------------------------------------
 
   /** Items logged split by area + quantity sold over the period. */
-  recap(query: RecapQueryDto) {
-    void query;
-    this.notWired();
+  async recap(query: RecapQueryDto) {
+    const range = this.resolveRange(query.period);
+
+    const byAreaRaw = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .leftJoin('inv.area', 'area')
+        .select('inv.area_id', 'area_id')
+        .addSelect('MAX(area.name)', 'area_name')
+        .addSelect('COUNT(DISTINCT inv.id)', 'invoice_count')
+        .addSelect('COUNT(li.id)', 'line_item_count')
+        .addSelect('COALESCE(SUM(li.quantity), 0)', 'total_qty')
+        .addSelect(
+          'COALESCE(SUM(CASE WHEN li.is_competitor = false THEN li.quantity ELSE 0 END), 0)',
+          'taco_qty',
+        )
+        .addSelect(
+          'COALESCE(SUM(CASE WHEN li.is_competitor = true THEN li.quantity ELSE 0 END), 0)',
+          'competitor_qty',
+        ),
+      range,
+      query.area,
+    )
+      .groupBy('inv.area_id')
+      .orderBy('total_qty', 'DESC')
+      .getRawMany<RawAreaRecap>();
+
+    const by_area: AreaRecapRow[] = byAreaRaw.map((r) => ({
+      area_id: r.area_id ?? null,
+      area_name: r.area_name ?? 'Tanpa Area',
+      invoice_count: this.num(r.invoice_count),
+      line_item_count: this.num(r.line_item_count),
+      total_qty: this.num(r.total_qty),
+      taco_qty: this.num(r.taco_qty),
+      competitor_qty: this.num(r.competitor_qty),
+    }));
+
+    const seriesRaw = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .select(
+          "to_char(date_trunc('day', inv.created_at), 'YYYY-MM-DD')",
+          'date',
+        )
+        .addSelect('COALESCE(SUM(li.quantity), 0)', 'total_qty')
+        .addSelect('COUNT(li.id)', 'line_item_count'),
+      range,
+      query.area,
+    )
+      .groupBy("date_trunc('day', inv.created_at)")
+      .orderBy("date_trunc('day', inv.created_at)", 'ASC')
+      .getRawMany<RawSeries>();
+
+    const qty_over_time: TimeBucket[] = seriesRaw.map((r) => ({
+      date: r.date,
+      total_qty: this.num(r.total_qty),
+      line_item_count: this.num(r.line_item_count),
+    }));
+
+    const totals = by_area.reduce(
+      (acc, a) => {
+        acc.invoice_count += a.invoice_count;
+        acc.line_item_count += a.line_item_count;
+        acc.total_qty += a.total_qty;
+        acc.taco_qty += a.taco_qty;
+        acc.competitor_qty += a.competitor_qty;
+        return acc;
+      },
+      {
+        area_count: by_area.length,
+        invoice_count: 0,
+        line_item_count: 0,
+        total_qty: 0,
+        taco_qty: 0,
+        competitor_qty: 0,
+      },
+    );
+
+    return {
+      period: range.label,
+      range: {
+        from: range.from?.toISOString() ?? null,
+        to: range.to.toISOString(),
+      },
+      filter_area: query.area ?? null,
+      totals,
+      by_area,
+      qty_over_time,
+    };
   }
 
-  /** Top trending items per area for the window. */
-  trending(query: TrendingQueryDto) {
-    void query;
-    this.notWired();
+  // ---- trending ------------------------------------------------------------
+
+  /**
+   * Top items per area for the window. Item identity = the matched TACO SKU
+   * name, else the competitor brand name, else the cleaned raw OCR text.
+   */
+  async trending(query: TrendingQueryDto) {
+    const range = this.resolveRange(query.period);
+    const limit = Math.min(
+      Math.max(parseInt(query.limit ?? '5', 10) || 5, 1),
+      25,
+    );
+
+    const rows = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .leftJoin('inv.area', 'area')
+        .leftJoin('li.matched_sku', 'sku')
+        .select('inv.area_id', 'area_id')
+        .addSelect('MAX(area.name)', 'area_name')
+        .addSelect(
+          "COALESCE(sku.name, NULLIF(li.brand_name, ''), NULLIF(btrim(li.raw_text), ''), 'Tidak terbaca')",
+          'item_name',
+        )
+        .addSelect('li.matched_sku_id', 'sku_id')
+        .addSelect('bool_or(li.is_competitor)', 'is_competitor')
+        .addSelect('COALESCE(SUM(li.quantity), 0)', 'total_qty')
+        .addSelect('COUNT(li.id)', 'line_count'),
+      range,
+      query.area,
+    )
+      .groupBy('inv.area_id')
+      .addGroupBy('item_name')
+      .addGroupBy('li.matched_sku_id')
+      .orderBy('inv.area_id', 'ASC')
+      .addOrderBy('total_qty', 'DESC')
+      .getRawMany<RawTrending>();
+
+    const byArea = new Map<
+      string,
+      { area_id: string | null; area_name: string; items: TrendingItem[] }
+    >();
+    for (const r of rows) {
+      const key = r.area_id ?? '__none__';
+      if (!byArea.has(key)) {
+        byArea.set(key, {
+          area_id: r.area_id ?? null,
+          area_name: r.area_name ?? 'Tanpa Area',
+          items: [],
+        });
+      }
+      const bucket = byArea.get(key)!;
+      if (bucket.items.length < limit) {
+        bucket.items.push({
+          name: r.item_name,
+          sku_id: r.sku_id ?? null,
+          is_competitor: r.is_competitor === true,
+          total_qty: this.num(r.total_qty),
+          line_count: this.num(r.line_count),
+        });
+      }
+    }
+
+    return {
+      period: range.label,
+      range: {
+        from: range.from?.toISOString() ?? null,
+        to: range.to.toISOString(),
+      },
+      limit_per_area: limit,
+      per_area: Array.from(byArea.values()),
+    };
   }
 
-  /** LLM over pre-aggregated period rollups → market-demand insight. */
-  aiInsight(query: AiInsightQueryDto) {
-    void query;
-    this.notWired();
+  // ---- AI insight ----------------------------------------------------------
+
+  /**
+   * LLM (Sonnet) over the pre-aggregated period rollups → market-demand brief.
+   * Compares the selected window against the immediately-preceding window of
+   * equal length to surface rising / declining areas.
+   */
+  async aiInsight(query: AiInsightQueryDto) {
+    const range = this.resolveRange(query.period);
+    const recap = await this.recap({ period: range.label, area: query.area });
+    const trending = await this.trending({
+      period: range.label,
+      area: query.area,
+      limit: '5',
+    });
+
+    // Prior window of equal length for trend direction (skip for 'all').
+    let priorByArea = new Map<string | null, number>();
+    if (range.from) {
+      const span = range.to.getTime() - range.from.getTime();
+      const priorRange: DateRange = {
+        from: new Date(range.from.getTime() - span),
+        to: range.from,
+        label: range.label,
+      };
+      const priorRows = await this.applyScope(
+        this.lineItems
+          .createQueryBuilder('li')
+          .innerJoin('li.invoice', 'inv')
+          .select('inv.area_id', 'area_id')
+          .addSelect('COALESCE(SUM(li.quantity), 0)', 'total_qty'),
+        priorRange,
+        query.area,
+      )
+        .groupBy('inv.area_id')
+        .getRawMany<RawPriorArea>();
+      priorByArea = new Map<string | null, number>(
+        priorRows.map((r) => [r.area_id ?? null, this.num(r.total_qty)]),
+      );
+    }
+
+    const area_trends = recap.by_area.map((a) => {
+      const before = priorByArea.get(a.area_id) ?? 0;
+      const delta = a.total_qty - before;
+      const pct =
+        before > 0
+          ? Math.round((delta / before) * 100)
+          : a.total_qty > 0
+            ? 100
+            : 0;
+      return {
+        area_id: a.area_id,
+        area_name: a.area_name,
+        current_qty: a.total_qty,
+        prior_qty: before,
+        delta,
+        change_pct: pct,
+        direction: delta > 0 ? 'naik' : delta < 0 ? 'turun' : 'stabil',
+      };
+    });
+
+    const rollups = {
+      period: range.label,
+      range: recap.range,
+      totals: recap.totals,
+      by_area: recap.by_area,
+      qty_over_time: recap.qty_over_time,
+      area_trends,
+      trending: trending.per_area,
+    };
+
+    if (recap.totals.line_item_count === 0) {
+      return {
+        period: range.label,
+        range: recap.range,
+        model: null,
+        insight:
+          'Belum ada data invoice pada periode ini, sehingga belum ada insight permintaan pasar yang bisa ditampilkan. Pastikan tim Taro sudah mengunggah invoice untuk periode terpilih.',
+        rollups,
+      };
+    }
+
+    if (!this.anthropic) {
+      return {
+        period: range.label,
+        range: recap.range,
+        model: null,
+        insight: this.fallbackInsight(rollups),
+        rollups,
+      };
+    }
+
+    try {
+      const response = await this.anthropic.messages.create({
+        model: INSIGHT_MODEL,
+        max_tokens: 900,
+        system:
+          'Anda analis permintaan pasar untuk tim manajemen TACO (produk bahan bangunan/furnitur seperti HPL, laminate, edging). ' +
+          'Anda menerima ringkasan data invoice yang SUDAH diagregasi per area dan per item untuk satu periode, plus perbandingan dengan periode sebelumnya. ' +
+          'Tugas: berikan insight permintaan pasar yang ringkas, konkret, dan dapat ditindaklanjuti dalam Bahasa Indonesia. ' +
+          'Fokus pada: apa yang laku di tiap area, area mana yang permintaannya naik/turun, area mana yang tim Taro kurang mengunggah (cakupan rendah), dan rekomendasi fokus untuk manajemen. ' +
+          'Jangan mengarang angka di luar data. Jika data tipis, katakan apa adanya. Maksimal sekitar 6 poin.',
+        messages: [
+          {
+            role: 'user',
+            content:
+              'Ringkasan teragregasi (JSON) untuk periode terpilih:\n\n' +
+              JSON.stringify(rollups) +
+              '\n\nTulis insight permintaan pasar untuk manajemen TACO berdasarkan data ini.',
+          },
+        ],
+      });
+
+      const insight = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n')
+        .trim();
+
+      return {
+        period: range.label,
+        range: recap.range,
+        model: INSIGHT_MODEL,
+        insight: insight || this.fallbackInsight(rollups),
+        rollups,
+      };
+    } catch (err) {
+      this.logger.error(`AI insight failed: ${String(err)}`);
+      return {
+        period: range.label,
+        range: recap.range,
+        model: null,
+        insight: this.fallbackInsight(rollups),
+        rollups,
+      };
+    }
+  }
+
+  /** Deterministic brief used when the LLM is unavailable / errors. */
+  private fallbackInsight(rollups: {
+    totals: { total_qty: number; invoice_count: number; area_count: number };
+    by_area: AreaRecapRow[];
+    area_trends: { area_name: string; direction: string; change_pct: number }[];
+    trending: { area_name: string; items: TrendingItem[] }[];
+  }): string {
+    const t = rollups.totals;
+    const top = [...rollups.by_area].sort(
+      (a, b) => b.total_qty - a.total_qty,
+    )[0];
+    const rising = rollups.area_trends.filter((a) => a.direction === 'naik');
+    const falling = rollups.area_trends.filter((a) => a.direction === 'turun');
+    const lines = [
+      `Total ${t.invoice_count} invoice di ${t.area_count} area, ${t.total_qty} unit tercatat pada periode ini.`,
+    ];
+    if (top) {
+      lines.push(
+        `Area dengan permintaan tertinggi: ${top.area_name} (${top.total_qty} unit).`,
+      );
+    }
+    if (rising.length) {
+      lines.push(
+        `Naik: ${rising.map((a) => `${a.area_name} (+${a.change_pct}%)`).join(', ')}.`,
+      );
+    }
+    if (falling.length) {
+      lines.push(
+        `Turun: ${falling
+          .map((a) => `${a.area_name} (${a.change_pct}%)`)
+          .join(', ')} — perlu perhatian.`,
+      );
+    }
+    const topItems = rollups.trending[0]?.items?.slice(0, 3) ?? [];
+    if (topItems.length) {
+      lines.push(
+        `Item terlaris di ${rollups.trending[0].area_name}: ${topItems
+          .map((i) => i.name)
+          .join(', ')}.`,
+      );
+    }
+    return lines.join(' ');
   }
 }
