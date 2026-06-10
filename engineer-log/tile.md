@@ -524,3 +524,61 @@ change needed** — didn't route anything to Grout.
   in-session).
 
 **Status:** FE complete + pushed. status.json `tile: idle`. Pinged Yumi w/ commit.
+
+---
+
+## 2026-06-10 — BUG: home hides a real upload that Riwayat shows (owner re-filter)
+
+**Scope (mine):** FE-only, root-caused to FE. File: `app/taro-app/home/page.tsx`.
+Live-demo-blocking. Symptom: `/taro-app/home` recent list empty while
+`/taro-app/history` shows KC's only real invoice `2af91218`.
+
+### Diagnosis — both screens, same endpoint; home re-filters, history doesn't
+- **Home** fetch: `getTaroInvoices({limit:"200"})` → `GET /api/taro-invoices`
+  (home/page.tsx:205), then a **client-side owner re-filter** `myUploads`
+  (was home/page.tsx:225-238): keep a row only if its `uploaded_by_user_id ??
+  uploaded_by` equals the locally-stored `user.id`.
+- **History** fetch: `getTaroInvoices({limit:"100"})` → **same endpoint**
+  (history/page.tsx:62), **no owner re-filter** — filters only by status/search.
+- **BE list is already JWT-scoped:** `taro-invoices.controller.ts:230` sets
+  `uploaded_by = role === TARO_AGENT ? userId : undefined` (from the JWT sub,
+  "never from query params, so the agent can't peek at others"), enforced in the
+  query at `taro-invoices.service.ts:626` (`inv.uploaded_by = :uid`). The list
+  serializes the owner flat as `uploaded_by` (service.ts:688).
+
+### Root cause (FE, file:line)
+Because history hits the **same JWT-scoped endpoint** and renders `2af91218`, the
+BE **did** return it for KC → the BE considers it KC's (its `uploaded_by` == KC's
+JWT user id). So the BE ownership/query filter is **correct, not the culprit**.
+The home **client re-filter** (home/page.tsx:225-238) is what dropped it: it
+compares the row's `uploaded_by` against `user.id`, and `user.id` is **not
+guaranteed to equal the BE user id that owns the upload** — it's set at login and
+the `/me` enrichment that would reconcile it is **skipped once `region_id` is
+present** (`useTaroGuard.ts:45`). When the two ids diverge (the sales-agents seed
+re-tag / login id-space quirk), the present-but-mismatched `uploaded_by` fails the
+`=== user.id` check and the real invoice is hidden — while the `if (!uploaderId)
+return true` fallback only saves rows with NO owner field. Net: home over-filters
+with an unreliable id; history trusts the BE and is correct.
+
+### Fix (FE — trust the BE scope, mirror Riwayat)
+`const myUploads = uploads;` — dropped the client owner re-filter entirely (and
+the now-unused `user`/`useAuthStore`). The re-filter added **no security** (the BE
+already enforces agent-scope from the JWT) and only introduced this bug. All
+downstream (`todayCount`, `recent`, `weekBuckets`) is unchanged — they just consume
+the BE-scoped list directly, exactly as history does. Recomputed from re-fetched
+data each mount → **survives reload**.
+
+### Not a BE flag
+Per the task's "flag Grout if BE-rooted" rule: it is **not** BE-rooted. The BE
+returns the row correctly to KC (proven by history on the same endpoint). No BE
+change requested. *(Secondary note passed to Yumi: the underlying `user.id` ≠
+`uploaded_by` id mismatch is a real FE identity quirk — login/enrichment id-space —
+but it's not worth chasing now since the BE is the authority on ownership and the
+FE no longer depends on `user.id` for this list.)*
+
+### Quality
+- `tsc --noEmit`: 0 errors from the file. `eslint`: clean. Live click-through is
+  Scout's smoke pass.
+
+**Status:** FE complete + pushed. status.json `tile: idle`. Pinged Yumi w/
+root cause (file:line) + fix + commit.
