@@ -173,13 +173,13 @@ async function main() {
     // Slight Jakarta bias on confidence + needs_review rate.
     const isHighConfRegion = area.code.startsWith('J-') || area.code.startsWith('C-');
     const baseConfidence = isHighConfRegion ? 0.92 : 0.78;
-    const status = TaroInvoiceStatus.DONE;
-
+    // Provisional — the real status is derived from the generated lines below
+    // (an invoice with any needs_review line is NEEDS_REVIEW, not DONE).
     const invoice = await invoiceRepo.save(
       invoiceRepo.create({
         uploaded_at: uploadedAt,
         uploaded_by: null,
-        status,
+        status: TaroInvoiceStatus.DONE,
         supplier_name: null,
         invoice_date: uploadedAt.toISOString().slice(0, 10),
         total_amount: '0',
@@ -202,6 +202,7 @@ async function main() {
     // never lists the same SKU twice.
     const lineCount = randInt(rng, 3, 8);
     const picked = pickN(skus, lineCount, rng);
+    let anyNeedsReview = false;
     for (let j = 0; j < picked.length; j++) {
       const sku = picked[j];
       // Region-flavoured price: same SKU is ~10–25% cheaper in Sumatera / Outer
@@ -225,6 +226,7 @@ async function main() {
         Math.min(0.999, baseConfidence + (rng() - 0.5) * 0.2),
       );
       const needs_review = conf < 0.85;
+      anyNeedsReview = anyNeedsReview || needs_review;
 
       await lineItemRepo.save(
         lineItemRepo.create({
@@ -242,6 +244,15 @@ async function main() {
         }),
       );
       createdLineItems++;
+    }
+
+    // Derive the invoice status from its own lines: any needs_review line means
+    // the invoice is NOT done. Mirrors the runtime recompute so the PWA never
+    // shows a "Sudah Selesai" banner over "Perlu Dicek" lines.
+    if (anyNeedsReview) {
+      await invoiceRepo.update(invoice.id, {
+        status: TaroInvoiceStatus.NEEDS_REVIEW,
+      });
     }
   }
 
