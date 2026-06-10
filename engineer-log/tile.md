@@ -599,3 +599,33 @@ Invoice Taro"). No dead wrappers, no orphaned layout classes.
 - `eslint app/taro/invoices/page.tsx`: exit 0, clean (no unused-var/import).
 
 **Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.
+
+---
+
+## 2026-06-10 — Remove "Upload Invoice" button from `/taro/dashboard` (follow-up)
+
+**Scope (mine):** FE-only. File: `app/taro/dashboard/page.tsx` (`/taro/dashboard`
+"Taro Dashboard" — NOT the PWA `/taro-app/*`). Sibling to the `/taro/invoices`
+button removal (`cfd82544`); separate commit since that was already pushed.
+
+### The ask (KC)
+Remove the "+ Upload Invoice" button from the Taro Dashboard page too.
+
+### What I changed
+Removed the `<Link href="/taro/invoices/upload">+ Upload Invoice</Link>` button in
+the page header (was `page.tsx:196-201`) and collapsed the `flex justify-between`
+wrapper + redundant inner `<div>` (only there to position the button beside the
+title), leaving the bare `<h1>` ("Taro Dashboard").
+
+- Unlike the invoices page, `Link` was the **sole** consumer here, so I also
+  dropped the now-unused `import Link from "next/link"` (was line 3) — no
+  unused-import lint. No other handler/state/import was tied to the button.
+- Left the empty-state copy "Upload invoice pertama Anda dari aplikasi sales
+  agent." (line ~241) — that's descriptive text, not a button.
+- Did not touch `/taro-app/*` PWA flows.
+
+### Quality / verification
+- `tsc --noEmit`: clean (0 errors from the file).
+- `eslint app/taro/dashboard/page.tsx`: exit 0, clean.
+
+**Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.

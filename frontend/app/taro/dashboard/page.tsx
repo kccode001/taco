@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   getTaroAnalytics,
@@ -187,19 +186,9 @@ export default function TaroDashboardOverviewPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-[20px] font-bold text-taco-text leading-tight">
-            Taro Dashboard
-          </h1>
-        </div>
-        <Link
-          href="/taro/invoices/upload"
-          className="h-[36px] px-4 inline-flex items-center bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors"
-        >
-          + Upload Invoice
-        </Link>
-      </div>
+      <h1 className="text-[20px] font-bold text-taco-text leading-tight">
+        Taro Dashboard
+      </h1>
 
       {/* KPI tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
