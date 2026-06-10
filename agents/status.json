@@ -1,7 +1,19 @@
 {
+  "tile": {
+    "status": "idle",
+    "task": "2026-06-10-taco-v2-tile-fe (re-fire) — DONE: verified spine vs LIVE BE; tsc+eslint clean on owned files; both FE routes 200. Closed A10 (delete valid-but-wrong photo) 9b6711d7. Flagged to Mortar: GET /api/v2/areas 403s for taro_agent (A2 blocker). Flagged env: FE lucide-react install corrupt, breaks next build only.",
+    "role": "frontend",
+    "updated_at": "2026-06-10"
+  },
   "grout": {
     "status": "idle",
-    "task": "2026-06-10-taro-list-image-url",
+    "task": "2026-06-10-taco-v2-findone-area-store — DONE: area+store relations populated in v2 invoice findOne; admin detail header renders Toko/Area",
+    "role": "backend",
+    "updated_at": "2026-06-10"
+  },
+  "mortar": {
+    "status": "idle",
+    "task": "2026-06-10-taco-v2-mgmt-backend — DONE (23a2ce30,9a95f66f,1a3b65d3,23795f3a): V2ManagementModule mounted; Areas/Stores/Sales CRUD live; market-demand dashboard recap/trending/ai-insight (Sonnet); reason-derived recommendation engine (auto_actionable, server-validated apply). All verified e2e on seeded data, DB left pristine, v1 untouched, tsc+eslint clean. Fixed Tile's A2 blocker (taro_agent can now read /api/v2/areas). Mgmt dashboards need Grout's OCR pipeline to emit InvoiceV2/LineItemV2 rows to show non-empty data.",
     "role": "backend",
     "updated_at": "2026-06-10"
   },
