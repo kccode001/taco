@@ -155,6 +155,45 @@ export async function processV2Invoice(invoiceId: string): Promise<InvoiceV2> {
   return inv;
 }
 
+// ── Admin queue (list) ─────────────────────────────────────────────────────
+
+export interface ListV2InvoicesParams {
+  status?: InvoiceV2Status;
+  area_id?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface ListV2InvoicesResult {
+  items: InvoiceV2[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+/** Admin resolve queue. `GET /api/v2/invoices` → { items, total, page, limit }.
+ *  Defaults shown defensively so a bare/`{data}`-wrapped body still normalizes. */
+export async function listV2Invoices(
+  params: ListV2InvoicesParams = {}
+): Promise<ListV2InvoicesResult> {
+  const res = await api.get("/v2/invoices", {
+    params: {
+      ...(params.status ? { status: params.status } : {}),
+      ...(params.area_id ? { area_id: params.area_id } : {}),
+      page: params.page ?? 1,
+      limit: params.limit ?? 50,
+    },
+  });
+  const body = (res.data as { data?: ListV2InvoicesResult }).data ?? res.data;
+  const b = body as Partial<ListV2InvoicesResult> & { items?: InvoiceV2[] };
+  return {
+    items: Array.isArray(b.items) ? b.items : [],
+    total: typeof b.total === "number" ? b.total : b.items?.length ?? 0,
+    page: typeof b.page === "number" ? b.page : params.page ?? 1,
+    limit: typeof b.limit === "number" ? b.limit : params.limit ?? 50,
+  };
+}
+
 // ── Admin detail / resolve ─────────────────────────────────────────────────
 
 export async function getV2Invoice(id: string): Promise<InvoiceV2 | null> {

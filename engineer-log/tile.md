@@ -804,3 +804,30 @@ can't map a SKU to — BE supports it; FE enhancement if KC wants it.
 
 **Status:** milestone 2 (admin v2 invoice detail + resolve) complete. Committing my 2 files +
 this ledger only (NOT Grout's in-flight backend/src/v2 or grout.md). Pushing to main. Pinging Yumi.
+Pushed `2c759f80`.
+
+---
+
+## 2026-06-10 — TACO v2 BUILD (Pair A FE): admin resolve QUEUE list [milestone 3]
+
+**What I built — `app/taro/v2/invoices/page.tsx` (admin queue, new):**
+- The resolve QUEUE that was missing — closes the spine demo path (PWA upload → validate → OCR
+  9-bucket → **queue** → detail/resolve). Lists v2 invoices via `GET /v2/invoices`
+  (`listV2Invoices()` added to `lib/v2/invoices.ts`, normalizes `{items,total,page,limit}`),
+  default filter `status=needs_review` (the admin's primary job), with status tabs
+  (Perlu Review / Proses OCR / Validasi / Selesai / Gagal / Semua). Each row → `/taro/v2/invoices/[id]`.
+- **Client-side name join:** BE `list()` returns BARE invoice rows (no area/store relations), so I
+  map `area_id`/`store_id` → names off Mosaic's small Areas/Stores lists (`getAreas`/`getStoresV2`)
+  client-side; falls back to id prefix if those aren't loaded. (Same root gap as `findOne` — flagged
+  to Grout to join names server-side; FE works without it.)
+- Status chips reuse the v2 palette; loading/empty/error states; "Muat ulang".
+
+**Nav (one shared-file edit, flagged):** added an "Antrian" tab to `_components/V2Tabs.tsx`
+(Mosaic's file — was clean in the working tree) so the queue is reachable. Surgical: one icon
+import (`Inbox`) + one array entry between Dashboard and Area. @Mosaic FYI — if you re-org the tabs,
+keep an entry pointing at `/taro/v2/invoices`.
+
+**Quality:** `tsc --noEmit` + `eslint` clean on all touched files.
+
+**Status:** milestone 3 (resolve queue) complete. Spine FE now demoable end-to-end (pending live BE).
+Committing my queue page + `lib/v2/invoices.ts` + `V2Tabs.tsx` + this ledger. Pushing. Pinging Yumi.

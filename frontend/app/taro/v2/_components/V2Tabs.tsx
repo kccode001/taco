@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   Home,
+  Inbox,
   MapPin,
   Store as StoreLucide,
   Users,
@@ -16,6 +17,7 @@ type IconCmp = React.ComponentType<{ size?: number; className?: string }>;
 const V2_TABS: { href: string; label: string; icon: IconCmp; exact?: boolean }[] =
   [
     { href: "/taro/v2/dashboard", label: "Dashboard", icon: Home as IconCmp },
+    { href: "/taro/v2/invoices", label: "Antrian", icon: Inbox as IconCmp },
     { href: "/taro/v2/areas", label: "Area", icon: MapPin as IconCmp },
     { href: "/taro/v2/stores", label: "Toko", icon: StoreLucide as IconCmp },
     { href: "/taro/v2/sales", label: "Sales", icon: Users as IconCmp },
