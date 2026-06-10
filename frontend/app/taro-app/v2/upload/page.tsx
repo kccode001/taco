@@ -776,12 +776,22 @@ export default function TaroV2UploadPage() {
                         </div>
                       )}
                     </div>
-                    {invalid && (
+                    {/* Delete is offered for any settled image (valid OR invalid)
+                        so a rep can drop a wrong-but-readable photo, not just a
+                        rejected one (A10). Hidden while a photo is still being
+                        checked to avoid racing the validation poll. */}
+                    {img.validation_status !== "pending" && (
                       <button
                         type="button"
                         onClick={() => handleDeleteImage(img.id)}
                         disabled={busy}
-                        className="self-center min-h-[44px] px-3 rounded-lg border border-red-200 text-taco-error text-[13px] font-medium bg-white active:bg-red-50 disabled:opacity-40 shrink-0"
+                        aria-label="Hapus foto"
+                        className={[
+                          "self-center min-h-[44px] px-3 rounded-lg text-[13px] font-medium bg-white disabled:opacity-40 shrink-0 border",
+                          invalid
+                            ? "border-red-200 text-taco-error active:bg-red-50"
+                            : "border-taco-border text-taco-sub active:bg-taco-page",
+                        ].join(" ")}
                       >
                         Hapus
                       </button>
