@@ -32,6 +32,14 @@ const PILLS: { value: FilterPill; label: string }[] = [
   { value: "failed", label: "Gagal" },
 ];
 
+// Real upload timestamp in ms for default sorting. `uploaded_at` is the BE
+// upload time (the row mapper falls back to `created_at`). Missing/invalid
+// timestamps sort to the bottom rather than NaN-poisoning the comparator.
+function uploadedAtMs(i: TaroInvoiceSummary): number {
+  const t = i.uploaded_at ? new Date(i.uploaded_at).getTime() : NaN;
+  return Number.isNaN(t) ? 0 : t;
+}
+
 function statusBadge(status: TaroInvoiceSummary["status"]) {
   switch (status) {
     case "done":
@@ -169,7 +177,7 @@ export default function TaroInvoiceListPage() {
   // Client-side enforcement of all filters — guarantees the table mutates even
   // when the BE ignores a filter param.
   const filtered = useMemo(() => {
-    return invoices.filter((i) => {
+    const rows = invoices.filter((i) => {
       if (pill === "done" && i.status !== "done") return false;
       if (pill === "needs_review" && i.status !== "needs_review") return false;
       if (pill === "processing" && i.status !== "processing") return false;
@@ -201,6 +209,9 @@ export default function TaroInvoiceListPage() {
       }
       return true;
     });
+    // Default sort: latest uploaded invoice first (newest at top). `.filter`
+    // returned a fresh array, so sorting in place doesn't mutate `invoices`.
+    return rows.sort((a, b) => uploadedAtMs(b) - uploadedAtMs(a));
   }, [invoices, pill, regionFilter, dateFrom, dateTo, search]);
 
   const selectedRegionLabel =

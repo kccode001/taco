@@ -487,3 +487,40 @@ on **every** screen at once: home, history, notifications, upload, upload-detail
 
 **Status:** Items 2+3 FE complete + pushed; item 1 already in main (no change).
 status.json `tile: idle`. Pinged Yumi w/ commit + endpoint answer.
+
+---
+
+## 2026-06-10 — Dashboard invoice list: default sort newest-upload-first
+
+**Scope (mine):** FE-only. File: `app/taro/invoices/page.tsx` (the **dashboard**
+table at `/taro/invoices` "Daftar Invoice Taro" — NOT the PWA `/taro-app/*`).
+
+### The ask (KC)
+The invoice list table must default-sort by **latest uploaded invoice first**
+(newest at top), against the real upload timestamp — not id or OCR-status order.
+
+### Timestamp field check (Yumi asked: FE-side or route to Grout?)
+The list payload carries a usable upload time: the row mapper already sets
+`uploaded_at: String(r.uploaded_at ?? r.created_at ?? "")` (page.tsx:131), and
+`TaroInvoiceSummary.uploaded_at` is a required string. So **FE-side sort, no BE
+change needed** — didn't route anything to Grout.
+
+### What I changed
+- Added `uploadedAtMs(i)` helper — parses `uploaded_at` to epoch ms, maps
+  missing/invalid to `0` so a bad date sorts to the bottom instead of
+  NaN-poisoning the comparator.
+- The existing `filtered` useMemo now sorts its result
+  `rows.sort((a,b) => uploadedAtMs(b) - uploadedAtMs(a))` → descending, newest
+  first. `.filter` already returns a fresh array so the in-place sort doesn't
+  mutate `invoices`. Sort is inside the memo (deps unchanged: invoices, pill,
+  region, dates, search), so it re-applies on every fetch/filter change.
+- **Survives reload:** the sort is recomputed from re-fetched data on every mount
+  — no persisted/stateful ordering to go stale.
+
+### Quality / verification
+- `tsc --noEmit`: 0 errors from the file. `eslint`: clean.
+- Logic-verified the comparator (descending by ms, invalids last). Live
+  click-through / reload check is Scout's smoke pass (no interactive browser
+  in-session).
+
+**Status:** FE complete + pushed. status.json `tile: idle`. Pinged Yumi w/ commit.
