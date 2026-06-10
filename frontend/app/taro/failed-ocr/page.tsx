@@ -4,11 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   getRegionAreas,
-  regenerateTaroRecommendations,
   type RegionArea,
 } from "@/lib/api";
 import { Badge, TableHeader, EmptyRow } from "../../admin/_components/CrudShell";
-import { SearchIcon, SparkleIcon } from "../../admin/_components/icons";
+import { SearchIcon } from "../../admin/_components/icons";
 import {
   MOCK_REGION_AREAS,
   formatDateTime,
@@ -202,8 +201,6 @@ export default function FailedOcrPage() {
   const [agentFilter, setAgentFilter] = useState<"all" | string>("all");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [copying, setCopying] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -290,21 +287,6 @@ export default function FailedOcrPage() {
     return { total, likelyTaco, likelyCompetitor, avgFreq };
   }, [rows]);
 
-  const handleCopyToRecommendations = async () => {
-    setCopying(true);
-    try {
-      try {
-        await regenerateTaroRecommendations();
-      } catch {
-        await new Promise((r) => setTimeout(r, 600));
-      }
-      setToast("Dikirim ke Rekomendasi. Buka halaman Rekomendasi untuk melihat kartu baru.");
-      window.setTimeout(() => setToast(null), 3500);
-    } finally {
-      setCopying(false);
-    }
-  };
-
   // Unique region list from sample items — for region filter (BE rows might
   // not include every region in MOCK_REGION_AREAS).
   const sampleRegions = useMemo(() => {
@@ -321,21 +303,9 @@ export default function FailedOcrPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-[20px] font-bold text-taco-text leading-tight">
-            OCR Gagal
-          </h1>
-        </div>
-        <button
-          onClick={handleCopyToRecommendations}
-          disabled={copying}
-          className="h-[40px] px-4 inline-flex items-center gap-2 bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors disabled:opacity-60"
-        >
-          <SparkleIcon size={14} />
-          {copying ? "Mengirim…" : "Salin ke Rekomendasi"}
-        </button>
-      </div>
+      <h1 className="text-[20px] font-bold text-taco-text leading-tight">
+        OCR Gagal
+      </h1>
 
       {/* 4 KPI tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -574,14 +544,6 @@ export default function FailedOcrPage() {
         </table>
       </div>
 
-      {toast && (
-        <div
-          className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-[13px] font-medium border bg-white border-taco-success text-taco-success max-w-[360px]"
-          role="status"
-        >
-          {toast}
-        </div>
-      )}
     </div>
   );
 }

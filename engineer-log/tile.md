@@ -629,3 +629,42 @@ title), leaving the bare `<h1>` ("Taro Dashboard").
 - `eslint app/taro/dashboard/page.tsx`: exit 0, clean.
 
 **Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.
+
+---
+
+## 2026-06-10 — Remove "Salin ke Rekomendasi" action from `/taro/failed-ocr`
+
+**Scope (mine):** FE-only. File: `app/taro/failed-ocr/page.tsx` (`/taro/failed-ocr`
+"OCR Gagal" — NOT the PWA `/taro-app/*`). Third in the button-removal batch with
+`/taro/invoices` (`cfd82544`) + `/taro/dashboard` (`0daaa27c`).
+
+### The ask (KC)
+Remove the "Salin ke Rekomendasi" button/action from the OCR Gagal page.
+
+### What I changed
+This button owned a small cluster of state/logic; removed the button plus
+everything it was the sole consumer of:
+- Button `<button onClick={handleCopyToRecommendations}>` (was `page.tsx:330-337`);
+  collapsed the `flex justify-between` header wrapper → bare `<h1>` ("OCR Gagal").
+- Handler `handleCopyToRecommendations` (was 293-306) — only the button called it.
+- State `const [copying, setCopying]` (was 204) — only used by handler + button.
+- State `const [toast, setToast]` (was 206) **and** its bottom-right toast render
+  block (was 577-584). `setToast` was called **only** inside the removed handler,
+  so the toast mechanism existed solely to give this action feedback — removing the
+  button orphaned it entirely. Dropped both to avoid a never-called-setter lint.
+- Import `regenerateTaroRecommendations` (from `@/lib/api`, was line 7) — only the
+  handler used it on this page; dropped from the import list.
+- Import `SparkleIcon` (was line 11) — only the button used it; kept `SearchIcon`
+  (still used by the search field).
+
+### BE note (no action taken)
+`regenerateTaroRecommendations` is a real BE call, but it is **NOT** orphaned —
+still consumed by `app/taro/recommendations/page.tsx:213` and
+`app/admin/taro-invoices/recommendations/page.tsx:109`. So no BE/lib cleanup
+needed and nothing to flag. FE-only stayed FE-only.
+
+### Quality / verification
+- `tsc --noEmit`: clean (0 errors from the file).
+- `eslint app/taro/failed-ocr/page.tsx`: exit 0, clean (no unused var/import).
+
+**Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.
