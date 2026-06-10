@@ -751,3 +751,56 @@ lucide errors remain — unrelated). `eslint` clean on both.
 
 **Status:** milestone 1 (PWA upload) complete + pushed. Admin v2 invoice-detail (milestone 2)
 next — copy-forward v1 resolve UI into `taro/v2/*`.
+
+---
+
+## 2026-06-10 — TACO v2 BUILD (Pair A FE): admin v2 invoice detail + resolve [milestone 2] — RESTART after crash
+
+**Context:** v2 session crashed ~21:50 (infra). PWA upload (milestone 1) survived — committed
+`cb28bc57` pre-crash. Admin v2 invoice detail was untracked WIP from the crashed run; recovered
++ finished it this run, reconciled against Grout's NOW-canonical v2 spine.
+
+**Grout's canonical spine landed (`37f2fde8`):** entities `backend/src/database/entities/v2/*`,
+spine module `backend/src/taro-v2/*`. Read the real controllers/DTOs/service (code = source of
+truth) and reconciled my FE against them.
+
+**What I built / finished — `app/taro/v2/invoices/[id]/page.tsx` (admin, desktop):**
+- Copy-and-ADAPTED from v1 PWA resolve UI (v1 FROZEN, untouched). Loads `GET /v2/invoices/:id`,
+  renders images (left) + line items (right) with the 9-bucket `classification` taxonomy.
+- Per-line display engine drives off `classification` + explicit resolve fields
+  (`matched_sku_id` / `is_competitor` / `brand_id`): review-bucket (low_verify/unreadable/unknown)
+  → "Perlu Dicek" amber; very/high → auto-accepted (editable); resolved → TACO / Kompetitor.
+- **Resolve modal:** map a TACO SKU (search shared `/taco-skus`) OR mark competitor brand
+  (shared `/competitor-brands`, active-only) OR "Tidak diketahui". Captures **`mismatch_reason`**
+  (required) when the admin flips a line across the TACO↔not-TACO boundary the system predicted —
+  fuel for the recommendation engine. Esc-to-close (state-driven, no history funnel → avoids v1 BUG-6).
+- Header status badge recomputed from line states so it never contradicts the rows.
+
+**CONTRACT RECONCILIATION (drift caught vs Grout's BE):**
+1. **Images were broken** — BE `findOne` returns images with `file_path`, NOT a `url`; images are
+   JWT-gated at `GET /v2/invoice-images/:id/image` so a plain `<img src>` can't auth. FIX: added
+   `getV2ImageUrl()` (`lib/v2/invoices.ts`) hitting `GET /v2/invoice-images/:id/image-url` → signed
+   `?token=` URL the JwtStrategy accepts; admin page fetches one per image on load (Promise.all),
+   falls back to a placeholder card on failure. **This was the critical fix — without it the admin
+   sees no invoice photo.**
+2. **No `reason` field in v2** — v1's `PatchLineItemV2Dto` had `reason`; v2's does NOT (only
+   `mismatch_reason`). Global ValidationPipe is `whitelist:true` (NO forbidNonWhitelisted) → the
+   stray `reason` my client still sends is silently stripped, harmless. Mismatch capture rides
+   `mismatch_reason` (correct).
+3. Added `failed` to the FE status union + STATUS_META (BE enum has FAILED); guarded
+   `recomputeStatus` so it never overrides validating/ocr_processing/failed.
+
+**Resolve response shape (confirmed):** BE returns `{ line_item, invoice_status, invoice_status_label }`.
+My modal builds the optimistic line patch locally and reads `readInvoiceStatus(resp)` (top-level
+`invoice_status`) for the header — works regardless of the nested `line_item`.
+
+**GOTCHA for next run:** BE `findOne` does NOT join `area`/`store` relations (only images +
+line_items) → admin header shows "Toko —/Area —". FE degrades gracefully; flagged to Grout to add
+area/store (or denormalized names) to `findOne` so the header reads the store/area. Also no
+`confirm_as_is` ("Sudah benar") affordance yet for review-bucket lines the admin agrees with but
+can't map a SKU to — BE supports it; FE enhancement if KC wants it.
+
+**Quality:** `tsc --noEmit` clean on both files; `eslint` clean (removed an unused `router`).
+
+**Status:** milestone 2 (admin v2 invoice detail + resolve) complete. Committing my 2 files +
+this ledger only (NOT Grout's in-flight backend/src/v2 or grout.md). Pushing to main. Pinging Yumi.

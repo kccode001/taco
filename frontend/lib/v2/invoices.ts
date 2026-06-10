@@ -17,7 +17,8 @@ export type InvoiceV2Status =
   | "validating"
   | "ocr_processing"
   | "needs_review"
-  | "done";
+  | "done"
+  | "failed";
 
 export type ImageValidationStatus = "pending" | "valid" | "invalid";
 
@@ -159,6 +160,22 @@ export async function processV2Invoice(invoiceId: string): Promise<InvoiceV2> {
 export async function getV2Invoice(id: string): Promise<InvoiceV2 | null> {
   const res = await api.get(`/v2/invoices/${id}`);
   return unwrapOne<InvoiceV2>(res.data);
+}
+
+/** Fetch a short-lived signed URL for an invoice image. The BE serves images
+ *  behind JWT (`GET /api/v2/invoice-images/:id/image`); a plain <img src> can't
+ *  send the auth header, so we mint a `?token=` URL the JwtStrategy accepts.
+ *  Returns null on failure so the caller can fall back to a placeholder. */
+export async function getV2ImageUrl(imageId: string): Promise<string | null> {
+  try {
+    const res = await api.get<{ url?: string } | { data?: { url?: string } }>(
+      `/v2/invoice-images/${imageId}/image-url`
+    );
+    const body = res.data as { url?: string; data?: { url?: string } };
+    return body?.url ?? body?.data?.url ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Admin resolve contract (`PATCH /api/v2/invoice-line-items/:id`):
