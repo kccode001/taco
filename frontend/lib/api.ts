@@ -730,7 +730,6 @@ export interface TaroInvoiceLine {
   brand_id?: string | null;
   brand_name?: string | null;
   is_unknown?: boolean;
-  is_unclear?: boolean;
 }
 
 export interface TaroInvoiceSummary {
@@ -990,7 +989,6 @@ type BERawLine = {
   brand_name?: string | null;
   brand?: { id?: string; name?: string } | null;
   is_unknown?: boolean;
-  is_unclear?: boolean;
 };
 
 type BERawDetail = Omit<TaroInvoiceDetail, "line_items"> & {
@@ -1058,7 +1056,6 @@ function normalizeTaroInvoiceDetail(raw: BERawDetail): TaroInvoiceDetail {
       brand_id: li.brand_id ?? li.brand?.id ?? null,
       brand_name: li.brand_name ?? li.brand?.name ?? null,
       is_unknown: li.is_unknown ?? false,
-      is_unclear: li.is_unclear ?? false,
     };
   });
   const line_count = raw.line_count ?? line_items.length;
@@ -1177,20 +1174,21 @@ export const updateTaroLineItem = (
 ) => api.patch(`/taro-invoices/line-items/${lineId}`, data);
 
 /**
- * Resolve a line item via the FIXED contract from BE (Grout):
- *   PATCH /api/invoice-line-items/:id
+ * Resolve a line item via the FROZEN contract from BE (Grout), re-homed onto
+ * the Taro system per Decision 1 (2026-06-10):
+ *   PATCH /api/taro-invoices/line-items/:id
  * One of:
- *   - { brand_id }        → classify as a competitor brand
+ *   - { brand_id }         → classify as a competitor brand
  *   - { is_unknown: true } → competitor but brand unknown
- *   - { taco_sku_id }     → confirmed TACO match
- *   - { confirm_as_is }   → "Sudah benar": accept current match, clear unclear
+ *   - { matched_sku_id }   → confirmed TACO match
+ *   - { confirm_as_is }    → "Sudah benar": accept current match as-is
  * Response echoes the updated line + the recomputed invoice status so the FE
  * can reflect the Perlu Review / Selesai badge without a second fetch.
  */
 export interface ResolveLineItemBody {
   brand_id?: string;
   is_unknown?: boolean;
-  taco_sku_id?: string;
+  matched_sku_id?: string;
   confirm_as_is?: boolean;
 }
 
@@ -1199,8 +1197,6 @@ export interface ResolveLineItemResponse {
   brand_id?: string | null;
   brand_name?: string | null;
   is_unknown?: boolean;
-  is_unclear?: boolean;
-  taco_sku_id?: string | null;
   matched_sku_id?: string | null;
   // BE may return the recomputed status at the top level or nested under the
   // invoice. We read both shapes defensively.
@@ -1213,7 +1209,10 @@ export const resolveInvoiceLineItem = (
   lineId: string,
   body: ResolveLineItemBody
 ) =>
-  api.patch<ResolveLineItemResponse>(`/invoice-line-items/${lineId}`, body);
+  api.patch<ResolveLineItemResponse>(
+    `/taro-invoices/line-items/${lineId}`,
+    body
+  );
 
 export const getTaroRecommendations = (params?: { status?: string }) =>
   api.get<{ data?: TaroRecommendation[] } | TaroRecommendation[]>(

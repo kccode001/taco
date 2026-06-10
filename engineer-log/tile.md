@@ -55,3 +55,32 @@ the PWA detail from the invoice system). Until then it won't function live.
 
 **Status:** FE complete + contract-aligned + pushed. NOT verified end-to-end
 (blocked on the id-space reconciliation above).
+
+### 2026-06-10 (later) — BLOCKER RESOLVED: repointed to Taro system (Decision 1)
+Yumi locked the direction: re-home resolve onto the **Taro** system (not
+Visit/Invoice). My flagged id-space mismatch was the right call; fix is on the
+data-source side. Repointed per the frozen contract — no waiting on Grout's BE
+merge (the contract is the contract):
+- **Endpoint:** `resolveInvoiceLineItem` now hits
+  `PATCH /api/taro-invoices/line-items/:id` (was `/invoice-line-items/:id`) —
+  same base as the existing `updateTaroLineItem`. `lib/api.ts`.
+- **Field rename:** TACO-match field is `matched_sku_id`, not `taco_sku_id` —
+  renamed in `ResolveLineItemBody` + dropped the stale `taco_sku_id` from
+  `ResolveLineItemResponse` (kept `matched_sku_id`). `brand_id` / `is_unknown` /
+  `confirm_as_is` unchanged.
+- **Dropped the `is_unclear` flag assumption:** BE doesn't carry it. Perlu-dicek
+  is now driven purely by the OCR confidence warn-band in `resolveLine()`, and a
+  resolved/confirmed line clears via the recomputed `invoice_status` from the
+  response (the "Sudah benar" path bumps local confidence out of the warn band).
+  Removed `is_unclear` from `TaroInvoiceLine`, the raw-line type, the detail
+  normalizer, the classifier condition, and the 3 optimistic post-resolve writes.
+- **Status badge:** unchanged — still reads `invoice_status` top-level with the
+  defensive `status`/`invoice.status` fallback. Decision confirms Grout returns
+  it top-level.
+
+**Quality:** `tsc --noEmit` + `eslint` clean on both files. Remaining
+`taco_sku_id`/`is_unclear` refs in the tree are the separate Visit/Invoice system
+(`app/app/visit/*`, `app/app/invoice/*`) — not mine, legit there.
+
+**Status:** Repointed + pushed. Now contract-aligned to the live Taro endpoint;
+end-to-end verifiable once Grout's matching BE lands.

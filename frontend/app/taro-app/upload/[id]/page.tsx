@@ -65,9 +65,10 @@ interface LineResolution {
 }
 
 // Classify a line into one of the resolution states. Prefers the explicit BE
-// resolution fields (brand_id / is_unknown / is_unclear) and falls back to the
-// confidence band when they're absent, so the screen never regresses for rows
-// that predate Grout's columns.
+// resolution fields (brand_id / is_unknown) and falls back to the confidence
+// band for the "perlu dicek" warn state — there is no separate is_unclear flag;
+// a confirmed/resolved line clears via the recomputed invoice status (Decision
+// 1, 2026-06-10). Legacy rows without resolution fields never regress.
 function resolveLine(li: TaroInvoiceLine): LineResolution {
   if (li.brand_id || li.brand_name) {
     return {
@@ -91,7 +92,7 @@ function resolveLine(li: TaroInvoiceLine): LineResolution {
   }
   const hasMatch = !!li.matched_sku_id;
   const c = confidenceTone(li.confidence);
-  if (hasMatch && (li.is_unclear || c.tone === "warn")) {
+  if (hasMatch && c.tone === "warn") {
     return {
       kind: "perlu_dicek",
       tone: "warn",
@@ -310,8 +311,8 @@ export default function TaroUploadReviewPage() {
       applyResolution(
         li.id,
         {
-          is_unclear: false,
-          // Lock confidence so the line reads as resolved post-confirm.
+          // Lock confidence so the line reads as resolved (out of the warn
+          // band) post-confirm; the recomputed invoice status drives the badge.
           confidence: Math.max(li.confidence, 0.85),
         },
         res.data
@@ -1054,7 +1055,6 @@ function CompetitorPickerSheet({
           brand_id: brand.id,
           brand_name: brand.name,
           is_unknown: false,
-          is_unclear: false,
         },
         res.data
       );
@@ -1074,7 +1074,6 @@ function CompetitorPickerSheet({
           is_unknown: true,
           brand_id: null,
           brand_name: null,
-          is_unclear: false,
         },
         res.data
       );
