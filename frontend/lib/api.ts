@@ -750,12 +750,15 @@ export interface TaroInvoiceSummary {
   line_count: number;
   avg_confidence: number;
   status: TaroInvoiceStatus;
+  /** Signed, short-TTL URL to the invoice image, served by the BE list
+   *  payloads. `null`/absent when no image file exists on disk — render the
+   *  store icon instead, never an empty/404 URL. */
+  image_url?: string | null;
 }
 
 export interface TaroInvoiceDetail extends TaroInvoiceSummary {
   invoice_date?: string;
   total_amount?: number;
-  image_url?: string;
   line_items: TaroInvoiceLine[];
 }
 
@@ -926,6 +929,18 @@ type BERawSummary = TaroInvoiceSummary & {
   taro_region?: { display_path?: string } | null;
 };
 
+/** BE ships image paths as server-relative (e.g. `/api/taro-invoices/:id/image`).
+ *  The FE host (4014) differs from the BE host (5013), so prefix the API origin
+ *  for any leading-slash path. Already-absolute URLs and null pass through. */
+function toAbsoluteApiUrl(
+  rawImg: string | null | undefined
+): string | null | undefined {
+  if (!rawImg) return rawImg;
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
+  const apiOrigin = apiBase.replace(/\/api\/?$/, "");
+  return rawImg.startsWith("/") ? `${apiOrigin}${rawImg}` : rawImg;
+}
+
 function normalizeTaroInvoiceSummary(raw: BERawSummary): TaroInvoiceSummary {
   const total = raw.line_count ?? 0;
   const lowConf = raw.low_confidence_count ?? 0;
@@ -946,6 +961,7 @@ function normalizeTaroInvoiceSummary(raw: BERawSummary): TaroInvoiceSummary {
     avg_confidence: fallbackConf,
     region_display:
       raw.region_display ?? raw.taro_region?.display_path ?? null,
+    image_url: toAbsoluteApiUrl(raw.image_url),
   };
 }
 
@@ -1014,11 +1030,7 @@ function normalizeTaroInvoiceDetail(raw: BERawDetail): TaroInvoiceDetail {
   // FE expects an absolute `image_url` because the FE host (4014) is not the
   // BE host (5013).
   const rawImg = raw.image_url ?? raw.raw_image_url ?? undefined;
-  const apiBase =
-    process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
-  const apiOrigin = apiBase.replace(/\/api\/?$/, "");
-  const image_url =
-    rawImg && rawImg.startsWith("/") ? `${apiOrigin}${rawImg}` : rawImg;
+  const image_url = toAbsoluteApiUrl(rawImg) ?? undefined;
   // `total_amount` arrives as a numeric string ("0.00"). Cast so formatIdr
   // and any sum math get a real number.
   const total_amount =

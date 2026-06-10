@@ -77,6 +77,26 @@ function buildLast7DayBuckets(uploads: TaroInvoiceSummary[], userId?: string): D
   return buckets;
 }
 
+function RowThumbnail({ src }: { src?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const showImage = Boolean(src) && !failed;
+  return (
+    <div className="w-10 h-10 rounded-lg bg-taco-page border border-taco-divider flex items-center justify-center text-taco-sub flex-shrink-0 overflow-hidden">
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src as string}
+          alt=""
+          className="w-full h-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <StoreIcon size={18} />
+      )}
+    </div>
+  );
+}
+
 function WeeklyChart({ buckets }: { buckets: DayBucket[] }) {
   const max = Math.max(1, ...buckets.map((b) => b.count));
   // SVG dims
@@ -322,9 +342,7 @@ export default function TaroHomePage() {
                     className="w-full bg-white border border-taco-border rounded-xl px-4 py-3 text-left active:bg-taco-page min-h-[80px]"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-taco-page border border-taco-divider flex items-center justify-center text-taco-sub flex-shrink-0">
-                        <StoreIcon size={18} />
-                      </div>
+                      <RowThumbnail src={u.image_url} />
                       <div className="flex-1 min-w-0">
                         <div className="text-[15px] font-medium text-taco-text truncate">
                           {(u as TaroInvoiceSummary & { store_name?: string })
