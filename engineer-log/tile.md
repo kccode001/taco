@@ -696,3 +696,58 @@ to the app's canonical primary-action recipe:
 - `tsc --noEmit`: clean. `eslint`: exit 0, clean.
 
 **Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.
+
+---
+
+## 2026-06-10 — TACO v2 BUILD (Pair A FE): PWA v2 upload flow [milestone 1]
+
+**Context:** KC overrode the pipeline (no PRD/design gate, code direct). v1 FROZEN
+— add-new-never-mutate. Build contract: `projects/taco/v2/BUILD-PLAN-v2.md`. I own
+PWA v2 upload (`taro-app/v2/*`) + admin v2 invoice detail (`taro/v2/*`).
+
+**Coordination notes (read these next time):**
+- Two project trees that have DRIFTED: code+git live at `/Users/kc-testing/projects/taco`;
+  the planning docs (BUILD-PLAN-v2, PROJECT-BRIEF-v2) + a STALE ledger mirror live at
+  `/Users/kc-testing/.openclaw/workspace/projects/taco`. **The git-tracked ledger here
+  is authoritative** — I append + commit THIS one.
+- Grout published canonical v2 entities at `backend/src/database/entities/v2/*` (untracked):
+  AreaV2, StoreV2, SalesAgentV2, InvoiceV2 (status: validating→ocr_processing→needs_review
+  →done), InvoiceImageV2 (validation_status pending|valid|invalid + invalid_reason ID),
+  InvoiceLineItemV2 (9-bucket `classification` enum + confidence_band + matched_sku_id /
+  brand_id / is_competitor / mismatch_reason). I mirrored those shapes exactly.
+- **Mosaic (Pair B FE) already created `lib/v2/api.ts` + `lib/v2/types.ts`** (areas/stores/
+  sales/recommendations/dashboard). It has NO invoice/image/line-item helpers. To avoid two
+  FE engineers contending on one file, I added a **sibling `lib/v2/invoices.ts`** (mine)
+  that reuses Mosaic's `unwrapList`/`unwrapOne` + `AreaV2`/`StoreV2` types. Mosaic: import
+  from `lib/v2/invoices.ts` if you need invoice shapes — don't redefine.
+
+**What I built (milestone 1, FE-only):**
+- `frontend/lib/v2/invoices.ts` — v2 invoice/image/line-item API client + entity-shaped
+  DTOs. Defensive response unwrap (`T` | `{data}` | `{images:[]}`) since BE DTOs may settle.
+  Endpoints per BUILD-PLAN: create invoice, upload images (multipart), validate (re-checks
+  only `pending`), delete image, process (kick OCR), getV2Invoice, patchV2LineItem (admin).
+- `frontend/app/taro-app/v2/upload/page.tsx` — 3-step + success PWA flow:
+  - Step 1 (Toko): Area tap-list (`GET /v2/areas`) + Store autocomplete filtered by area
+    (`GET /v2/stores?area_id=`) with **free-type-new-store** → `POST /v2/stores` on Lanjut,
+    saved for next time. Text input only — NO keyboard icon.
+  - Step 2 (Foto): camera (capture=environment) + gallery multi-select, local thumbnails +
+    inline delete pre-upload.
+  - Step 3 (Validasi): `POST /v2/invoices/:id/images` then poll `POST .../validate` while any
+    image `pending` (BE re-checks only pending). Per-image cards: valid/invalid/pending with
+    **Indonesian invalid_reason**; delete-invalid inline; add-more (camera/gallery) re-uploads
+    + re-validates. "Selesai & Proses" enabled **only when every image valid** → `POST .../process`.
+  - Step 4: success screen.
+  - Reuses v1 tokens (taco-accent #F04E23, taco-* system), TopBar, icons, useTaroGuard.
+    ONE-orange rule held (only primary CTAs are accent; status uses semantic success/error/info).
+
+**Quality:** `tsc --noEmit` clean on both my files (only the 2 pre-existing DashboardLayout
+lucide errors remain — unrelated). `eslint` clean on both.
+
+**Dependencies / honest flags:**
+- `GET /v2/areas` + `/v2/stores` are Mortar's (Pair B BE). If not live yet the area list shows
+  a graceful "Belum ada area" empty state — no crash. Wire is correct to the contract.
+- `POST /v2/invoices/:id/images|validate|process` + `DELETE /v2/invoice-images/:id` are Grout's
+  (Pair A BE) — in flight. No interactive browser in-session → live click-through is Scout's gate.
+
+**Status:** milestone 1 (PWA upload) complete + pushed. Admin v2 invoice-detail (milestone 2)
+next — copy-forward v1 resolve UI into `taro/v2/*`.
