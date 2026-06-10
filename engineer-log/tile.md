@@ -327,3 +327,57 @@ the `popstate`→unmount handshake desynced and `onClose` never fired.
   errors (not mine) so prod-build couldn't be exercised — flagged, unchanged by me.
 
 **Status:** FE complete + pushed. Pinged Scout (re-gate) + Yumi w/ commit SHA.
+
+---
+
+## 2026-06-10 — Symmetric edit: matched/TACO line → "Bukan produk TACO"
+
+**Scope (mine):** FE-only (KC verified no BE work). Queued after BUG-6 (confirmed
+committed `0a5aa251` before starting). File: `app/taro-app/upload/[id]/page.tsx`.
+
+### The gap
+The resolve flow was one-directional out of competitor/unknown. A line **matched
+as a TACO product** (`resolved_taco` "Yakin", or `perlu_dicek` with a SKU) could
+only be SKU-edited via the pencil/Edit-SKU → `EditLineSheet` (SKU-only). KC: *"When
+edit, I want to be able to mark 'Bukan produk TACO'."* — i.e. the exit OUT of TACO
+needed to be reachable from the edit sheet too, mirroring Feature 2 (4e035dbe) in
+reverse.
+
+### What I built — minimal, reuse the EXACT same picker
+Did **not** rebuild the competitor UI or replace `EditLineSheet` (kept its qty/price
+edit so AC-4 doesn't regress). Instead:
+- Added a **"Bukan produk TACO"** escape-hatch button at the bottom of
+  `EditLineSheet` (new required `onReclassify` prop). Neutral outline, ≥48px,
+  `XCircleIcon`, ID helper "Tandai sebagai produk kompetitor atau tidak diketahui."
+- Parent **hands off** to the existing `CompetitorPickerSheet` — the *same*
+  active-only, name-sorted brand tap-list + "Tidak diketahui" the unmatched
+  ("Belum cocok") flow uses (`setClassifying(editing); setEditing(null)`). Batched
+  state → only one sheet visible; no flicker.
+- **Reload-durable:** verified in the BE service (`taro-invoices.service.ts:877-889`
+  brand_id branch / `:870-876` is_unknown branch) that both clear `matched_sku_id`
+  + `brand_id`/`is_unknown` and set `needs_review=false`. Mirrored that in the
+  `CompetitorPickerSheet` optimistic patches — now also null out
+  `matched_sku_id/code/name` so a previously-matched line stays "Kompetitor" /
+  "Tidak diketahui" across reload (drives `resolveLine` → `needs_review`, the
+  Scout-RE-GATE-5-validated resolved signal). No-op for already-unmatched
+  belum_cocok lines.
+
+### Symmetry now complete
+- Matched/TACO line → Edit → pick a different SKU (existing) **OR** "Bukan produk
+  TACO" → competitor picker / "Tidak diketahui" (NEW).
+- Competitor/unknown line → "Ini produk TACO" + brand switch (4e035dbe, untouched).
+
+### Quality / verification
+- `tsc --noEmit`: 0 errors from my file (only the 2 pre-existing
+  `DashboardLayout`/lucide errors remain — unrelated). `eslint`: clean.
+- Impeccable critique pass — no blockers. One-orange rule holds (only "Simpan" is
+  accent; the new button is neutral outline). No keyboard/text-input added (pure
+  handoff to the tap-list picker), ID labels, ≥44px.
+- **Live browser click-through NOT run by me** — no interactive browser tool in my
+  session (only static web_fetch); the four-step click-through (matched line → Edit
+  → "Bukan produk TACO" → pick brand → reload sticks) is Scout's smoke check, per
+  the team flow. KC's hero invoice `be2d2d0d` is gone from the DB (seed churn);
+  invoice `62f499c9` currently holds matched `needs_review=false` TACO lines as a
+  live target for the re-gate.
+
+**Status:** FE complete + pushed. status.json working→idle. Pinged Yumi w/ commit.

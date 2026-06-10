@@ -809,6 +809,13 @@ export default function TaroUploadReviewPage() {
             applyLineUpdate(updated);
             setEditing(null);
           }}
+          onReclassify={() => {
+            // Exit out of TACO: swap the SKU editor for the competitor-brand
+            // picker (same sheet the unmatched-line flow uses) on the same line.
+            setActionError(null);
+            setClassifying(editing);
+            setEditing(null);
+          }}
         />
       )}
 
@@ -958,10 +965,14 @@ function EditLineSheet({
   line,
   onClose,
   onSaved,
+  onReclassify,
 }: {
   line: TaroInvoiceLine;
   onClose: () => void;
   onSaved: (updated: TaroInvoiceLine) => void;
+  // Exit out of TACO: hand off to the competitor-brand picker so a matched
+  // line can be re-marked "Bukan produk TACO" (competitor / Tidak diketahui).
+  onReclassify: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [skus, setSkus] = useState<TacoSkuRow[]>([]);
@@ -1166,6 +1177,25 @@ function EditLineSheet({
               </div>
             </div>
           )}
+
+          {/* Exit out of TACO — re-mark this matched line as a competitor /
+              unknown product. Hands off to the same picker the unmatched-line
+              flow uses; the BE clears matched_sku_id when brand_id/is_unknown
+              is set, so the reclassification sticks across reload. */}
+          <div className="pt-1 border-t border-taco-divider">
+            <button
+              type="button"
+              onClick={onReclassify}
+              disabled={busy}
+              className="mt-3 w-full min-h-[48px] rounded-xl border border-taco-border bg-taco-page text-[14px] font-medium text-taco-text active:bg-taco-divider disabled:opacity-40 flex items-center justify-center gap-1.5"
+            >
+              <XCircleIcon size={16} />
+              Bukan produk TACO
+            </button>
+            <div className="text-[11px] text-taco-muted mt-1.5 text-center">
+              Tandai sebagai produk kompetitor atau tidak diketahui.
+            </div>
+          </div>
         </div>
 
         <div className="px-4 pt-2 pb-4 border-t border-taco-divider flex flex-col gap-2">
@@ -1249,6 +1279,11 @@ function CompetitorPickerSheet({
           brand_id: brand.id,
           brand_name: brand.name,
           is_unknown: false,
+          // Mirror the BE: setting a competitor brand clears any TACO match, so
+          // re-marking a previously-matched line stays "Kompetitor" on reload.
+          matched_sku_id: null,
+          matched_sku_code: null,
+          matched_sku_name: null,
           needs_review: false,
         },
         res.data
@@ -1269,6 +1304,10 @@ function CompetitorPickerSheet({
           is_unknown: true,
           brand_id: null,
           brand_name: null,
+          // Mirror the BE: marking unknown clears any TACO match too.
+          matched_sku_id: null,
+          matched_sku_code: null,
+          matched_sku_name: null,
           needs_review: false,
         },
         res.data
