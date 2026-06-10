@@ -84,3 +84,31 @@ merge (the contract is the contract):
 
 **Status:** Repointed + pushed. Now contract-aligned to the live Taro endpoint;
 end-to-end verifiable once Grout's matching BE lands.
+
+### 2026-06-10 (later) — BUG-1 FIX: classifier reads `needs_review` (Scout hard gate)
+Scout's end-to-end gate (`tasks/2026-06-10-scout-taco-line-item-resolution-hardgate.md`)
+failed AC-3: a "Perlu dicek" line confirmed via "Sudah benar" reverted to orange
+on reload, and a BE-`done` invoice contradicted itself (green "Sudah Selesai"
+banner while lines still read "Perlu Dicek"). Root cause: my `resolveLine()`
+inferred the review state purely from the OCR **confidence band**, but the BE
+marks a line resolved by clearing **`needs_review`** (and `confirm_as_is` does
+*not* bump confidence). My optimistic confidence bump was in-session only → lost
+on reload. Applied Scout's recommended FE fix (aligns with Decision 1):
+- **`resolveLine()` now reads `needs_review` as the resolved signal.** For a
+  matched line: `needs_review===false` → "Yakin" regardless of score;
+  `===true` → "Perlu Dicek". When the BE **omits** the flag, fall back to the
+  confidence warn-band so legacy rows don't regress. `brand_id`/`is_unknown`
+  still win outright. This single change fixes the per-line badge, `isLineResolved`,
+  `recomputeStatus`, and the summary pills (all route through `resolveLine`).
+- **Plumbed `needs_review` through the data layer:** added to `TaroInvoiceLine`,
+  `BERawLine`, and the detail normalizer (`lib/api.ts`) — coerces a 0/1 numeric
+  to boolean, preserves `undefined` when absent so the fallback engages.
+- **Optimistic writes now mirror BE truth:** "Sudah benar" and Edit SKU set
+  `needs_review:false` (dropped the stale `confidence` hacks at the old :316/:832);
+  brand/unknown patches also set it for consistency. Persists across reload.
+
+**Quality:** `tsc --noEmit` + `eslint` clean on both FE files. Scope: FE only.
+**Fixes:** AC-3 (durable "Sudah benar"), AC-4 reload rendering, AC-5 banner
+contradiction — one classifier change, per Scout.
+
+**Status:** Pushed. Pinged Scout to re-gate + Yumi.

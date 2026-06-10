@@ -730,6 +730,11 @@ export interface TaroInvoiceLine {
   brand_id?: string | null;
   brand_name?: string | null;
   is_unknown?: boolean;
+  // BE-authoritative review flag. The resolve endpoint clears this (false) when
+  // a line is confirmed/matched/classified; it is the source of truth for the
+  // "Perlu Dicek" state. Optional because legacy payloads may omit it — the FE
+  // classifier falls back to the confidence band when it's absent.
+  needs_review?: boolean;
 }
 
 export interface TaroInvoiceSummary {
@@ -989,6 +994,8 @@ type BERawLine = {
   brand_name?: string | null;
   brand?: { id?: string; name?: string } | null;
   is_unknown?: boolean;
+  // BE ships this as a boolean, but accept the numeric (0/1) Postgres shape too.
+  needs_review?: boolean | number;
 };
 
 type BERawDetail = Omit<TaroInvoiceDetail, "line_items"> & {
@@ -1056,6 +1063,10 @@ function normalizeTaroInvoiceDetail(raw: BERawDetail): TaroInvoiceDetail {
       brand_id: li.brand_id ?? li.brand?.id ?? null,
       brand_name: li.brand_name ?? li.brand?.name ?? null,
       is_unknown: li.is_unknown ?? false,
+      // Preserve undefined when the BE omits the field so the classifier can
+      // fall back to the confidence band; coerce a present 0/1 to a boolean.
+      needs_review:
+        li.needs_review == null ? undefined : Boolean(li.needs_review),
     };
   });
   const line_count = raw.line_count ?? line_items.length;

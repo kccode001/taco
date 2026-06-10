@@ -64,11 +64,14 @@ interface LineResolution {
   title: string;
 }
 
-// Classify a line into one of the resolution states. Prefers the explicit BE
-// resolution fields (brand_id / is_unknown) and falls back to the confidence
-// band for the "perlu dicek" warn state — there is no separate is_unclear flag;
-// a confirmed/resolved line clears via the recomputed invoice status (Decision
-// 1, 2026-06-10). Legacy rows without resolution fields never regress.
+// Classify a line into one of the resolution states. The BE truth for whether
+// a matched line still needs review is `needs_review` — the resolve endpoint
+// clears it (false) once the line is confirmed/matched, so a resolved line
+// reads as "Yakin" regardless of its OCR confidence (BUG-1 fix, Scout hard
+// gate 2026-06-10). Confidence is only a fallback warn-band signal for
+// un-actioned lines whose `needs_review` flag the BE hasn't populated, so
+// legacy rows never regress. Explicit resolution fields (brand_id / is_unknown)
+// still win outright.
 function resolveLine(li: TaroInvoiceLine): LineResolution {
   if (li.brand_id || li.brand_name) {
     return {
@@ -91,8 +94,14 @@ function resolveLine(li: TaroInvoiceLine): LineResolution {
     };
   }
   const hasMatch = !!li.matched_sku_id;
-  const c = confidenceTone(li.confidence);
-  if (hasMatch && c.tone === "warn") {
+  // BE-authoritative: a cleared flag (false) means resolved regardless of
+  // confidence; a set flag (true) means it still needs a look. When the BE
+  // omits the flag, fall back to the confidence warn-band.
+  const needsReview =
+    typeof li.needs_review === "boolean"
+      ? li.needs_review
+      : confidenceTone(li.confidence).tone === "warn";
+  if (hasMatch && needsReview) {
     return {
       kind: "perlu_dicek",
       tone: "warn",
@@ -311,9 +320,11 @@ export default function TaroUploadReviewPage() {
       applyResolution(
         li.id,
         {
-          // Lock confidence so the line reads as resolved (out of the warn
-          // band) post-confirm; the recomputed invoice status drives the badge.
-          confidence: Math.max(li.confidence, 0.85),
+          // Mirror the BE: "Sudah benar" clears needs_review, which is the
+          // authoritative resolved signal the classifier reads. This persists
+          // across reload (BE returns needs_review=false), unlike the old
+          // in-session confidence bump that BUG-1 flagged.
+          needs_review: false,
         },
         res.data
       );
@@ -829,7 +840,9 @@ function EditLineSheet({
         matched_sku_id: selectedSku.id,
         matched_sku_code: selectedSku.code,
         matched_sku_name: selectedSku.name,
-        confidence: skuChanged ? 1 : line.confidence,
+        // Setting the match clears needs_review on the BE — reflect that as the
+        // resolved signal so the line reads "Yakin" and survives reload.
+        needs_review: false,
         quantity: Number(quantity) || line.quantity,
         unit_price: Number(price) || line.unit_price,
       });
@@ -1055,6 +1068,7 @@ function CompetitorPickerSheet({
           brand_id: brand.id,
           brand_name: brand.name,
           is_unknown: false,
+          needs_review: false,
         },
         res.data
       );
@@ -1074,6 +1088,7 @@ function CompetitorPickerSheet({
           is_unknown: true,
           brand_id: null,
           brand_name: null,
+          needs_review: false,
         },
         res.data
       );
