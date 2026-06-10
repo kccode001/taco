@@ -30,6 +30,10 @@ import { TaroInvoiceSkuCorrection } from '../entities/taro-invoice-sku-correctio
 import { TaroInvoiceRecommendation } from '../entities/taro-invoice-recommendation.entity';
 import { TaroMappingRule } from '../entities/taro-mapping-rule.entity';
 import { TacoSku } from '../entities/taco-sku.entity';
+import { CompetitorBrand } from '../entities/competitor-brand.entity';
+import { User } from '../entities/user.entity';
+import { Territory } from '../entities/territory.entity';
+import { TaroAgentRegion } from '../entities/taro-agent-region.entity';
 
 const ds = new DataSource({
   type: 'postgres',
@@ -42,6 +46,10 @@ const ds = new DataSource({
     TaroInvoiceRecommendation,
     TaroMappingRule,
     TacoSku,
+    CompetitorBrand,
+    User,
+    Territory,
+    TaroAgentRegion,
   ],
   synchronize: false,
 });
