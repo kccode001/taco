@@ -11,7 +11,7 @@ import {
   statusTone,
   timeAgo,
 } from "../_components/mockUploads";
-import { ChevronLeftIcon, SearchIcon, StoreIcon } from "../_components/icons";
+import { SearchIcon, StoreIcon } from "../_components/icons";
 
 type StatusFilter = "all" | "done" | "processing" | "needs_review" | "failed";
 
@@ -93,19 +93,7 @@ export default function TaroHistoryPage() {
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
       <div className="phone-shell flex flex-col min-h-screen pb-[96px]">
-        <TopBar
-          title="Riwayat Upload"
-          right={
-            <button
-              type="button"
-              onClick={() => router.push("/taro-app/home")}
-              className="inline-flex items-center gap-1 text-[13px] text-taco-sub px-2 py-1 -mr-2"
-            >
-              <ChevronLeftIcon size={16} />
-              Beranda
-            </button>
-          }
-        />
+        <TopBar title="Riwayat Upload" />
 
         {/* Search */}
         <div className="bg-white border-b border-taco-divider px-4 py-3">

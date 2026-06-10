@@ -381,3 +381,50 @@ edit so AC-4 doesn't regress). Instead:
   live target for the re-gate.
 
 **Status:** FE complete + pushed. status.json working→idle. Pinged Yumi w/ commit.
+
+---
+
+## 2026-06-10 — Remove redundant "back to Beranda" on Riwayat (history tab)
+
+**Scope (mine):** FE-only, lowest-priority. Queued after BUG-6 (`0a5aa251`) and the
+"Bukan produk TACO" symmetric edit (`c14ee383`) — both confirmed committed before
+starting. File: `app/taro-app/history/page.tsx`.
+
+### The ask (KC)
+`/taro-app/history` (Riwayat) is a **primary bottom-nav tab**, so a "back to
+Beranda" affordance in its header is redundant/wrong — the bottom nav already owns
+navigation. Remove it on the history tab only; do **not** regress the legitimate
+back button on the invoice detail screen (`/taro-app/upload/[id]`).
+
+### What I changed
+- Dropped the `right={…}` prop on history's `<TopBar>` — it was an inline
+  `<button>` (ChevronLeftIcon + "Beranda") that `router.push("/taro-app/home")`.
+  Now just `<TopBar title="Riwayat Upload" />`, which falls back to TopBar's default
+  right slot (region badge) — **identical to the home tab's bare `<TopBar />`**, so
+  primary tabs are now consistent (no back affordance).
+- Removed the now-unused `ChevronLeftIcon` import from this file. `router` stays
+  imported — still used for row → detail navigation (`router.push(/taro-app/upload/:id)`).
+
+### Why detail pages are unaffected
+The back button was defined **inline** in history's TopBar, not in a shared header.
+The detail screen has its **own** independent back affordances
+(`upload/[id]/page.tsx`: its own TopBar `right` ChevronLeftIcon at ~:427 + a
+"Kembali ke Beranda" at ~:391) — untouched. `ChevronLeftIcon` still imported/used
+there (and in the detail SKU sub-header ~:1658). No shared component edited → zero
+blast radius beyond the history tab.
+
+### Quality / verification
+- `tsc --noEmit`: 0 errors from `history/page.tsx` (only the 2 pre-existing
+  `DashboardLayout.tsx` lucide errors remain — unrelated, predate this). `eslint`:
+  clean on the file.
+- **Live browser click-through NOT run by me** — no interactive browser tool in my
+  session; the visual check (Riwayat shows no back-to-Beranda; bottom nav works;
+  detail still has its back) is Scout's smoke pass.
+
+### Heads-up flagged (out of scope, not touched)
+History row line ~193 still renders `{u.region_display ?? "—"}` — the same stray
+em-dash pattern KC had me fix on the **home** card (`652a2d99`). Left it alone (this
+task is scoped to the back button), but it's a candidate for the same `? : null`
+fix if KC wants the dash gone here too.
+
+**Status:** FE complete + pushed. status.json already `tile: idle`. Pinged Yumi w/ commit.
