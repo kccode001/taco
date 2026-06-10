@@ -482,7 +482,18 @@ export const deleteCompetitorSku = (id: string) =>
   api.delete(`/competitor-skus/${id}`);
 
 // Admin - Competitor Brands
-export const getCompetitorBrands = () => api.get("/competitor-brands");
+export interface CompetitorBrand {
+  id: string;
+  name: string;
+  country?: string | null;
+  logo_url?: string | null;
+  is_active?: boolean;
+}
+
+export const getCompetitorBrands = () =>
+  api.get<CompetitorBrand[] | { data?: CompetitorBrand[] }>(
+    "/competitor-brands"
+  );
 
 export const createCompetitorBrand = (data: Record<string, unknown>) =>
   api.post("/competitor-brands", data);
@@ -713,6 +724,13 @@ export interface TaroInvoiceLine {
   unit: string;
   unit_price: number;
   total: number;
+  // Resolution fields (line-item resolution flow). Optional because the BE
+  // detail payload only populates them once Grout's columns land; the FE
+  // classifier falls back to confidence bands when they're absent.
+  brand_id?: string | null;
+  brand_name?: string | null;
+  is_unknown?: boolean;
+  is_unclear?: boolean;
 }
 
 export interface TaroInvoiceSummary {
@@ -968,6 +986,11 @@ type BERawLine = {
   unit_price?: number | string;
   total?: number | string;
   total_price?: number | string;
+  brand_id?: string | null;
+  brand_name?: string | null;
+  brand?: { id?: string; name?: string } | null;
+  is_unknown?: boolean;
+  is_unclear?: boolean;
 };
 
 type BERawDetail = Omit<TaroInvoiceDetail, "line_items"> & {
@@ -1032,6 +1055,10 @@ function normalizeTaroInvoiceDetail(raw: BERawDetail): TaroInvoiceDetail {
       unit: li.unit ?? "",
       unit_price: price,
       total,
+      brand_id: li.brand_id ?? li.brand?.id ?? null,
+      brand_name: li.brand_name ?? li.brand?.name ?? null,
+      is_unknown: li.is_unknown ?? false,
+      is_unclear: li.is_unclear ?? false,
     };
   });
   const line_count = raw.line_count ?? line_items.length;
@@ -1148,6 +1175,45 @@ export const updateTaroLineItem = (
   lineId: string,
   data: { matched_sku_id: string; reason?: string }
 ) => api.patch(`/taro-invoices/line-items/${lineId}`, data);
+
+/**
+ * Resolve a line item via the FIXED contract from BE (Grout):
+ *   PATCH /api/invoice-line-items/:id
+ * One of:
+ *   - { brand_id }        → classify as a competitor brand
+ *   - { is_unknown: true } → competitor but brand unknown
+ *   - { taco_sku_id }     → confirmed TACO match
+ *   - { confirm_as_is }   → "Sudah benar": accept current match, clear unclear
+ * Response echoes the updated line + the recomputed invoice status so the FE
+ * can reflect the Perlu Review / Selesai badge without a second fetch.
+ */
+export interface ResolveLineItemBody {
+  brand_id?: string;
+  is_unknown?: boolean;
+  taco_sku_id?: string;
+  confirm_as_is?: boolean;
+}
+
+export interface ResolveLineItemResponse {
+  id?: string;
+  brand_id?: string | null;
+  brand_name?: string | null;
+  is_unknown?: boolean;
+  is_unclear?: boolean;
+  taco_sku_id?: string | null;
+  matched_sku_id?: string | null;
+  // BE may return the recomputed status at the top level or nested under the
+  // invoice. We read both shapes defensively.
+  invoice_status?: TaroInvoiceStatus;
+  status?: TaroInvoiceStatus;
+  invoice?: { status?: TaroInvoiceStatus };
+}
+
+export const resolveInvoiceLineItem = (
+  lineId: string,
+  body: ResolveLineItemBody
+) =>
+  api.patch<ResolveLineItemResponse>(`/invoice-line-items/${lineId}`, body);
 
 export const getTaroRecommendations = (params?: { status?: string }) =>
   api.get<{ data?: TaroRecommendation[] } | TaroRecommendation[]>(

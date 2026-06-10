@@ -4,12 +4,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AxiosError } from "axios";
 import {
+  getCompetitorBrands,
   getInvoiceImageUrl,
   getTacoSkus,
   getTaroInvoice,
+  resolveInvoiceLineItem,
   updateTaroLineItem,
+  type CompetitorBrand,
+  type ResolveLineItemResponse,
   type TaroInvoiceDetail,
   type TaroInvoiceLine,
+  type TaroInvoiceStatus,
 } from "@/lib/api";
 import { TopBar } from "../../_components/TopBar";
 import { BottomNav } from "../../_components/BottomNav";
@@ -40,6 +45,100 @@ function confidenceTone(
   if (c >= 0.85) return { tone: "ok", label: "Yakin", dot: "#1D9E75" };
   if (c >= 0.7) return { tone: "warn", label: "Perlu Cek", dot: "#E07B00" };
   return { tone: "err", label: "Perlu Review", dot: "#D0342C" };
+}
+
+type LineKind =
+  | "resolved_taco"
+  | "resolved_competitor"
+  | "resolved_unknown"
+  | "perlu_dicek"
+  | "belum_cocok";
+
+interface LineResolution {
+  kind: LineKind;
+  tone: "ok" | "warn" | "err";
+  /** Status chip label shown on the card. */
+  badge: string;
+  dot: string;
+  /** What to render as the line's primary title. */
+  title: string;
+}
+
+// Classify a line into one of the resolution states. Prefers the explicit BE
+// resolution fields (brand_id / is_unknown / is_unclear) and falls back to the
+// confidence band when they're absent, so the screen never regresses for rows
+// that predate Grout's columns.
+function resolveLine(li: TaroInvoiceLine): LineResolution {
+  if (li.brand_id || li.brand_name) {
+    return {
+      kind: "resolved_competitor",
+      tone: "ok",
+      badge: "Kompetitor",
+      dot: "#1D9E75",
+      title: li.brand_name
+        ? `Kompetitor · ${li.brand_name}`
+        : "Produk kompetitor",
+    };
+  }
+  if (li.is_unknown) {
+    return {
+      kind: "resolved_unknown",
+      tone: "ok",
+      badge: "Non-TACO",
+      dot: "#1D9E75",
+      title: "Bukan produk TACO (tidak diketahui)",
+    };
+  }
+  const hasMatch = !!li.matched_sku_id;
+  const c = confidenceTone(li.confidence);
+  if (hasMatch && (li.is_unclear || c.tone === "warn")) {
+    return {
+      kind: "perlu_dicek",
+      tone: "warn",
+      badge: "Perlu Dicek",
+      dot: "#E07B00",
+      title: li.matched_sku_name ?? "Perlu dicek",
+    };
+  }
+  if (hasMatch) {
+    return {
+      kind: "resolved_taco",
+      tone: "ok",
+      badge: "Yakin",
+      dot: "#1D9E75",
+      title: li.matched_sku_name ?? "Cocok",
+    };
+  }
+  return {
+    kind: "belum_cocok",
+    tone: "err",
+    badge: "Belum cocok",
+    dot: "#D0342C",
+    title: "Belum cocok",
+  };
+}
+
+function isLineResolved(li: TaroInvoiceLine): boolean {
+  return resolveLine(li).tone === "ok";
+}
+
+// Mirror of the BE recompute rule (invoices.service.ts): every line resolved →
+// done/Selesai, otherwise needs_review/Perlu Review. Used for the live badge so
+// no full reload is needed. Never overrides in-flight (processing) states.
+function recomputeStatus(
+  lines: TaroInvoiceLine[],
+  current: TaroInvoiceStatus
+): TaroInvoiceStatus {
+  if (
+    current === "processing" ||
+    current === "queued" ||
+    current === "pending" ||
+    current === "failed"
+  ) {
+    return current;
+  }
+  if (lines.length === 0) return current;
+  return lines.every(isLineResolved) ? "done" : "needs_review";
 }
 
 function formatIdr(value?: number | null) {
@@ -85,6 +184,11 @@ export default function TaroUploadReviewPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<TaroInvoiceLine | null>(null);
+  // Line whose competitor-brand picker sheet is open ("Bukan produk TACO").
+  const [classifying, setClassifying] = useState<TaroInvoiceLine | null>(null);
+  // id of the line whose "Sudah benar" action is in flight (inline spinner).
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   // Signed image URL — fetched once invoice loads so the browser can render
   // `<img>` without an Authorization header. See BE commit a1b3de77.
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -154,7 +258,7 @@ export default function TaroUploadReviewPage() {
     let perluCek = 0;
     let perluReview = 0;
     for (const l of lines) {
-      const t = confidenceTone(l.confidence);
+      const t = resolveLine(l);
       if (t.tone === "ok") yakin += 1;
       else if (t.tone === "warn") perluCek += 1;
       else perluReview += 1;
@@ -163,16 +267,62 @@ export default function TaroUploadReviewPage() {
   }, [invoice]);
 
   const applyLineUpdate = (updated: TaroInvoiceLine) => {
-    setInvoice((inv) =>
-      inv
-        ? {
-            ...inv,
-            line_items: inv.line_items.map((li) =>
-              li.id === updated.id ? updated : li
-            ),
-          }
-        : inv
-    );
+    setInvoice((inv) => {
+      if (!inv) return inv;
+      const line_items = inv.line_items.map((li) =>
+        li.id === updated.id ? updated : li
+      );
+      return {
+        ...inv,
+        line_items,
+        status: recomputeStatus(line_items, inv.status),
+      };
+    });
+  };
+
+  // Merge a resolution into local state and reflect the invoice status badge
+  // live (AC-5). Prefers the BE-returned status, falling back to the local
+  // recompute so the badge updates even if the field is absent.
+  const applyResolution = (
+    lineId: string,
+    patch: Partial<TaroInvoiceLine>,
+    resp?: ResolveLineItemResponse
+  ) => {
+    setInvoice((inv) => {
+      if (!inv) return inv;
+      const line_items = inv.line_items.map((li) =>
+        li.id === lineId ? { ...li, ...patch } : li
+      );
+      const serverStatus =
+        resp?.invoice_status ?? resp?.status ?? resp?.invoice?.status;
+      const status =
+        serverStatus ?? recomputeStatus(line_items, inv.status);
+      return { ...inv, line_items, status };
+    });
+  };
+
+  // "Sudah benar" — accept the current match as-is for a "Perlu dicek" line.
+  const handleConfirmAsIs = async (li: TaroInvoiceLine) => {
+    setConfirmingId(li.id);
+    setActionError(null);
+    try {
+      const res = await resolveInvoiceLineItem(li.id, { confirm_as_is: true });
+      applyResolution(
+        li.id,
+        {
+          is_unclear: false,
+          // Lock confidence so the line reads as resolved post-confirm.
+          confidence: Math.max(li.confidence, 0.85),
+        },
+        res.data
+      );
+    } catch (err) {
+      setActionError(
+        `Gagal menandai "Sudah benar": ${extractErrorMessage(err)}`
+      );
+    } finally {
+      setConfirmingId(null);
+    }
   };
 
   if (!ready || (loading && !invoice)) {
@@ -358,6 +508,22 @@ export default function TaroUploadReviewPage() {
               Item Invoice ({lines.length})
             </h2>
           </div>
+          {actionError && (
+            <div className="mb-2 text-[12px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2 flex items-start gap-2">
+              <span className="mt-0.5">
+                <XCircleIcon size={14} />
+              </span>
+              <span className="flex-1">{actionError}</span>
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                aria-label="Tutup"
+                className="text-taco-error/70"
+              >
+                <CloseIcon size={14} />
+              </button>
+            </div>
+          )}
           {lines.length === 0 ? (
             <div className="bg-white border border-taco-border rounded-xl p-5 text-center text-[14px] text-taco-muted">
               {isProcessing
@@ -367,11 +533,11 @@ export default function TaroUploadReviewPage() {
           ) : (
             <div className="flex flex-col gap-2">
               {lines.map((li) => {
-                const c = confidenceTone(li.confidence);
+                const r = resolveLine(li);
                 const leftBorder =
-                  c.tone === "err"
+                  r.tone === "err"
                     ? "border-l-[3px] border-l-taco-error"
-                    : c.tone === "warn"
+                    : r.tone === "warn"
                       ? "border-l-[3px] border-l-taco-warning"
                       : "border-l-[3px] border-l-taco-success";
                 return (
@@ -385,13 +551,15 @@ export default function TaroUploadReviewPage() {
                           Baris #{li.line_no} · {li.raw_text}
                         </div>
                         <div className="text-[15px] font-medium text-taco-text mt-1 truncate">
-                          {li.matched_sku_name ?? "Belum cocok"}
+                          {r.title}
                         </div>
-                        {li.matched_sku_code && (
-                          <div className="text-[11px] text-taco-sub font-mono mt-0.5">
-                            {li.matched_sku_code}
-                          </div>
-                        )}
+                        {li.matched_sku_code &&
+                          r.kind !== "resolved_competitor" &&
+                          r.kind !== "resolved_unknown" && (
+                            <div className="text-[11px] text-taco-sub font-mono mt-0.5">
+                              {li.matched_sku_code}
+                            </div>
+                          )}
                       </div>
                       <button
                         type="button"
@@ -407,19 +575,19 @@ export default function TaroUploadReviewPage() {
                         className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full"
                         style={{
                           background:
-                            c.tone === "ok"
+                            r.tone === "ok"
                               ? "#ECFDF5"
-                              : c.tone === "warn"
+                              : r.tone === "warn"
                                 ? "#FFFBEB"
                                 : "#FEF2F2",
-                          color: c.dot,
+                          color: r.dot,
                         }}
                       >
                         <span
                           className="w-1.5 h-1.5 rounded-full"
-                          style={{ background: c.dot }}
+                          style={{ background: r.dot }}
                         />
-                        {c.label}
+                        {r.badge}
                       </span>
                       <span className="text-[12px] text-taco-sub">
                         {li.quantity} {li.unit}
@@ -428,10 +596,57 @@ export default function TaroUploadReviewPage() {
                       <span className="text-[12px] text-taco-text font-medium">
                         {formatIdr(li.unit_price)}
                       </span>
-                      <span className="ml-auto text-[12px] text-taco-sub">
-                        {Math.round(li.confidence * 100)}%
-                      </span>
+                      {r.kind !== "resolved_competitor" &&
+                        r.kind !== "resolved_unknown" && (
+                          <span className="ml-auto text-[12px] text-taco-sub">
+                            {Math.round(li.confidence * 100)}%
+                          </span>
+                        )}
                     </div>
+
+                    {/* Resolution actions — state-specific */}
+                    {r.kind === "belum_cocok" && (
+                      <div className="mt-2.5 pt-2.5 border-t border-taco-divider">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionError(null);
+                            setClassifying(li);
+                          }}
+                          className="w-full min-h-[44px] rounded-xl border border-taco-border bg-taco-page text-[14px] font-medium text-taco-text active:bg-taco-divider flex items-center justify-center gap-1.5"
+                        >
+                          <XCircleIcon size={16} />
+                          Bukan produk TACO
+                        </button>
+                      </div>
+                    )}
+                    {r.kind === "perlu_dicek" && (
+                      <div className="mt-2.5 pt-2.5 border-t border-taco-divider grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(li)}
+                          className="min-h-[44px] rounded-xl border border-taco-border bg-white text-[14px] font-medium text-taco-text active:bg-taco-page flex items-center justify-center gap-1.5"
+                        >
+                          <PencilIcon size={15} />
+                          Edit SKU
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmAsIs(li)}
+                          disabled={confirmingId === li.id}
+                          className="min-h-[44px] rounded-xl bg-taco-success text-white text-[14px] font-semibold active:opacity-90 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                        >
+                          {confirmingId === li.id ? (
+                            <span className="animate-spin">
+                              <SpinnerIcon size={15} />
+                            </span>
+                          ) : (
+                            <CheckIcon size={15} />
+                          )}
+                          Sudah benar
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -506,6 +721,21 @@ export default function TaroUploadReviewPage() {
           onSaved={(updated) => {
             applyLineUpdate(updated);
             setEditing(null);
+          }}
+        />
+      )}
+
+      {classifying && (
+        <CompetitorPickerSheet
+          line={classifying}
+          onClose={() => setClassifying(null)}
+          onResolved={(patch, resp) => {
+            applyResolution(classifying.id, patch, resp);
+            setClassifying(null);
+          }}
+          onError={(msg) => {
+            setActionError(msg);
+            setClassifying(null);
           }}
         />
       )}
@@ -756,6 +986,215 @@ function EditLineSheet({
             type="button"
             onClick={onClose}
             className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border"
+          >
+            Batal
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// "Bukan produk TACO" — competitor brand picker. Pure tap-list (no text input,
+// so no on-screen keyboard) + a "Tidak diketahui" (Unknown) escape hatch.
+function CompetitorPickerSheet({
+  line,
+  onClose,
+  onResolved,
+  onError,
+}: {
+  line: TaroInvoiceLine;
+  onClose: () => void;
+  onResolved: (
+    patch: Partial<TaroInvoiceLine>,
+    resp?: ResolveLineItemResponse
+  ) => void;
+  onError: (msg: string) => void;
+}) {
+  const [brands, setBrands] = useState<CompetitorBrand[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // The pending selection: a brand id, or "unknown", or null when idle.
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getCompetitorBrands();
+        const raw =
+          ((res.data as { data?: CompetitorBrand[] })?.data ??
+            (res.data as CompetitorBrand[])) ?? [];
+        // Active only, name-sorted (BE already sorts, but be defensive).
+        const active = raw
+          .filter((b) => b.is_active !== false)
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (!cancelled) setBrands(active);
+      } catch (err) {
+        if (!cancelled)
+          setLoadError(
+            `Tidak bisa memuat daftar merek: ${extractErrorMessage(err)}`
+          );
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const pickBrand = async (brand: CompetitorBrand) => {
+    if (busyKey) return;
+    setBusyKey(brand.id);
+    try {
+      const res = await resolveInvoiceLineItem(line.id, { brand_id: brand.id });
+      onResolved(
+        {
+          brand_id: brand.id,
+          brand_name: brand.name,
+          is_unknown: false,
+          is_unclear: false,
+        },
+        res.data
+      );
+    } catch (err) {
+      setBusyKey(null);
+      onError(`Gagal menyimpan merek: ${extractErrorMessage(err)}`);
+    }
+  };
+
+  const pickUnknown = async () => {
+    if (busyKey) return;
+    setBusyKey("unknown");
+    try {
+      const res = await resolveInvoiceLineItem(line.id, { is_unknown: true });
+      onResolved(
+        {
+          is_unknown: true,
+          brand_id: null,
+          brand_name: null,
+          is_unclear: false,
+        },
+        res.data
+      );
+    } catch (err) {
+      setBusyKey(null);
+      onError(`Gagal menyimpan: ${extractErrorMessage(err)}`);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50">
+      <div className="bg-white w-full phone-shell rounded-t-2xl max-h-[85vh] flex flex-col">
+        <div className="px-4 pt-3 pb-2 border-b border-taco-divider flex items-center justify-between">
+          <div>
+            <div className="text-[16px] font-semibold text-taco-text">
+              Bukan produk TACO
+            </div>
+            <div className="text-[12px] text-taco-sub mt-0.5">
+              Baris #{line.line_no} · pilih merek kompetitor
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={!!busyKey}
+            aria-label="Tutup"
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-taco-sub hover:bg-taco-page disabled:opacity-40"
+          >
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        <div className="px-4 py-3 overflow-y-auto flex-1">
+          <div className="bg-taco-page border border-taco-divider rounded-lg px-3 py-2 mb-3">
+            <div className="text-[11px] uppercase tracking-wider text-taco-muted font-semibold">
+              Teks OCR
+            </div>
+            <div className="text-[14px] text-taco-text mt-0.5">
+              {line.raw_text}
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="py-8 flex items-center justify-center text-[13px] text-taco-muted gap-2">
+              <span className="animate-spin">
+                <SpinnerIcon size={16} />
+              </span>
+              Memuat merek…
+            </div>
+          ) : loadError ? (
+            <div className="text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+              {loadError}
+            </div>
+          ) : (
+            <>
+              <div className="text-[13px] font-medium text-taco-text mb-1.5">
+                Merek kompetitor
+              </div>
+              <div className="border border-taco-divider rounded-xl divide-y divide-taco-divider overflow-hidden">
+                {brands.length === 0 ? (
+                  <div className="px-3 py-3 text-[12px] text-taco-muted">
+                    Belum ada merek aktif.
+                  </div>
+                ) : (
+                  brands.map((b) => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => pickBrand(b)}
+                      disabled={!!busyKey}
+                      className="w-full text-left px-3 min-h-[52px] flex items-center justify-between gap-2 bg-white active:bg-taco-page disabled:opacity-50"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[15px] text-taco-text truncate">
+                          {b.name}
+                        </div>
+                        {b.country && (
+                          <div className="text-[11px] text-taco-sub truncate">
+                            {b.country}
+                          </div>
+                        )}
+                      </div>
+                      {busyKey === b.id && (
+                        <span className="animate-spin text-taco-sub flex-shrink-0">
+                          <SpinnerIcon size={16} />
+                        </span>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={pickUnknown}
+                disabled={!!busyKey}
+                className="mt-3 w-full min-h-[52px] rounded-xl border border-dashed border-taco-border bg-taco-page text-[14px] font-medium text-taco-text active:bg-taco-divider disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {busyKey === "unknown" ? (
+                  <span className="animate-spin">
+                    <SpinnerIcon size={16} />
+                  </span>
+                ) : (
+                  <AlertTriangleIcon size={16} />
+                )}
+                Tidak diketahui
+              </button>
+              <div className="text-[11px] text-taco-muted mt-1.5 text-center">
+                Pilih ini bila merek kompetitor tidak jelas.
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="px-4 pt-2 pb-4 border-t border-taco-divider">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={!!busyKey}
+            className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border disabled:opacity-40"
           >
             Batal
           </button>
