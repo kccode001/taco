@@ -891,3 +891,22 @@ was already shipped a prior run. Verified instead of rebuilding:
 No new commit this pass (verification only). Standing flags still need non-FE owners:
 A2 — GET /api/v2/areas 403 for taro_agent (Mortar); corrupt lucide-react install
 breaks `next build` only (env reinstall).
+
+- [2026-06-10] **A2/A3 step-1 wiring — verified LIVE end-to-end (no code change).** PWA
+  upload step 1 (`frontend/app/taro-app/v2/upload/page.tsx`, shipped cb28bc57) was already
+  wired to the live helpers: `getAreas` → `GET /api/v2/areas`, `getStoresV2({area_id})` →
+  `GET /api/v2/stores?area_id=`, `createStoreV2({area_id,name})` → `POST /api/v2/stores`.
+  Confirmed shapes match Mortar's canonical entities/DTOs (AreaV2 `{id,name,code}`, StoreV2
+  `{id,area_id,name,created_by}`). **A2 flag from last pass is RESOLVED**: Mortar's `23795f3a`
+  added TARO_AGENT to areas `list`+`findOne`; verified live — taro1@taco.id GETs `/api/v2/areas`
+  → HTTP 200 (was the 403 blocker). Ran full A2/A3 round-trip on live BE: admin creates area →
+  agent lists it → agent free-types a store (201, `created_by` set = persists next time) →
+  agent lists store in area → cleaned up (DELETE store+area) → areas back to count=0, **DB left
+  pristine**. tsc + eslint clean on step-1 files.
+  · Why: Mortar's M1 (23a2ce30) + role fix made the speculative wiring fully live; task was to
+  confirm against real shapes, not rebuild. · Gotcha: spec says store persists via an
+  `auto_created` flag — canonical entity has NO such field; persistence is realized by BE setting
+  `created_by` from the JWT. FE correctly sends only `{area_id,name}`; do not add `auto_created`
+  (whitelist DTO). · Demo note: 0 areas seeded — areas are admin-curated (reps can't POST areas),
+  so a live demo needs an admin to create ≥1 area first; FE shows graceful "Belum ada area" empty
+  state until then.
