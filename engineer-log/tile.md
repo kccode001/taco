@@ -831,3 +831,63 @@ keep an entry pointing at `/taro/v2/invoices`.
 
 **Status:** milestone 3 (resolve queue) complete. Spine FE now demoable end-to-end (pending live BE).
 Committing my queue page + `lib/v2/invoices.ts` + `V2Tabs.tsx` + this ledger. Pushing. Pinging Yumi.
+
+---
+
+## 2026-06-10 (overnight re-fire) — Pair A FE verify + A10 close
+
+Re-dispatched as `2026-06-10-taco-v2-tile-fe` (base `37f2fde8`). Found the spine
+FE already built+pushed by the prior tile pass (upload `cb28bc57`, detail/resolve
+`2c759f80`, queue `b170d164`, mgmt-wire `15f8034f`). So this pass = verify against
+the now-LIVE BE + close gaps, not rebuild.
+
+**Verified live:** PWA `/taro-app/v2/upload` → 200, admin `/taro/v2/invoices/[id]`
+→ 200 (both compile clean on the 4014 dev server). BE spine all mounted on 5013
+(401 unauth): `/api/v2/invoices`, `/invoices/:id/{images,validate,process}`,
+`/invoice-images/:id`, `/invoice-line-items/:id`, plus Mortar's `/v2/areas|stores`.
+`tsc --noEmit` + `eslint` CLEAN on all my owned files (upload page, detail page,
+`lib/v2/{invoices,api,types}.ts`).
+
+**Fixed (A10) — `9b6711d7`:** step-3 validation list only offered delete on
+*invalid* photos; a rep who snapped a readable-but-WRONG photo (wrong store /
+dup) couldn't drop it. Now Hapus shows on any *settled* image (valid or invalid),
+hidden while still `pending` to avoid racing the validate poll. Invalid keeps red,
+valid gets neutral — no extra orange, no keyboard icon.
+
+**🚩 Flagged to Mortar (A2 blocker, NOT my file):** `GET /api/v2/areas` is
+`@Roles(ADMIN, MANAGER)` at class level with NO method-level override, so the PWA
+rep (role `taro_agent`, enforced by `useTaroGuard`) gets **403** on the Area
+selector — step 1 of upload can't load areas for a real rep. Stores added the
+`@Roles(...TARO_AGENT)` override on GET/POST; Areas didn't. One-line fix in
+`backend/src/v2/areas/areas.controller.ts` (add `@Get()` method-level
+`@Roles(ADMIN, MANAGER, TARO_AGENT)`). FE is built correctly against the contract;
+this is purely the BE role gate. → coordinate in #taco.
+
+**🚩 Flagged (env, build-not-demo):** `frontend` `tsc` now errors ONLY in v1
+`components/DashboardLayout.tsx` (lucide-react prop-types mismatch; node_modules
+shows `lucide-react@1.17.0` — not a real public version, looks like a parallel
+`npm install` corrupted the install). Passed clean ~10 min earlier; file unchanged
+in git. Doesn't block `next dev` (the demo server renders per-route, no
+typecheck-gate) but WILL fail `next build`. Not my file / not a v2 regression —
+someone should reinstall FE deps before any prod build.
+
+---
+
+## Re-fire verification (Yumi: "carry on with M3" + flag header join)
+
+Yumi's dispatch acked M1/M2 and asked me to carry on with Milestone 3 — but M3
+was already shipped a prior run. Verified instead of rebuilding:
+
+- **M3 resolve queue ALREADY on main** — `b170d164` (`frontend/app/taro/v2/invoices/page.tsx`
+  + `V2Tabs.tsx` + `lib/v2/invoices.ts`). Queue row links to detail via
+  `href={/taro/v2/invoices/${inv.id}}` (page.tsx:231); detail page exists. HEAD==origin/main.
+- **Grout's area+store join `27582fa1` is shape-compatible — ZERO FE header rework.**
+  He attaches nested `invoice.area`/`invoice.store` ({name}); my detail header reads
+  `invoice.store?.name ?? invoice.store_name ?? "Toko —"` (page.tsx:306-307). First
+  branch now satisfied → "Toko/Area" fills in. Answers Yumi's "flag if join forces a
+  header change": it does not.
+- Also already landed since last ping: A10 delete-valid-but-wrong-photo (`9b6711d7`).
+
+No new commit this pass (verification only). Standing flags still need non-FE owners:
+A2 — GET /api/v2/areas 403 for taro_agent (Mortar); corrupt lucide-react install
+breaks `next build` only (env reinstall).
