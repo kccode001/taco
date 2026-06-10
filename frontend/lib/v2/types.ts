@@ -109,8 +109,8 @@ export interface TrendingItemV2 {
 /** /dashboard/ai-insight?period= — single LLM-generated market-demand insight. */
 export interface AiInsightV2 {
   period: string;
-  /** One-line headline. */
-  headline: string;
+  /** One-line headline. Optional — the live BE emits only the insight body. */
+  headline?: string;
   /** Markdown/plain body — the substance of the insight. */
   insight: string;
   /** Optional structured highlights the FE can chip-render. */

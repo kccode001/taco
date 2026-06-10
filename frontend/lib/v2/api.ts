@@ -88,3 +88,184 @@ export const getDashboardAiInsight = (params: { period?: string }) =>
   api.get<AiInsightV2 | { data: AiInsightV2 }>("/v2/dashboard/ai-insight", {
     params,
   });
+
+// ── BE → FE adapters ─────────────────────────────────────────────────────
+// Mortar's live `/api/v2` shapes differ from the BUILD-PLAN scaffold these
+// pages were authored against (different field names + nesting). These adapters
+// are the single translation point — components keep reading the FE types in
+// `types.ts`; mocks (already FE-typed) flow through unchanged. Coordinate any
+// field-name changes here via the engineer ledger, not in the components.
+
+/** Raw recap row as Mortar returns it (per-area aggregation). */
+interface RawAreaRecap {
+  area_id: string | null;
+  area_name: string;
+  invoice_count: number;
+  line_item_count: number;
+  total_qty: number;
+}
+interface RawSeriesPoint {
+  date: string;
+  total_qty: number;
+}
+interface RawRecap {
+  period: string;
+  totals?: {
+    area_count: number;
+    invoice_count: number;
+    line_item_count: number;
+    total_qty: number;
+  };
+  by_area?: RawAreaRecap[];
+  qty_over_time?: RawSeriesPoint[];
+}
+
+/** recap: rename line_item_count→items_logged, total_qty→qty_sold, date→bucket. */
+export function adaptRecap(body: unknown): DashboardRecapV2 | null {
+  const r = unwrapOne<RawRecap>(body);
+  if (!r) return null;
+  return {
+    period: r.period,
+    by_area: (r.by_area ?? []).map((a) => ({
+      area_id: a.area_id ?? "",
+      area_name: a.area_name,
+      items_logged: a.line_item_count,
+      qty_sold: a.total_qty,
+      // BE doesn't emit period-over-period delta yet → render "—".
+      delta_pct: null,
+    })),
+    qty_over_time: (r.qty_over_time ?? []).map((p) => ({
+      bucket: p.date,
+      qty: p.total_qty,
+    })),
+    totals: r.totals
+      ? {
+          total_items: r.totals.line_item_count,
+          total_qty: r.totals.total_qty,
+          total_invoices: r.totals.invoice_count,
+          active_areas: r.totals.area_count,
+        }
+      : undefined,
+  };
+}
+
+interface RawSales {
+  id: string;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  area_id?: string | null;
+  area_name?: string;
+  is_active?: boolean;
+  created_at?: string;
+}
+
+/** sales: BE persists `is_active`; the FE reads `active`. Map on read so the
+ *  Aktif/Nonaktif badge is truthful. (Writes already send `active`, which the
+ *  BE update DTO maps back to is_active.) */
+export function adaptSales(body: unknown): SalesAgentV2[] {
+  return unwrapList<RawSales>(body).map((s) => ({
+    id: s.id,
+    name: s.name,
+    phone: s.phone ?? undefined,
+    email: s.email ?? undefined,
+    area_id: s.area_id ?? undefined,
+    area_name: s.area_name,
+    active: s.is_active ?? true,
+    created_at: s.created_at,
+  }));
+}
+
+interface RawTrendingItem {
+  name: string;
+  sku_id: string | null;
+  sku_code?: string | null;
+  total_qty: number;
+}
+interface RawTrending {
+  per_area?: {
+    area_id: string | null;
+    area_name: string;
+    items?: RawTrendingItem[];
+  }[];
+}
+
+/** trending: flatten nested per_area groups into a ranked flat list. */
+export function adaptTrending(body: unknown): TrendingItemV2[] {
+  const r = unwrapOne<RawTrending>(body);
+  const out: TrendingItemV2[] = [];
+  for (const g of r?.per_area ?? []) {
+    (g.items ?? []).forEach((it, i) => {
+      out.push({
+        rank: i + 1,
+        name: it.name,
+        sku_id: it.sku_id ?? undefined,
+        sku_code: it.sku_code ?? undefined,
+        qty_sold: it.total_qty,
+        // BE doesn't emit per-item momentum yet → render "—".
+        trend_pct: null,
+        area_id: g.area_id ?? undefined,
+        area_name: g.area_name,
+      });
+    });
+  }
+  return out;
+}
+
+interface RawAiInsight {
+  period: string;
+  headline?: string;
+  insight?: string;
+  highlights?: string[];
+  model?: string | null;
+  generated_at?: string;
+}
+
+/** ai-insight: BE emits no headline/highlights — map straight, leave optional. */
+export function adaptAiInsight(body: unknown): AiInsightV2 | null {
+  const r = unwrapOne<RawAiInsight>(body);
+  if (!r) return null;
+  return {
+    period: r.period,
+    headline: r.headline,
+    insight: r.insight ?? "",
+    highlights: r.highlights,
+    model: r.model ?? undefined,
+    generated_at: r.generated_at,
+  };
+}
+
+interface RawRecommendation {
+  id: string;
+  kind: string;
+  title: string;
+  detail?: string | null;
+  source_reason?: string;
+  auto_actionable: boolean;
+  action_type?: string | null;
+  action_payload?: Record<string, unknown> | null;
+  status?: RecommendationV2["status"];
+  created_at?: string;
+}
+
+/** recommendations: unwrap {items}, rename kind→type, detail→body,
+ *  source_reason→reason, action_payload→payload. */
+export function adaptRecommendations(body: unknown): RecommendationV2[] {
+  const list = Array.isArray(body)
+    ? (body as RawRecommendation[])
+    : ((body as { items?: RawRecommendation[]; data?: RawRecommendation[] })
+        ?.items ??
+        (body as { data?: RawRecommendation[] })?.data ??
+        []);
+  return list.map((r) => ({
+    id: r.id,
+    type: r.kind,
+    title: r.title,
+    body: r.detail ?? "",
+    reason: r.source_reason,
+    auto_actionable: r.auto_actionable,
+    status: r.status,
+    created_at: r.created_at,
+    payload: r.action_payload ?? undefined,
+  }));
+}

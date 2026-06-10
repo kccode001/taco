@@ -20,6 +20,7 @@ import {
   updateSales,
   deleteSales,
   getAreas,
+  adaptSales,
   unwrapList,
 } from "@/lib/v2/api";
 import type { SalesAgentV2, AreaV2 } from "@/lib/v2/types";
@@ -64,7 +65,7 @@ export default function SalesV2Page() {
     setLoading(true);
     try {
       const [sRes, aRes] = await Promise.all([getSales(), getAreas()]);
-      setSales(unwrapList<SalesAgentV2>(sRes.data));
+      setSales(adaptSales(sRes.data));
       setAreas(unwrapList<AreaV2>(aRes.data));
       setUsingMock(false);
     } catch {

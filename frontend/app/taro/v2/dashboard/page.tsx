@@ -17,8 +17,9 @@ import {
   getDashboardRecap,
   getDashboardTrending,
   getDashboardAiInsight,
-  unwrapList,
-  unwrapOne,
+  adaptRecap,
+  adaptTrending,
+  adaptAiInsight,
 } from "@/lib/v2/api";
 import type {
   DashboardRecapV2,
@@ -89,7 +90,7 @@ export default function DashboardV2Page() {
     setInsightLoading(true);
     try {
       const res = await getDashboardAiInsight({ period });
-      setInsight(unwrapOne<AiInsightV2>(res.data));
+      setInsight(adaptAiInsight(res.data));
     } catch {
       setInsight(MOCK_AI_INSIGHT);
     } finally {
@@ -104,9 +105,9 @@ export default function DashboardV2Page() {
         getDashboardRecap({ period }),
         getDashboardTrending({ period, area: trendingArea || undefined }),
       ]);
-      const r = unwrapOne<DashboardRecapV2>(rRes.data);
+      const r = adaptRecap(rRes.data);
       setRecap(r ?? MOCK_RECAP);
-      setTrending(unwrapList<TrendingItemV2>(tRes.data));
+      setTrending(adaptTrending(tRes.data));
       setUsingMock(false);
     } catch {
       setRecap(MOCK_RECAP);

@@ -59,9 +59,11 @@ export function AiInsightCard({
         </div>
       ) : (
         <>
-          <h3 className="text-[15px] font-semibold text-taco-text leading-snug mb-2">
-            {insight.headline}
-          </h3>
+          {insight.headline && (
+            <h3 className="text-[15px] font-semibold text-taco-text leading-snug mb-2">
+              {insight.headline}
+            </h3>
+          )}
           <p className="text-[13px] text-taco-sub leading-relaxed whitespace-pre-line">
             {insight.insight}
           </p>

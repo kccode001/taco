@@ -5,7 +5,7 @@ import {
   getRecommendationsV2,
   applyRecommendationV2,
   acknowledgeRecommendationV2,
-  unwrapList,
+  adaptRecommendations,
 } from "@/lib/v2/api";
 import type { RecommendationV2 } from "@/lib/v2/types";
 import { Badge } from "../../../admin/_components/CrudShell";
@@ -23,6 +23,7 @@ const TYPE_LABEL: Record<string, string> = {
   mapping_rule: "Aturan Mapping",
   update_sku_knowledge: "Update Product Knowledge",
   investigate_competitor: "Investigasi Kompetitor",
+  review: "Perlu Tinjauan",
 };
 const TYPE_TONE: Record<string, "info" | "ok" | "warn" | "err"> = {
   add_synonym: "info",
@@ -60,7 +61,7 @@ export default function RecommendationsV2Page() {
     setLoading(true);
     try {
       const res = await getRecommendationsV2({ status: s });
-      const data = unwrapList<RecommendationV2>(res.data);
+      const data = adaptRecommendations(res.data);
       setRecs(data);
       setUsingMock(false);
     } catch {
