@@ -181,3 +181,72 @@ button; the image already stops propagation so a tap/pinch on it never dismisses
   browser click-through is Scout's separate smoke check (per the task).
 
 **Status:** FE complete, pushed. Status.json flipped working→idle. Pinged Yumi.
+
+---
+
+## 2026-06-10 — Re-editable competitor/unknown line + path back to TACO SKU
+
+**Scope (mine):** AC-1..AC-6, FE-only (KC verified no BE work needed). Files:
+`app/taro-app/upload/[id]/page.tsx` + `lib/api.ts` (one type field).
+
+### The gap
+A line resolved as **competitor** (`resolved_competitor`) or **unknown**
+(`resolved_unknown`) had NO action block, and the top-right pencil opened the
+SKU-only `EditLineSheet` — so a rep who mis-marked a line as competitor couldn't
+see which brand it was set to, nor flip it back to "this IS a TACO product + SKU".
+
+### What I built — state-aware `ResolveEditSheet`
+New sheet (decision-latitude: chose the unified state-aware editor KC flagged as
+cleaner) that reflects the line's current classification and offers every valid
+transition. Two affordances open it: the **pencil** (routed to this sheet for
+competitor/unknown lines instead of the SKU-only one) and a new **action block**
+on the card (`Ganti/Pilih merek` + `Ini produk TACO`, mirroring the perlu_dicek
+2-col grid). Two modes:
+- **Classify mode** — pure tap-list. Shows a "Saat ini: …" chip with the current
+  state. The current competitor brand is highlighted + checkmarked in the brand
+  list (or the "Tidak diketahui" option is highlighted for unknown lines) → **AC-1**.
+  Rep can switch competitor A→B (`pickBrand`), competitor↔unknown (`pickUnknown`),
+  with no-op guards when re-tapping the current state → **AC-4**. A prominent
+  "Ini produk TACO" button enters taco mode.
+- **TACO mode** — reuses the EditLineSheet SKU search list (search input + tap to
+  select) + an editable **reason** textarea pre-filled with a sensible default
+  (`reason` is required by the BE on `matched_sku_id` change — kept it editable so
+  reps can refine the learning signal, tap-save works out of the box). Save sends
+  `resolveInvoiceLineItem(id, { matched_sku_id, reason })` → **AC-2/AC-3**.
+
+### Contract / BE alignment (read the service to confirm, not assume)
+`patchLineItem` `matched_sku_id` branch (taro-invoices.service.ts:~852) sets
+`brand_id=null, brand_name=null, is_unknown=false, needs_review=!matched_sku_id`
+(→ false) and requires `reason` when the SKU changes. My optimistic write mirrors
+it field-for-field: `{matched_sku_id, matched_sku_code, matched_sku_name,
+brand_id:null, brand_name:null, is_unknown:false, needs_review:false}`. Brand/
+unknown switches mirror their branches too. Everything drives `needs_review` —
+the authoritative resolved signal `resolveLine()` reads — so resolutions survive
+reload via the canonical GET → **AC-6**. Added `reason?` to `ResolveLineItemBody`
+so the TACO-match save goes through the typed resolve helper (one-line api.ts add).
+
+### AC-5 / design
+Mobile-first PWA sheet, ≥44px targets (brand/SKU rows min-h 52px), pure tap-list
+for classification (no on-screen keyboard for the resolution itself; SKU search +
+reason reuse the existing EditLineSheet inputs), **no keyboard icon**, Indonesian
+labels ("Ubah klasifikasi", "Ini produk TACO", "Ganti merek kompetitor", "Pilih
+SKU TACO", "Saat ini:", "Tidak diketahui"). Matches the in-house `taco-*` system
+and existing bottom-sheet pattern. Inline error state (sheet stays open to retry,
+better than the picker's close-on-error). Lazy-loads SKUs only on entering taco
+mode.
+
+### Quality / verification
+- `tsc --noEmit`: 0 errors from my files (only the pre-existing
+  DashboardLayout/lucide errors remain). `eslint`: clean on both files.
+- Ran an impeccable critique pass on the diff — **no blockers**; the two
+  SHOULD-FIX notes (optimistic state not reconciled against the server echo) are
+  the *existing* accepted pattern in this file (CompetitorPickerSheet /
+  handleConfirmAsIs work the same way, Scout-gated), patches verified to mirror BE
+  truth, and reload pulls canonical data. Left as-is for consistency.
+- **Data-level verify against KC's reference invoice
+  `be2d2d0d-1313-4afa-99c7-d70a59c618ed`:** confirmed it holds a competitor line
+  (#2, brand "Unilin") and an unknown line (#1) — both now get the re-edit
+  affordance. Left that data intact so Scout has live competitor/unknown lines to
+  smoke-check. Live click-through is Scout's pass.
+
+**Status:** FE complete + pushed. status.json working→idle. Pinged Yumi.

@@ -197,6 +197,14 @@ export default function TaroUploadReviewPage() {
   const [editing, setEditing] = useState<TaroInvoiceLine | null>(null);
   // Line whose competitor-brand picker sheet is open ("Bukan produk TACO").
   const [classifying, setClassifying] = useState<TaroInvoiceLine | null>(null);
+  // An already-resolved competitor/unknown line being re-edited (state-aware
+  // sheet: shows current classification + lets the rep switch brand, mark
+  // unknown, or flip back to a confirmed TACO SKU). `mode` opens the sheet
+  // straight into either the classify or the SKU-picker view.
+  const [resolveEditing, setResolveEditing] = useState<{
+    line: TaroInvoiceLine;
+    mode: "classify" | "taco";
+  } | null>(null);
   // id of the line whose "Sudah benar" action is in flight (inline spinner).
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -600,7 +608,20 @@ export default function TaroUploadReviewPage() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => setEditing(li)}
+                        onClick={() => {
+                          setActionError(null);
+                          // A competitor/unknown line has no SKU to edit — the
+                          // pencil opens the state-aware classification editor
+                          // instead of the SKU-only sheet.
+                          if (
+                            r.kind === "resolved_competitor" ||
+                            r.kind === "resolved_unknown"
+                          ) {
+                            setResolveEditing({ line: li, mode: "classify" });
+                          } else {
+                            setEditing(li);
+                          }
+                        }}
                         aria-label="Edit baris"
                         className="w-9 h-9 rounded-lg bg-taco-page border border-taco-border flex items-center justify-center text-taco-sub active:bg-taco-divider flex-shrink-0"
                       >
@@ -681,6 +702,35 @@ export default function TaroUploadReviewPage() {
                             <CheckIcon size={15} />
                           )}
                           Sudah benar
+                        </button>
+                      </div>
+                    )}
+                    {(r.kind === "resolved_competitor" ||
+                      r.kind === "resolved_unknown") && (
+                      <div className="mt-2.5 pt-2.5 border-t border-taco-divider grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionError(null);
+                            setResolveEditing({ line: li, mode: "classify" });
+                          }}
+                          className="min-h-[44px] rounded-xl border border-taco-border bg-white text-[14px] font-medium text-taco-text active:bg-taco-page flex items-center justify-center gap-1.5"
+                        >
+                          <PencilIcon size={15} />
+                          {r.kind === "resolved_unknown"
+                            ? "Pilih merek"
+                            : "Ganti merek"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionError(null);
+                            setResolveEditing({ line: li, mode: "taco" });
+                          }}
+                          className="min-h-[44px] rounded-xl border border-taco-border bg-taco-page text-[14px] font-medium text-taco-text active:bg-taco-divider flex items-center justify-center gap-1.5"
+                        >
+                          <CheckIcon size={15} />
+                          Ini produk TACO
                         </button>
                       </div>
                     )}
@@ -773,6 +823,18 @@ export default function TaroUploadReviewPage() {
           onError={(msg) => {
             setActionError(msg);
             setClassifying(null);
+          }}
+        />
+      )}
+
+      {resolveEditing && (
+        <ResolveEditSheet
+          line={resolveEditing.line}
+          initialMode={resolveEditing.mode}
+          onClose={() => setResolveEditing(null)}
+          onResolved={(patch, resp) => {
+            applyResolution(resolveEditing.line.id, patch, resp);
+            setResolveEditing(null);
           }}
         />
       )}
@@ -1316,6 +1378,478 @@ function CompetitorPickerSheet({
             type="button"
             onClick={onClose}
             disabled={!!busyKey}
+            className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border disabled:opacity-40"
+          >
+            Batal
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// State-aware editor for a line ALREADY resolved as competitor or unknown.
+// Unlike the SKU-only EditLineSheet, this sheet reflects the line's current
+// classification (the competitor brand it's set to, or "Tidak diketahui") and
+// offers every valid transition: switch competitor brand (A→B), competitor ↔
+// unknown, or flip back to a confirmed TACO product by picking a SKU. All
+// actions drive `needs_review:false` so the resolution survives reload, mirroring
+// the BE (which clears brand_id/brand_name/is_unknown + needs_review when
+// matched_sku_id is set). Two modes: "classify" (brand/unknown tap-list) and
+// "taco" (SKU picker). No on-screen keyboard for classification — pure tap-list.
+function ResolveEditSheet({
+  line,
+  initialMode = "classify",
+  onClose,
+  onResolved,
+}: {
+  line: TaroInvoiceLine;
+  initialMode?: "classify" | "taco";
+  onClose: () => void;
+  onResolved: (
+    patch: Partial<TaroInvoiceLine>,
+    resp?: ResolveLineItemResponse
+  ) => void;
+}) {
+  const current = resolveLine(line);
+  const currentlyUnknown = current.kind === "resolved_unknown";
+  const currentBrandId = line.brand_id ?? null;
+
+  const [mode, setMode] = useState<"classify" | "taco">(initialMode);
+  const [error, setError] = useState<string | null>(null);
+
+  // classify mode
+  const [brands, setBrands] = useState<CompetitorBrand[]>([]);
+  const [brandsLoading, setBrandsLoading] = useState(true);
+  const [brandsError, setBrandsError] = useState<string | null>(null);
+  // brand id, or "unknown", while a switch PATCH is in flight.
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  // taco mode
+  const [skus, setSkus] = useState<TacoSkuRow[]>([]);
+  const [skuSearch, setSkuSearch] = useState("");
+  const [selectedSku, setSelectedSku] = useState<TacoSkuRow | null>(null);
+  const [reason, setReason] = useState(
+    "Dikoreksi: sebelumnya ditandai bukan produk TACO, ternyata produk TACO."
+  );
+  const [skuLoadError, setSkuLoadError] = useState<string | null>(null);
+  const [savingTaco, setSavingTaco] = useState(false);
+
+  // Load active competitor brands once (needed for the classify tap-list).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getCompetitorBrands();
+        const raw =
+          ((res.data as { data?: CompetitorBrand[] })?.data ??
+            (res.data as CompetitorBrand[])) ?? [];
+        const active = raw
+          .filter((b) => b.is_active !== false)
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (!cancelled) setBrands(active);
+      } catch (err) {
+        if (!cancelled)
+          setBrandsError(
+            `Tidak bisa memuat daftar merek: ${extractErrorMessage(err)}`
+          );
+      } finally {
+        if (!cancelled) setBrandsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Lazy-load the TACO SKU list only when the rep enters the "Ini produk TACO"
+  // view, so a pure brand-switch never pays for the larger SKU fetch.
+  useEffect(() => {
+    if (mode !== "taco" || skus.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getTacoSkus();
+        const data =
+          ((res.data as { data?: TacoSkuRow[] })?.data ??
+            (res.data as TacoSkuRow[])) ?? [];
+        if (!cancelled) setSkus(data);
+      } catch (err) {
+        if (!cancelled)
+          setSkuLoadError(
+            `Tidak bisa memuat daftar SKU: ${extractErrorMessage(err)}`
+          );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, skus.length]);
+
+  const filteredSkus = useMemo(() => {
+    if (!skuSearch.trim()) return skus.slice(0, 12);
+    const q = skuSearch.toLowerCase();
+    return skus
+      .filter(
+        (s) =>
+          s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
+      )
+      .slice(0, 12);
+  }, [skus, skuSearch]);
+
+  const pickBrand = async (brand: CompetitorBrand) => {
+    if (busyKey) return;
+    // Tapping the brand it's already set to is a no-op — just close.
+    if (brand.id === currentBrandId && !currentlyUnknown) {
+      onClose();
+      return;
+    }
+    setBusyKey(brand.id);
+    setError(null);
+    try {
+      const res = await resolveInvoiceLineItem(line.id, { brand_id: brand.id });
+      onResolved(
+        {
+          brand_id: brand.id,
+          brand_name: brand.name,
+          is_unknown: false,
+          matched_sku_id: null,
+          matched_sku_code: null,
+          matched_sku_name: null,
+          needs_review: false,
+        },
+        res.data
+      );
+    } catch (err) {
+      setBusyKey(null);
+      setError(`Gagal menyimpan merek: ${extractErrorMessage(err)}`);
+    }
+  };
+
+  const pickUnknown = async () => {
+    if (busyKey) return;
+    if (currentlyUnknown) {
+      onClose();
+      return;
+    }
+    setBusyKey("unknown");
+    setError(null);
+    try {
+      const res = await resolveInvoiceLineItem(line.id, { is_unknown: true });
+      onResolved(
+        {
+          is_unknown: true,
+          brand_id: null,
+          brand_name: null,
+          matched_sku_id: null,
+          matched_sku_code: null,
+          matched_sku_name: null,
+          needs_review: false,
+        },
+        res.data
+      );
+    } catch (err) {
+      setBusyKey(null);
+      setError(`Gagal menyimpan: ${extractErrorMessage(err)}`);
+    }
+  };
+
+  const saveAsTaco = async () => {
+    if (!selectedSku || savingTaco || !reason.trim()) return;
+    setSavingTaco(true);
+    setError(null);
+    try {
+      const res = await resolveInvoiceLineItem(line.id, {
+        matched_sku_id: selectedSku.id,
+        reason: reason.trim(),
+      });
+      // Mirror the BE: setting a TACO match clears the competitor/unknown
+      // fields and needs_review, flipping the line to a confirmed "Yakin" state
+      // that survives reload.
+      onResolved(
+        {
+          matched_sku_id: selectedSku.id,
+          matched_sku_code: selectedSku.code,
+          matched_sku_name: selectedSku.name,
+          brand_id: null,
+          brand_name: null,
+          is_unknown: false,
+          needs_review: false,
+        },
+        res.data
+      );
+    } catch (err) {
+      setSavingTaco(false);
+      setError(`Gagal menyimpan SKU: ${extractErrorMessage(err)}`);
+    }
+  };
+
+  const currentLabel = currentlyUnknown
+    ? "Tidak diketahui"
+    : line.brand_name
+      ? `Kompetitor · ${line.brand_name}`
+      : "Produk kompetitor";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50">
+      <div className="bg-white w-full phone-shell rounded-t-2xl max-h-[88vh] flex flex-col">
+        <div className="px-4 pt-3 pb-2 border-b border-taco-divider flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {mode === "taco" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setMode("classify");
+                }}
+                aria-label="Kembali"
+                className="w-9 h-9 -ml-1 rounded-lg flex items-center justify-center text-taco-sub hover:bg-taco-page flex-shrink-0"
+              >
+                <ChevronLeftIcon size={18} />
+              </button>
+            )}
+            <div className="min-w-0">
+              <div className="text-[16px] font-semibold text-taco-text truncate">
+                {mode === "taco" ? "Pilih SKU TACO" : "Ubah klasifikasi"}
+              </div>
+              <div className="text-[12px] text-taco-sub mt-0.5 truncate">
+                Baris #{line.line_no}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={!!busyKey || savingTaco}
+            aria-label="Tutup"
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-taco-sub hover:bg-taco-page disabled:opacity-40 flex-shrink-0"
+          >
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        <div className="px-4 py-3 overflow-y-auto flex-1">
+          {error && (
+            <div className="mb-3 text-[12px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+
+          <div className="bg-taco-page border border-taco-divider rounded-lg px-3 py-2 mb-3">
+            <div className="text-[11px] uppercase tracking-wider text-taco-muted font-semibold">
+              Teks OCR
+            </div>
+            <div className="text-[14px] text-taco-text mt-0.5">
+              {line.raw_text}
+            </div>
+          </div>
+
+          {/* Current classification — so the rep sees what the line is now. */}
+          <div className="flex items-center gap-2 mb-3 text-[12px]">
+            <span className="text-taco-sub">Saat ini:</span>
+            <span className="inline-flex items-center gap-1.5 font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-taco-success">
+              <span className="w-1.5 h-1.5 rounded-full bg-taco-success" />
+              {currentLabel}
+            </span>
+          </div>
+
+          {mode === "classify" ? (
+            <>
+              {/* Path back to a TACO product. */}
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setMode("taco");
+                }}
+                disabled={!!busyKey}
+                className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white text-[15px] font-semibold active:bg-taco-accent-dark disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <CheckIcon size={17} />
+                Ini produk TACO
+              </button>
+              <div className="text-[11px] text-taco-muted mt-1.5 mb-3 text-center">
+                Pilih ini bila baris ini sebenarnya produk TACO — lalu pilih
+                SKU-nya.
+              </div>
+
+              <div className="text-[13px] font-medium text-taco-text mb-1.5">
+                Atau ganti merek kompetitor
+              </div>
+              {brandsLoading ? (
+                <div className="py-8 flex items-center justify-center text-[13px] text-taco-muted gap-2">
+                  <span className="animate-spin">
+                    <SpinnerIcon size={16} />
+                  </span>
+                  Memuat merek…
+                </div>
+              ) : brandsError ? (
+                <div className="text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+                  {brandsError}
+                </div>
+              ) : (
+                <>
+                  <div className="border border-taco-divider rounded-xl divide-y divide-taco-divider overflow-hidden">
+                    {brands.length === 0 ? (
+                      <div className="px-3 py-3 text-[12px] text-taco-muted">
+                        Belum ada merek aktif.
+                      </div>
+                    ) : (
+                      brands.map((b) => {
+                        const isCurrent =
+                          !currentlyUnknown && b.id === currentBrandId;
+                        return (
+                          <button
+                            key={b.id}
+                            type="button"
+                            onClick={() => pickBrand(b)}
+                            disabled={!!busyKey}
+                            className={`w-full text-left px-3 min-h-[52px] flex items-center justify-between gap-2 active:bg-taco-page disabled:opacity-50 ${
+                              isCurrent ? "bg-taco-accent-tint" : "bg-white"
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="text-[15px] text-taco-text truncate">
+                                {b.name}
+                              </div>
+                              {b.country && (
+                                <div className="text-[11px] text-taco-sub truncate">
+                                  {b.country}
+                                </div>
+                              )}
+                            </div>
+                            {busyKey === b.id ? (
+                              <span className="animate-spin text-taco-sub flex-shrink-0">
+                                <SpinnerIcon size={16} />
+                              </span>
+                            ) : isCurrent ? (
+                              <span className="text-taco-success flex-shrink-0">
+                                <CheckIcon size={16} />
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={pickUnknown}
+                    disabled={!!busyKey}
+                    className={`mt-3 w-full min-h-[52px] rounded-xl border border-dashed text-[14px] font-medium text-taco-text active:bg-taco-divider disabled:opacity-50 flex items-center justify-center gap-2 ${
+                      currentlyUnknown
+                        ? "bg-taco-accent-tint border-taco-border"
+                        : "bg-taco-page border-taco-border"
+                    }`}
+                  >
+                    {busyKey === "unknown" ? (
+                      <span className="animate-spin">
+                        <SpinnerIcon size={16} />
+                      </span>
+                    ) : currentlyUnknown ? (
+                      <CheckIcon size={16} />
+                    ) : (
+                      <AlertTriangleIcon size={16} />
+                    )}
+                    Tidak diketahui
+                  </button>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {skuLoadError && (
+                <div className="mb-3 text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+                  {skuLoadError}
+                </div>
+              )}
+              <label className="block text-[13px] font-medium text-taco-text mb-1.5">
+                Pilih SKU TACO
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-taco-muted">
+                  <SearchIcon size={16} />
+                </span>
+                <input
+                  type="text"
+                  value={skuSearch}
+                  onChange={(e) => setSkuSearch(e.target.value)}
+                  placeholder="Cari kode atau nama SKU…"
+                  className="w-full h-[48px] pl-10 pr-3 border border-taco-border rounded-xl text-[15px] text-taco-text bg-white outline-none focus:border-taco-text"
+                />
+              </div>
+              <div className="mt-2 max-h-[220px] overflow-y-auto border border-taco-divider rounded-xl divide-y divide-taco-divider">
+                {filteredSkus.length === 0 ? (
+                  <div className="px-3 py-3 text-[12px] text-taco-muted">
+                    Tidak ada SKU cocok.
+                  </div>
+                ) : (
+                  filteredSkus.map((s) => {
+                    const active = selectedSku?.id === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setSelectedSku(s)}
+                        className={`w-full text-left px-3 py-2.5 active:bg-taco-page ${
+                          active ? "bg-taco-accent-tint" : "bg-white"
+                        }`}
+                      >
+                        <div className="font-mono text-[11px] text-taco-muted">
+                          {s.code}
+                        </div>
+                        <div className="text-[14px] text-taco-text">
+                          {s.name}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="mt-4">
+                <label className="block text-[13px] font-medium text-taco-text mb-1.5">
+                  Alasan koreksi <span className="text-taco-error">*</span>
+                </label>
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  rows={2}
+                  className="w-full border border-taco-border rounded-xl px-3 py-2.5 text-[15px] text-taco-text bg-white outline-none focus:border-taco-text resize-none"
+                />
+                <div className="text-[11px] text-taco-muted mt-1">
+                  Sistem belajar dari koreksi Anda untuk meningkatkan akurasi.
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="px-4 pt-2 pb-4 border-t border-taco-divider flex flex-col gap-2">
+          {mode === "taco" && (
+            <button
+              type="button"
+              onClick={saveAsTaco}
+              disabled={!selectedSku || !reason.trim() || savingTaco}
+              className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors flex items-center justify-center gap-2"
+            >
+              {savingTaco ? (
+                <>
+                  <span className="animate-spin">
+                    <SpinnerIcon size={16} />
+                  </span>
+                  Menyimpan…
+                </>
+              ) : (
+                "Simpan sebagai produk TACO"
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={!!busyKey || savingTaco}
             className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border disabled:opacity-40"
           >
             Batal

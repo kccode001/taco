@@ -1201,6 +1201,9 @@ export interface ResolveLineItemBody {
   is_unknown?: boolean;
   matched_sku_id?: string;
   confirm_as_is?: boolean;
+  // Required by the BE when `matched_sku_id` changes (SKU-correction audit) —
+  // e.g. flipping a competitor/unknown line back to a confirmed TACO product.
+  reason?: string;
 }
 
 export interface ResolveLineItemResponse {
