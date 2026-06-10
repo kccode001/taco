@@ -11,12 +11,13 @@ import {
 import { Modal, FormField } from "../../../admin/_components/Modal";
 import {
   getAreas,
+  getStoresV2,
   createArea,
   updateArea,
   deleteArea,
   unwrapList,
 } from "@/lib/v2/api";
-import type { AreaV2 } from "@/lib/v2/types";
+import type { AreaV2, StoreV2 } from "@/lib/v2/types";
 import { MOCK_AREAS } from "../_components/mockData";
 import { useToast } from "../_components/useToast";
 
@@ -39,7 +40,24 @@ export default function AreasV2Page() {
     setLoading(true);
     try {
       const res = await getAreas();
-      const data = unwrapList<AreaV2>(res.data);
+      let data = unwrapList<AreaV2>(res.data);
+      // The areas list doesn't carry a store count, so derive it client-side
+      // from the stores list (best-effort — non-fatal if stores fetch fails).
+      try {
+        const stores = unwrapList<StoreV2>((await getStoresV2()).data);
+        if (stores.length) {
+          const counts = stores.reduce<Record<string, number>>((m, s) => {
+            if (s.area_id) m[s.area_id] = (m[s.area_id] ?? 0) + 1;
+            return m;
+          }, {});
+          data = data.map((a) => ({
+            ...a,
+            store_count: a.store_count ?? counts[a.id] ?? 0,
+          }));
+        }
+      } catch {
+        /* leave store_count as the areas payload provided it */
+      }
       // Live endpoint up but empty is still "live" — only fall back to mock on error.
       setAreas(data);
       setUsingMock(false);

@@ -75,7 +75,11 @@ export const getDashboardRecap = (params: { period?: string; area?: string }) =>
     "/v2/dashboard/recap",
     { params }
   );
-export const getDashboardTrending = (params: { area?: string }) =>
+export const getDashboardTrending = (params: {
+  period?: string;
+  area?: string;
+  limit?: string;
+}) =>
   api.get<TrendingItemV2[] | { data: TrendingItemV2[] }>(
     "/v2/dashboard/trending",
     { params }

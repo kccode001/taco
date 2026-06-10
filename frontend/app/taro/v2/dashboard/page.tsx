@@ -102,7 +102,7 @@ export default function DashboardV2Page() {
     try {
       const [rRes, tRes] = await Promise.all([
         getDashboardRecap({ period }),
-        getDashboardTrending({ area: trendingArea || undefined }),
+        getDashboardTrending({ period, area: trendingArea || undefined }),
       ]);
       const r = unwrapOne<DashboardRecapV2>(rRes.data);
       setRecap(r ?? MOCK_RECAP);
@@ -128,17 +128,27 @@ export default function DashboardV2Page() {
   const series = recap?.qty_over_time ?? [];
   const totals = recap?.totals;
 
-  // Trending filtered client-side too, so the area toggle still works on mock.
+  // Area filter value is the canonical area_id (the live `?area=` param is a
+  // UUID per Mortar's DTO). Client-side filtering still runs so the toggle works
+  // on mock too — mock trending rows carry only area_name, so match on either.
+  const selectedAreaName = byArea.find(
+    (a) => a.area_id === trendingArea
+  )?.area_name;
   const trendingFiltered = useMemo(() => {
     if (!trendingArea) return trending;
     return trending.filter(
-      (t) => t.area_id === trendingArea || t.area_name === trendingArea
+      (t) =>
+        t.area_id === trendingArea ||
+        (selectedAreaName != null && t.area_name === selectedAreaName)
     );
-  }, [trending, trendingArea]);
+  }, [trending, trendingArea, selectedAreaName]);
 
-  // Area options derived from recap rows (label by name; value = name so it
-  // also matches mock trending rows that only carry area_name).
-  const areaOptions = byArea.map((a) => a.area_name);
+  // Area options derived from recap rows: value = area_id (UUID for the live
+  // filter param), label = area_name.
+  const areaOptions = byArea.map((a) => ({
+    id: a.area_id,
+    name: a.area_name,
+  }));
 
   return (
     <div className="space-y-6">
@@ -309,7 +319,8 @@ export default function DashboardV2Page() {
       <div className="bg-white border border-taco-border rounded-xl overflow-hidden">
         <div className="px-5 py-3.5 border-b border-taco-divider flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-[15px] font-semibold text-taco-text">
-            Item Trending Teratas {trendingArea ? `· ${trendingArea}` : "· Semua Area"}
+            Item Trending Teratas{" "}
+            {trendingArea ? `· ${selectedAreaName ?? ""}` : "· Semua Area"}
           </h2>
           <select
             value={trendingArea}
@@ -317,9 +328,9 @@ export default function DashboardV2Page() {
             className="h-[32px] text-[13px] border border-taco-border rounded-lg px-2.5 text-taco-text bg-white outline-none"
           >
             <option value="">Semua Area</option>
-            {areaOptions.map((name) => (
-              <option key={name} value={name}>
-                {name}
+            {areaOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
               </option>
             ))}
           </select>
