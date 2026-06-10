@@ -143,15 +143,34 @@ export default function SalesV2Page() {
     }
   };
 
-  const handleDelete = async (row: SalesAgentV2) => {
-    if (!confirm(`Hapus sales "${row.name}"?`)) return;
+  // Soft-deactivate (spec: no hard-delete for Sales — row stays visible as Nonaktif
+  // to keep historical sales/invoice ties intact). BE remove() flips is_active=false.
+  const handleDeactivate = async (row: SalesAgentV2) => {
+    if (!confirm("Nonaktifkan sales ini?")) return;
     try {
       await deleteSales(row.id);
       await refetch();
-      show("Sales dihapus");
+      show("Sales dinonaktifkan");
     } catch {
-      setSales((p) => p.filter((r) => r.id !== row.id));
-      show("Dihapus lokal — BE belum siap");
+      setSales((p) =>
+        p.map((r) => (r.id === row.id ? { ...r, active: false } : r))
+      );
+      show("Dinonaktifkan lokal — BE belum siap");
+    }
+  };
+
+  // Reactivate a Nonaktif row via the existing update endpoint (undo a misclick
+  // without going through the edit form). BE update() maps active→is_active.
+  const handleReactivate = async (row: SalesAgentV2) => {
+    try {
+      await updateSales(row.id, { active: true });
+      await refetch();
+      show("Sales diaktifkan");
+    } catch {
+      setSales((p) =>
+        p.map((r) => (r.id === row.id ? { ...r, active: true } : r))
+      );
+      show("Diaktifkan lokal — BE belum siap");
     }
   };
 
@@ -215,7 +234,23 @@ export default function SalesV2Page() {
                   <td className="px-4 py-3 text-right">
                     <RowActions
                       onEdit={() => openEdit(s)}
-                      onDelete={() => handleDelete(s)}
+                      extra={
+                        s.active === false ? (
+                          <button
+                            onClick={() => handleReactivate(s)}
+                            className="h-[28px] px-2.5 border border-taco-border rounded-md text-[12px] text-taco-sub hover:text-taco-text hover:border-taco-text"
+                          >
+                            Aktifkan
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleDeactivate(s)}
+                            className="h-[28px] px-2.5 border border-taco-border rounded-md text-[12px] text-taco-sub hover:text-taco-error hover:border-taco-error"
+                          >
+                            Nonaktifkan
+                          </button>
+                        )
+                      }
                     />
                   </td>
                 </tr>
