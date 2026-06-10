@@ -24,6 +24,7 @@ import {
   CheckIcon,
   ChevronLeftIcon,
   CloseIcon,
+  ExpandIcon,
   PencilIcon,
   PinIcon,
   SearchIcon,
@@ -202,6 +203,9 @@ export default function TaroUploadReviewPage() {
   // Signed image URL — fetched once invoice loads so the browser can render
   // `<img>` without an Authorization header. See BE commit a1b3de77.
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  // Full-screen invoice photo preview (lightbox) — tap the thumbnail to verify
+  // the OCR source against what the scan read.
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const refetch = useCallback(async () => {
     if (!id) return;
@@ -466,18 +470,29 @@ export default function TaroUploadReviewPage() {
         {/* Invoice meta */}
         <div className="bg-white border-b border-taco-divider px-4 py-3 mt-3">
           <div className="flex items-start gap-3">
-            <div className="w-14 h-14 rounded-lg bg-taco-page border border-taco-border flex items-center justify-center text-taco-muted flex-shrink-0 overflow-hidden">
-              {imageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
+            {imageUrl ? (
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(true)}
+                aria-label="Lihat foto invoice"
+                className="relative w-14 h-14 rounded-lg bg-taco-page border border-taco-border flex items-center justify-center text-taco-muted flex-shrink-0 overflow-hidden cursor-pointer active:opacity-80"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={imageUrl}
-                  alt="Invoice"
+                  alt="Foto invoice"
                   className="w-full h-full object-cover rounded-lg"
                 />
-              ) : (
+                {/* Affordance: corner badge signalling the thumbnail is tappable. */}
+                <span className="absolute bottom-0.5 right-0.5 w-5 h-5 rounded-md bg-black/55 text-white flex items-center justify-center pointer-events-none">
+                  <ExpandIcon size={12} />
+                </span>
+              </button>
+            ) : (
+              <div className="w-14 h-14 rounded-lg bg-taco-page border border-taco-border flex items-center justify-center text-taco-muted flex-shrink-0 overflow-hidden">
                 <StoreIcon size={22} />
-              )}
-            </div>
+              </div>
+            )}
             <div className="flex-1 min-w-0">
               <div className="text-[15px] font-semibold text-taco-text truncate">
                 {(invoice as TaroInvoiceDetail & { store_name?: string | null })
@@ -761,6 +776,89 @@ export default function TaroUploadReviewPage() {
           }}
         />
       )}
+
+      {previewOpen && imageUrl && (
+        <ImageLightbox
+          src={imageUrl}
+          onClose={() => setPreviewOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Full-screen invoice photo preview. Dismiss via backdrop tap, the X button,
+// Esc, or the device back gesture (a history entry is pushed on open so the
+// back gesture pops the lightbox instead of leaving the review screen). Body
+// scroll is locked while open. The image is object-contain so the full invoice
+// is legible and never cropped; the scroll container allows native pinch-zoom.
+function ImageLightbox({
+  src,
+  onClose,
+}: {
+  src: string;
+  onClose: () => void;
+}) {
+  // Single close funnel: Esc / X / backdrop all step history back, and the
+  // popstate handler is the one place that flips the parent state off — so the
+  // device back gesture and explicit closes behave identically.
+  const requestClose = useCallback(() => {
+    window.history.back();
+  }, []);
+
+  useEffect(() => {
+    window.history.pushState({ tacoLightbox: true }, "");
+    const onPop = () => onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") requestClose();
+    };
+    window.addEventListener("popstate", onPop);
+    window.addEventListener("keydown", onKey);
+
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose, requestClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] bg-black/90 flex flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Foto invoice"
+      onClick={requestClose}
+    >
+      <div className="flex justify-end px-3 pt-3 pb-1">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            requestClose();
+          }}
+          aria-label="Tutup"
+          className="w-11 h-11 rounded-full bg-white/10 text-white flex items-center justify-center active:bg-white/20"
+        >
+          <CloseIcon size={22} />
+        </button>
+      </div>
+      <div
+        className="flex-1 overflow-auto flex items-center justify-center p-3"
+        style={{ touchAction: "pinch-zoom" }}
+      >
+        {/* Tapping the image must not dismiss; only the backdrop does. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={src}
+          alt="Foto invoice penuh"
+          onClick={(e) => e.stopPropagation()}
+          className="max-w-full max-h-full object-contain select-none"
+        />
+      </div>
     </div>
   );
 }

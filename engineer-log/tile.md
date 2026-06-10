@@ -134,3 +134,50 @@ DashboardLayout/lucide errors remain, unrelated); `eslint` clean. Scope: 1 FE fi
 
 **Status:** Pushed. Pinged Yumi with the commit SHA to verify HEAD moved before
 re-gate.
+
+---
+
+## 2026-06-10 — Tap-to-preview invoice image (lightbox) — additive FE task
+
+**Scope (mine):** AC-1..AC-6, FE-only. Files: `app/taro-app/upload/[id]/page.tsx`
++ `app/taro-app/_components/icons.tsx` (new `ExpandIcon`). Additive — not a
+re-gate of the resolution feature.
+
+### What I built
+- **Thumbnail is now tappable** (AC-1, AC-4): the meta-block 56×56 thumb (`w-14
+  h-14`, ≥44px) becomes a `<button>` **only when `imageUrl` is present**; tapping
+  opens a full-screen lightbox. The `StoreIcon` no-image fallback stays a plain
+  non-interactive `<div>` — no dead tap target. Added a subtle corner affordance
+  (`ExpandIcon` in a translucent badge) + `cursor-pointer` so it reads as tappable.
+- **`ImageLightbox` overlay** (AC-1, AC-3): `fixed inset-0 z-[60] bg-black/90`,
+  image `object-contain max-w-*/max-h-* ` → full invoice legible, never cropped,
+  no horizontal page shift. Scroll container sets `touch-action: pinch-zoom` for
+  native pinch where the browser supports it.
+- **Dismiss four ways + scroll lock** (AC-2): backdrop tap, X button, Esc key,
+  and the device back gesture. Single close funnel — Esc/X/backdrop all call
+  `history.back()`; a `pushState` on open + a `popstate` handler is the one place
+  that flips parent state off, so the back gesture and explicit closes behave
+  identically and leave no phantom history entry. `document.body.style.overflow`
+  locked while open, restored on cleanup.
+- **Mobile-first / ID labels** (AC-5): aria/alt in Indonesian ("Lihat foto
+  invoice", "Tutup", "Foto invoice penuh"), no text input, no keyboard, no
+  keyboard icon. Uses existing `taco-*` tokens + the in-house icon set (added
+  `ExpandIcon` matching the shared 24px/1.8-stroke `base()` convention).
+
+### Impeccable critique catch
+The X button sits inside the backdrop's `onClick=requestClose`, so its click
+bubbled up → **two** `history.back()` calls → would pop the lightbox **and**
+navigate the review screen away. Fixed with `stopPropagation()` on the close
+button; the image already stops propagation so a tap/pinch on it never dismisses.
+
+### Quality / verification
+- `tsc --noEmit`: only the 2 pre-existing DashboardLayout/lucide errors remain
+  (unrelated, predate this task); 0 from my files. `eslint`: clean on both files.
+- **Verified the preview path against KC's reference invoice
+  `be2d2d0d-1313-4afa-99c7-d70a59c618ed`:** its image exists on disk
+  (`backend/uploads/taro-invoices/be2d2d0d-….jpeg`, 115KB) → `signImageUrl`
+  hands out a valid signed URL → `imageUrl` non-null → interactive thumb +
+  lightbox render that exact jpeg. Verified at the data/signing level; live
+  browser click-through is Scout's separate smoke check (per the task).
+
+**Status:** FE complete, pushed. Status.json flipped working→idle. Pinged Yumi.
