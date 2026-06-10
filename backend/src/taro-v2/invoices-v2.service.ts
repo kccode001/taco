@@ -268,12 +268,18 @@ export class InvoicesV2Service {
 
   async findOne(invoiceId: string, user: AuthedUser): Promise<InvoiceV2> {
     const invoice = await this.findInvoiceOrThrow(invoiceId, user);
-    const [images, lineItems] = await Promise.all([
+    const [images, lineItems, area, store] = await Promise.all([
       this.imagesRepo.find({ where: { invoice_id: invoice.id }, order: { created_at: 'ASC' } }),
       this.lineItemsRepo.find({ where: { invoice_id: invoice.id }, order: { line_no: 'ASC' } }),
+      this.areasRepo.findOne({ where: { id: invoice.area_id } }),
+      this.storesRepo.findOne({ where: { id: invoice.store_id } }),
     ]);
     invoice.images = images;
     invoice.line_items = lineItems;
+    // Header needs Area/Store names — relations exist on the entity but aren't
+    // eager-loaded; populate them here so admin detail renders "Toko/Area".
+    invoice.area = area ?? undefined;
+    invoice.store = store ?? undefined;
     return invoice;
   }
 
