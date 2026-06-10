@@ -568,3 +568,34 @@ not home) is likely **back**. Did not touch it (out of scope here); flagged for 
 to decide whether to re-apply or pursue the BE-side identity reconciliation instead.
 
 **Status:** FE complete + pushed. status.json `tile: idle`. Pinged Yumi w/ commit.
+
+---
+
+## 2026-06-10 — Remove "Upload Invoice" button from `/taro/invoices` dashboard
+
+**Scope (mine):** FE-only. File: `app/taro/invoices/page.tsx` (dashboard table
+`/taro/invoices` "Daftar Invoice Taro" — NOT the PWA `/taro-app/*` upload flows).
+
+### The ask (KC)
+Remove the "+ Upload Invoice" button from the dashboard invoice table page.
+
+### What I changed
+Removed the `<Link href="/taro/invoices/upload">+ Upload Invoice</Link>` button
+that sat in the page header (was `page.tsx:234-239`). It was the only child paired
+with the heading inside a `flex items-start justify-between` wrapper whose sole
+purpose was to push the button to the right of the title — so I collapsed that
+wrapper and the redundant inner `<div>` too, leaving just the bare `<h1>` ("Daftar
+Invoice Taro"). No dead wrappers, no orphaned layout classes.
+
+- `Link` import (`next/link`, line 3) **kept** — still used by the row
+  click-through `<Link href={`/taro/invoices/${inv.id}`}>` (~line 432). Verified
+  it's the only remaining consumer; no other handler/state/import was tied to the
+  removed button.
+- Did not touch `/taro-app/*` PWA upload flows, nor the unrelated uncommitted
+  change in `app/admin/taro-invoices/page.tsx` (not mine — left as-is).
+
+### Quality / verification
+- `tsc --noEmit`: clean (0 errors from the file).
+- `eslint app/taro/invoices/page.tsx`: exit 0, clean (no unused-var/import).
+
+**Status:** FE complete. Committing `page.tsx` + this ledger only; pushing to main.

@@ -225,19 +225,9 @@ export default function TaroInvoiceListPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-[20px] font-bold text-taco-text leading-tight">
-            Daftar Invoice Taro
-          </h1>
-        </div>
-        <Link
-          href="/taro/invoices/upload"
-          className="h-[36px] px-4 inline-flex items-center bg-taco-accent text-white rounded-lg text-[13px] font-semibold hover:bg-taco-accent-dark transition-colors"
-        >
-          + Upload Invoice
-        </Link>
-      </div>
+      <h1 className="text-[20px] font-bold text-taco-text leading-tight">
+        Daftar Invoice Taro
+      </h1>
 
       <div className="bg-white border border-taco-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-taco-divider flex items-center gap-3 flex-wrap bg-taco-page">
