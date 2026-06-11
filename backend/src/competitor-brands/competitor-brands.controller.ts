@@ -5,6 +5,7 @@ import {
   Patch,
   Delete,
   Param,
+  Query,
   Body,
   UseGuards,
   ParseUUIDPipe,
@@ -23,8 +24,8 @@ export class CompetitorBrandsController {
   constructor(private readonly service: CompetitorBrandsService) {}
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('include_inactive') includeInactive?: string) {
+    return this.service.findAll(includeInactive === 'true');
   }
 
   @Get(':id')

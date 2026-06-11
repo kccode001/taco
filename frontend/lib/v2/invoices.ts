@@ -304,6 +304,8 @@ export interface PatchLineItemV2Body {
   matched_sku_id?: string | null;
   brand_id?: string | null;
   is_competitor?: boolean;
+  /** Not TACO and not a competitor brand (generic product). Clears everything, resolves the line. */
+  bukan_kompetitor?: boolean;
   /** TACO↔not-TACO correction note for the recommendation engine. */
   mismatch_reason?: string;
   /** SKU-correction audit note required by the BE when matched_sku_id changes. */

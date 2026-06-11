@@ -482,10 +482,11 @@ export class InvoicesV2Service {
     const hasSku = dto.matched_sku_id !== undefined;
     const hasBrand = dto.brand_id !== undefined && dto.brand_id !== null;
     const hasCompetitor = dto.is_competitor === true;
+    const isBukanKompetitor = dto.bukan_kompetitor === true;
 
-    if (!hasConfirm && !hasSku && !hasBrand && !hasCompetitor) {
+    if (!hasConfirm && !hasSku && !hasBrand && !hasCompetitor && !isBukanKompetitor) {
       throw new BadRequestException(
-        'One of confirm_as_is, matched_sku_id, brand_id, is_competitor is required',
+        'One of confirm_as_is, matched_sku_id, brand_id, is_competitor, bukan_kompetitor is required',
       );
     }
 
@@ -523,6 +524,13 @@ export class InvoicesV2Service {
     } else if (hasCompetitor) {
       // Competitor but unknown brand.
       line.is_competitor = true;
+      line.brand_id = null;
+      line.brand_name = null;
+      line.matched_sku_id = null;
+      line.needs_review = false;
+    } else if (isBukanKompetitor) {
+      // Not TACO and not a competitor brand (generic/other product).
+      line.is_competitor = false;
       line.brand_id = null;
       line.brand_name = null;
       line.matched_sku_id = null;

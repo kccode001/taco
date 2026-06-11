@@ -8,6 +8,7 @@ import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import {
   FileTextIcon,
+  FlagIcon,
   LightbulbIcon,
   MapIcon,
   StoreIcon,
@@ -53,6 +54,7 @@ const V2_SECTIONS: NavSection[] = [
       { href: "/taro/v2/sales", label: "Sales Agent", icon: UsersIcon },
       { href: "/taro/v2/areas", label: "Area", icon: MapIcon },
       { href: "/taro/v2/stores", label: "Toko", icon: StoreIcon },
+      { href: "/taro/v2/competitors", label: "Kompetitor", icon: FlagIcon as IconCmp },
     ],
   },
 ];

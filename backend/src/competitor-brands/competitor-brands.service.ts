@@ -12,8 +12,11 @@ export class CompetitorBrandsService {
     private readonly repo: Repository<CompetitorBrand>,
   ) {}
 
-  findAll(): Promise<CompetitorBrand[]> {
-    return this.repo.find({ order: { name: 'ASC' } });
+  findAll(includeInactive = false): Promise<CompetitorBrand[]> {
+    return this.repo.find({
+      where: includeInactive ? {} : { is_active: true },
+      order: { name: 'ASC' },
+    });
   }
 
   async findOne(id: string): Promise<CompetitorBrand> {
@@ -33,8 +36,10 @@ export class CompetitorBrandsService {
     return this.repo.save(brand);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string): Promise<{ id: string; is_active: boolean }> {
     const brand = await this.findOne(id);
-    await this.repo.remove(brand);
+    brand.is_active = false;
+    await this.repo.save(brand);
+    return { id: brand.id, is_active: false };
   }
 }

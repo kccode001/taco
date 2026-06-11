@@ -11,6 +11,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AxiosError } from "axios";
 import {
+  createCompetitorBrand,
   getCompetitorBrands,
   getTacoSkus,
   type CompetitorBrand,
@@ -124,6 +125,16 @@ function formatIdr(value?: number | string | null) {
   const n = typeof value === "string" ? Number(value) : value;
   if (n == null || Number.isNaN(n)) return "—";
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n);
+}
+
+/** Fix: TypeORM returns numeric(18,3) as strings like "85.000". Parsing to float
+ *  and formatting removes the trailing .000 that looks like Indonesian thousands. */
+function formatQty(value?: number | string | null): string {
+  if (value == null) return "—";
+  const n = typeof value === "string" ? parseFloat(value) : value;
+  if (Number.isNaN(n)) return String(value);
+  if (n % 1 === 0) return String(Math.trunc(n));
+  return n.toFixed(3).replace(/\.?0+$/, "");
 }
 
 function formatDateTime(iso?: string | null) {
@@ -411,7 +422,7 @@ export default function AdminV2InvoiceDetailPage() {
                           <td className="px-3 py-2.5 text-[12px] text-taco-text whitespace-nowrap">
                             {li.quantity != null ? (
                               <>
-                                {li.quantity}
+                                {formatQty(li.quantity)}
                                 <span className="text-taco-muted text-[10px] ml-0.5">{li.unit}</span>
                               </>
                             ) : (
@@ -501,10 +512,14 @@ function ResolveModal({
   ) => void;
 }) {
   const systemFamily = classFamily(line.classification);
-  const initialTab: "taco" | "competitor" =
-    line.is_competitor || systemFamily === "not_taco" ? "competitor" : "taco";
+  const initialTab: "taco" | "bukan_taco" =
+    line.is_competitor || systemFamily === "not_taco" ? "bukan_taco" : "taco";
+  // Under "Bukan TACO": did the admin already use a competitor brand → start on kompetitor
+  const initialSub: "kompetitor" | "bukan_kompetitor" =
+    line.brand_id ? "kompetitor" : "bukan_kompetitor";
 
-  const [tab, setTab] = useState<"taco" | "competitor">(initialTab);
+  const [tab, setTab] = useState<"taco" | "bukan_taco">(initialTab);
+  const [sub, setSub] = useState<"kompetitor" | "bukan_kompetitor">(initialSub);
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
@@ -516,6 +531,12 @@ function ResolveModal({
   const [brandsLoading, setBrandsLoading] = useState(false);
 
   const [mismatchReason, setMismatchReason] = useState("");
+
+  // Inline "create new competitor" state
+  const [showNewBrand, setShowNewBrand] = useState(false);
+  const [newBrandName, setNewBrandName] = useState("");
+  const [newBrandCountry, setNewBrandCountry] = useState("");
+  const [creatingBrand, setCreatingBrand] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -548,7 +569,7 @@ function ResolveModal({
   }, [tab, skus.length, line.matched_sku_id]);
 
   useEffect(() => {
-    if (tab !== "competitor" || brands.length > 0) return;
+    if (tab !== "bukan_taco" || sub !== "kompetitor" || brands.length > 0) return;
     let cancelled = false;
     setBrandsLoading(true);
     (async () => {
@@ -565,7 +586,7 @@ function ResolveModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [tab, brands.length]);
+  }, [tab, sub, brands.length]);
 
   const filteredSkus = useMemo(() => {
     if (!skuSearch.trim()) return skus.slice(0, 15);
@@ -574,7 +595,7 @@ function ResolveModal({
   }, [skus, skuSearch]);
 
   const tacoIsFlip = systemFamily === "not_taco" || systemFamily === "unknown";
-  const competitorIsFlip = systemFamily === "taco";
+  const bukanTacoIsFlip = systemFamily === "taco";
 
   const finish = (patch: Partial<InvoiceLineItemV2>, next?: InvoiceV2Status) =>
     onResolved(line.id, patch, next);
@@ -599,6 +620,7 @@ function ResolveModal({
         brand_id: null,
         brand_name: null,
         is_competitor: false,
+        needs_review: false,
         ...(tacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       }, readInvoiceStatus(resp));
     } catch (err) {
@@ -609,7 +631,7 @@ function ResolveModal({
 
   const pickBrand = async (brand: CompetitorBrand) => {
     if (busyKey) return;
-    if (competitorIsFlip && !mismatchReason.trim()) {
+    if (bukanTacoIsFlip && !mismatchReason.trim()) {
       setError("Isi alasan: sistem mengira ini produk TACO.");
       return;
     }
@@ -619,7 +641,7 @@ function ResolveModal({
       const resp = await patchV2LineItem(line.id, {
         brand_id: brand.id,
         is_competitor: true,
-        ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
+        ...(bukanTacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       });
       finish({
         brand_id: brand.id,
@@ -627,7 +649,8 @@ function ResolveModal({
         is_competitor: true,
         matched_sku_id: null,
         matched_sku: null,
-        ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
+        needs_review: false,
+        ...(bukanTacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       }, readInvoiceStatus(resp));
     } catch (err) {
       setBusyKey(null);
@@ -635,26 +658,27 @@ function ResolveModal({
     }
   };
 
-  const pickUnknown = async () => {
+  const saveBukanKompetitor = async () => {
     if (busyKey) return;
-    if (competitorIsFlip && !mismatchReason.trim()) {
+    if (bukanTacoIsFlip && !mismatchReason.trim()) {
       setError("Isi alasan: sistem mengira ini produk TACO.");
       return;
     }
-    setBusyKey("unknown");
+    setBusyKey("bukan_kompetitor");
     setError(null);
     try {
       const resp = await patchV2LineItem(line.id, {
-        is_competitor: true,
-        ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
+        bukan_kompetitor: true,
+        ...(bukanTacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       });
       finish({
-        is_competitor: true,
+        is_competitor: false,
         brand_id: null,
         brand_name: null,
         matched_sku_id: null,
         matched_sku: null,
-        ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
+        needs_review: false,
+        ...(bukanTacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       }, readInvoiceStatus(resp));
     } catch (err) {
       setBusyKey(null);
@@ -662,8 +686,32 @@ function ResolveModal({
     }
   };
 
+  const handleCreateBrand = async () => {
+    if (!newBrandName.trim() || creatingBrand) return;
+    setCreatingBrand(true);
+    setError(null);
+    try {
+      const payload: Record<string, unknown> = { name: newBrandName.trim() };
+      if (newBrandCountry.trim()) payload.country = newBrandCountry.trim();
+      const res = await createCompetitorBrand(payload);
+      const created = (res.data as { data?: CompetitorBrand })?.data ?? (res.data as CompetitorBrand);
+      if (created?.id) {
+        setBrands((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+        setShowNewBrand(false);
+        setNewBrandName("");
+        setNewBrandCountry("");
+        // Immediately resolve with the just-created brand
+        await pickBrand(created);
+      }
+    } catch (err) {
+      setError(`Gagal membuat merek: ${extractErrorMessage(err)}`);
+    } finally {
+      setCreatingBrand(false);
+    }
+  };
+
   const showFlipReason =
-    (tab === "taco" && tacoIsFlip) || (tab === "competitor" && competitorIsFlip);
+    (tab === "taco" && tacoIsFlip) || (tab === "bukan_taco" && bukanTacoIsFlip);
 
   return (
     <div
@@ -706,8 +754,9 @@ function ResolveModal({
             <div className="text-[14px] text-taco-text mt-1">{line.raw_text}</div>
           </div>
 
+          {/* Primary tabs: TACO / Bukan TACO */}
           <div className="grid grid-cols-2 gap-1 bg-taco-page border border-taco-border rounded-xl p-1">
-            {(["taco", "competitor"] as const).map((t) => (
+            {(["taco", "bukan_taco"] as const).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -716,11 +765,12 @@ function ResolveModal({
                   tab === t ? "bg-white text-taco-text shadow-sm" : "text-taco-sub"
                 }`}
               >
-                {t === "taco" ? "Produk TACO" : "Kompetitor"}
+                {t === "taco" ? "TACO" : "Bukan TACO"}
               </button>
             ))}
           </div>
 
+          {/* Mismatch reason — shown when admin overrides system classification */}
           {showFlipReason && (
             <div>
               <label className="block text-[13px] font-medium text-taco-text mb-1.5">
@@ -768,45 +818,122 @@ function ResolveModal({
               </div>
             </div>
           ) : (
-            <div>
-              <label className="block text-[13px] font-medium text-taco-text mb-1.5">Merek kompetitor</label>
-              {brandsLoading ? (
-                <div className="py-6 text-center text-[13px] text-taco-muted">Memuat merek…</div>
-              ) : (
-                <>
-                  <div className="border border-taco-divider rounded-xl divide-y divide-taco-divider overflow-hidden max-h-[240px] overflow-y-auto">
-                    {brands.length === 0 ? (
-                      <div className="px-3 py-3 text-[12px] text-taco-muted">Belum ada merek aktif.</div>
-                    ) : (
-                      brands.map((b) => {
-                        const active = b.id === line.brand_id;
-                        return (
-                          <button
-                            key={b.id}
-                            type="button"
-                            onClick={() => pickBrand(b)}
-                            disabled={!!busyKey}
-                            className={`w-full text-left px-3 min-h-[48px] flex items-center justify-between gap-2 active:bg-taco-page disabled:opacity-50 ${active ? "bg-taco-accent-tint" : "bg-white"}`}
-                          >
-                            <div className="min-w-0">
-                              <div className="text-[14px] text-taco-text truncate">{b.name}</div>
-                              {b.country && <div className="text-[11px] text-taco-sub truncate">{b.country}</div>}
-                            </div>
-                            {busyKey === b.id && <span className="text-[11px] text-taco-sub">…</span>}
-                          </button>
-                        );
-                      })
-                    )}
+            /* ── Bukan TACO panel ── */
+            <div className="space-y-3">
+              {/* Sub-choice: Kompetitor / Bukan Kompetitor */}
+              <div className="grid grid-cols-2 gap-1 bg-taco-page border border-taco-border rounded-xl p-1">
+                {(["kompetitor", "bukan_kompetitor"] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => { setSub(s); setError(null); setShowNewBrand(false); }}
+                    className={`min-h-[36px] rounded-lg text-[12px] font-medium transition-colors ${
+                      sub === s ? "bg-white text-taco-text shadow-sm" : "text-taco-sub"
+                    }`}
+                  >
+                    {s === "kompetitor" ? "Kompetitor" : "Bukan Kompetitor"}
+                  </button>
+                ))}
+              </div>
+
+              {sub === "bukan_kompetitor" ? (
+                <div className="bg-taco-page border border-taco-divider rounded-xl p-4 text-center">
+                  <div className="text-[13px] text-taco-sub mb-3">
+                    Produk ini bukan TACO dan bukan merek kompetitor yang diketahui.
                   </div>
                   <button
                     type="button"
-                    onClick={pickUnknown}
+                    onClick={saveBukanKompetitor}
                     disabled={!!busyKey}
-                    className="mt-2 w-full min-h-[48px] rounded-xl bg-taco-accent text-white text-[14px] font-medium active:bg-taco-accent-dark disabled:opacity-50 transition-colors"
+                    className="w-full min-h-[44px] rounded-xl bg-taco-accent text-white font-semibold text-[14px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors"
                   >
-                    {busyKey === "unknown" ? "Menyimpan…" : "Tidak diketahui"}
+                    {busyKey === "bukan_kompetitor" ? "Menyimpan…" : "Konfirmasi Bukan Kompetitor"}
                   </button>
-                </>
+                </div>
+              ) : (
+                /* Kompetitor sub-panel */
+                <div>
+                  <label className="block text-[13px] font-medium text-taco-text mb-1.5">Pilih merek kompetitor</label>
+                  {brandsLoading ? (
+                    <div className="py-6 text-center text-[13px] text-taco-muted">Memuat merek…</div>
+                  ) : (
+                    <>
+                      <div className="border border-taco-divider rounded-xl divide-y divide-taco-divider overflow-hidden max-h-[200px] overflow-y-auto">
+                        {brands.length === 0 ? (
+                          <div className="px-3 py-3 text-[12px] text-taco-muted">Belum ada merek aktif.</div>
+                        ) : (
+                          brands.map((b) => {
+                            const active = b.id === line.brand_id;
+                            return (
+                              <button
+                                key={b.id}
+                                type="button"
+                                onClick={() => pickBrand(b)}
+                                disabled={!!busyKey}
+                                className={`w-full text-left px-3 min-h-[44px] flex items-center justify-between gap-2 active:bg-taco-page disabled:opacity-50 ${active ? "bg-taco-accent-tint" : "bg-white"}`}
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-[14px] text-taco-text truncate">{b.name}</div>
+                                  {b.country && <div className="text-[11px] text-taco-sub truncate">{b.country}</div>}
+                                </div>
+                                {busyKey === b.id && <span className="text-[11px] text-taco-sub">…</span>}
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Inline create new competitor */}
+                      {!showNewBrand ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowNewBrand(true)}
+                          disabled={!!busyKey}
+                          className="mt-2 w-full min-h-[40px] rounded-xl border border-taco-border text-[13px] font-medium text-taco-sub hover:text-taco-text hover:border-taco-text transition-colors disabled:opacity-40"
+                        >
+                          + Tambah Merek Baru
+                        </button>
+                      ) : (
+                        <div className="mt-2 border border-taco-border rounded-xl p-3 space-y-2">
+                          <div className="text-[12px] font-semibold text-taco-text mb-2">Merek baru</div>
+                          <input
+                            type="text"
+                            value={newBrandName}
+                            onChange={(e) => setNewBrandName(e.target.value)}
+                            placeholder="Nama merek *"
+                            autoFocus
+                            className="w-full h-[40px] px-3 border border-taco-border rounded-lg text-[13px] text-taco-text bg-white outline-none focus:border-taco-text"
+                          />
+                          <input
+                            type="text"
+                            value={newBrandCountry}
+                            onChange={(e) => setNewBrandCountry(e.target.value)}
+                            placeholder="Asal negara (opsional)"
+                            className="w-full h-[40px] px-3 border border-taco-border rounded-lg text-[13px] text-taco-text bg-white outline-none focus:border-taco-text"
+                          />
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={handleCreateBrand}
+                              disabled={!newBrandName.trim() || creatingBrand || !!busyKey}
+                              className="flex-1 h-[36px] rounded-lg bg-taco-accent text-white text-[13px] font-medium disabled:opacity-40 transition-colors"
+                            >
+                              {creatingBrand ? "Menyimpan…" : "Simpan & Pilih"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setShowNewBrand(false); setNewBrandName(""); setNewBrandCountry(""); }}
+                              disabled={creatingBrand}
+                              className="flex-1 h-[36px] rounded-lg border border-taco-border text-[13px] text-taco-sub disabled:opacity-40"
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               )}
             </div>
           )}
