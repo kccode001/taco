@@ -268,7 +268,6 @@ function DrillDrawer({
 export default function AnalyticsPage() {
   const [period, setPeriod] = useState("30d");
   const [areaFilter, setAreaFilter] = useState<string>("");
-  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   // Data
   const [summary, setSummary] = useState<AnalyticsSummaryV2 | null>(null);
@@ -408,24 +407,6 @@ export default function AnalyticsPage() {
           }
         />
 
-        {/* ── Data caveat banner ───────────────────────────────────────── */}
-        {!bannerDismissed && (
-          <div className="flex items-start justify-between gap-3 bg-blue-50 border border-blue-200 rounded-xl px-5 py-3">
-            <p className="text-[13px] text-blue-800">
-              <span className="font-semibold">Catatan data:</span> Data ini
-              mencerminkan sampel invoice yang dikumpulkan tim Taro secara
-              oportunistik — bukan sensus seluruh pembelian toko. Gap cakupan
-              mungkin ada. Angka upload date (bukan tanggal invoice).
-            </p>
-            <button
-              onClick={() => setBannerDismissed(true)}
-              className="text-blue-500 hover:text-blue-700 text-[16px] leading-none flex-shrink-0"
-            >
-              ×
-            </button>
-          </div>
-        )}
-
         {/* ── Error state ─────────────────────────────────────────────── */}
         {loadError && (
           <div className="text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-4 py-3">
@@ -469,7 +450,7 @@ export default function AnalyticsPage() {
         {/* ── Chart 1: Share by Area (3 dimensions) ───────────────────── */}
         <SectionCard
           title="TACO Share per Area"
-          sub="Tiga dimensi: nilai IDR, kuantitas unit, dan frekuensi invoice. Klik area untuk drill-down toko."
+          sub="Dua dimensi: nilai IDR dan kuantitas unit. Klik area untuk drill-down toko."
         >
           {loading ? (
             <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
@@ -495,7 +476,6 @@ export default function AnalyticsPage() {
                     area_name: a.area_name,
                     "Nilai IDR": a.taco_share_value_pct,
                     "Kuantitas": a.taco_share_qty_pct,
-                    "Frekuensi Invoice": a.taco_share_freq_pct,
                     _areaId: a.area_id,
                   }))}
                   layout="vertical"
@@ -528,7 +508,6 @@ export default function AnalyticsPage() {
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   <Bar dataKey="Nilai IDR" fill={TACO_GREEN} radius={[0, 3, 3, 0]} />
                   <Bar dataKey="Kuantitas" fill="#2563EB" radius={[0, 3, 3, 0]} />
-                  <Bar dataKey="Frekuensi Invoice" fill="#7C3AED" radius={[0, 3, 3, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -540,7 +519,7 @@ export default function AnalyticsPage() {
           title="Trend TACO Share dari Waktu ke Waktu"
           sub={`Per area, dikelompokkan berdasarkan tanggal upload (${
             trend?.bucket_type === "week" ? "mingguan" : "bulanan"
-          }). TACO = matched_sku_id IS NOT NULL.`}
+          }).`}
         >
           {loading ? (
             <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
@@ -697,7 +676,7 @@ export default function AnalyticsPage() {
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {/* ── Top TACO SKUs ────────────────────────────────────────── */}
           <SectionCard
-            title="Top TACO SKU (Confirmed)"
+            title="Top TACO SKU"
             sub={
               topSkus
                 ? `${topSkus.unmatched_count} item belum tercocokkan ke katalog`
@@ -780,7 +759,7 @@ export default function AnalyticsPage() {
           </SectionCard>
 
           {/* ── Competitor Signals ───────────────────────────────────── */}
-          <SectionCard title="Sinyal Kompetitor" sub="Berdasarkan nilai IDR, is_competitor=true per area.">
+          <SectionCard title="Sinyal Kompetitor" sub="Berdasarkan nilai IDR.">
             {loading ? (
               <div className="px-5 py-8 text-center text-[13px] text-taco-muted">
                 Memuat…

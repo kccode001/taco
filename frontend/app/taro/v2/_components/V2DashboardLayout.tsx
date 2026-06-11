@@ -14,7 +14,6 @@ import {
   StoreIcon,
   UsersIcon,
   PackageIcon,
-  BarChart2Icon,
 } from "@/app/admin/_components/icons";
 
 type IconCmp = React.ComponentType<{ size?: number; className?: string }>;
@@ -37,7 +36,6 @@ const V2_SECTIONS: NavSection[] = [
   {
     items: [
       { href: "/taro/v2/dashboard", label: "Dashboard", icon: Home as IconCmp },
-      { href: "/taro/v2/analytics", label: "Analytics", icon: BarChart2Icon as IconCmp },
     ],
   },
   {
