@@ -218,6 +218,7 @@ export default function AdminV2InvoiceDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<InvoiceLineItemV2 | null>(null);
+  const [zoomUrl, setZoomUrl] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -293,10 +294,10 @@ export default function AdminV2InvoiceDetailPage() {
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <Link
-            href="/taro/v2"
+            href="/taro/v2/invoices"
             className="text-[13px] text-taco-sub hover:text-taco-text inline-flex items-center gap-1"
           >
-            ← Kembali
+            ← Kembali ke Antrian Invoice
           </Link>
           <h1 className="text-[20px] font-semibold text-taco-text mt-1">
             Invoice #{id.slice(0, 8)}
@@ -330,6 +331,81 @@ export default function AdminV2InvoiceDetailPage() {
         </div>
       )}
 
+      {!loading && invoice && (
+        <div className="mt-5 bg-white border border-taco-border rounded-xl p-5">
+          <div className="text-[11px] font-semibold text-taco-muted uppercase tracking-wider mb-3">
+            Ringkasan Invoice
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-y-3 gap-x-6 text-[13px]">
+            <div>
+              <div className="text-taco-muted text-[12px]">Toko</div>
+              <div className="text-taco-text font-medium mt-0.5">
+                {invoice.store?.name ?? invoice.store_name ?? "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-taco-muted text-[12px]">Area</div>
+              <div className="text-taco-text font-medium mt-0.5">
+                {invoice.area?.name ?? invoice.area_name ?? "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-taco-muted text-[12px]">Diunggah oleh</div>
+              <div className="text-taco-text font-medium mt-0.5">
+                {invoice.uploaded_by_name ?? "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-taco-muted text-[12px]">Tanggal upload</div>
+              <div className="text-taco-text font-medium mt-0.5">
+                {invoice.created_at
+                  ? new Date(invoice.created_at).toLocaleString("id-ID", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-taco-muted text-[12px]">Total baris</div>
+              <div className="text-taco-text font-semibold mt-0.5">
+                {summary.total}
+              </div>
+            </div>
+            <div>
+              <div className="text-taco-muted text-[12px]">Perlu review</div>
+              <div
+                className={`font-semibold mt-0.5 ${
+                  summary.open > 0 ? "text-taco-warning" : "text-taco-text"
+                }`}
+              >
+                {summary.open}
+              </div>
+            </div>
+            <div>
+              <div className="text-taco-muted text-[12px]">Siap</div>
+              <div className="text-taco-success font-semibold mt-0.5">
+                {summary.ready}/{summary.total}
+              </div>
+            </div>
+            <div>
+              <div className="text-taco-muted text-[12px]">Total nilai</div>
+              <div className="text-taco-text font-semibold mt-0.5">
+                {formatIdr(invoice.total_amount)}
+              </div>
+            </div>
+          </div>
+          {invoice.error_message && (
+            <div className="mt-3 text-[12px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+              {invoice.error_message}
+            </div>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="mt-8 text-[13px] text-taco-muted">Memuat invoice…</div>
       ) : (
@@ -347,13 +423,23 @@ export default function AdminV2InvoiceDetailPage() {
               <div className="space-y-3">
                 {images.map((img) =>
                   img.url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
+                    <button
                       key={img.id}
-                      src={img.url}
-                      alt={img.file_name ?? "invoice"}
-                      className="w-full rounded-xl border border-taco-border bg-white object-contain"
-                    />
+                      type="button"
+                      onClick={() => setZoomUrl(img.url ?? null)}
+                      className="block w-full group relative"
+                      title="Klik untuk perbesar"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img.url}
+                        alt={img.file_name ?? "invoice"}
+                        className="w-full rounded-xl border border-taco-border bg-white object-contain group-hover:border-taco-text transition-colors"
+                      />
+                      <span className="absolute bottom-2 right-2 text-[11px] bg-black/60 text-white px-2 py-0.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
+                        Perbesar
+                      </span>
+                    </button>
                   ) : (
                     <div
                       key={img.id}
@@ -452,6 +538,29 @@ export default function AdminV2InvoiceDetailPage() {
           onClose={() => setEditing(null)}
           onResolved={applyResolved}
         />
+      )}
+
+      {zoomUrl && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-6"
+          onClick={() => setZoomUrl(null)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={zoomUrl}
+            alt="Invoice diperbesar"
+            className="max-w-full max-h-full object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={() => setZoomUrl(null)}
+            aria-label="Tutup"
+            className="fixed top-5 right-6 w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 text-white text-[20px] leading-none flex items-center justify-center"
+          >
+            ✕
+          </button>
+        </div>
       )}
     </div>
   );
