@@ -61,3 +61,21 @@ sides to the same tz). Counts will look "mysteriously empty," not error.
   insight (Bahasa string), rollups:{...recap + area_trends + trending} }`
 - `period` ∈ `7d|30d|90d|this_month|last_month|this_quarter|ytd|all` (default `30d`).
   Admin + Manager only. All figures are LIVE from imported v2 invoices — no mock.
+
+---
+
+## 2026-06-11 — TACO v2: best-guess pre-select for review lines
+
+**Task:** make the resolusi modal pre-select a SKU for low-confidence TACO review lines (taco_low_verify / taco_unreadable_guess) instead of opening blank.
+
+**Root cause:** the v2 OCR processor ran exact-code → Claude suggestion → RAG(≥0.55) matching, but set `matched_sku_id = null` when all three failed. For OCR fragments like "056 AA" (truncated code missing the "TH" prefix), all standard strategies fail: no exact match, Claude returns null, RAG below threshold (OpenAI embeddings key was also placeholder, making RAG always fail). The FE keys the pre-select entirely off `matched_sku_id`, so null = blank modal.
+
+**Fix — two new fallback strategies in `taro-v2-ocr.processor.ts`:**
+1. **Suffix/partial code matching** (`findSuffixSkuCode` in `sku-code-matcher.ts`): if the normalized raw_text (e.g. "056AA") is a suffix of any catalog code ("TH056AA" → TH 056 AA), it's a match. Confidence 0.70, needs_review stays true. Works with no API calls.
+2. **Low-threshold RAG fallback (≥0.10)**: fires after suffix matching if still null. For when embeddings ARE configured.
+
+**Backfill endpoint:** `POST /api/v2/admin/backfill-pre-select` (admin-only) runs the same strategy on all existing TACO review lines with null matched_sku_id. Used to fix invoice ecfea6c6's "056 AA" line → TH 056 AA (Iron Rhino, id a6c481c0-7b27-4536-8e05-f93810067a82).
+
+**Verified:** Playwright browser test confirmed modal opens with TH 056 AA pre-highlighted, save persisted to DB (needs_review=false, edited=true). Commit: 5f53e84f.
+
+**Gotcha:** OpenAI API key in `.env` is a placeholder — RAG embeddings don't work. The suffix matcher is the primary live strategy; RAG is the future fallback when keys are configured.
