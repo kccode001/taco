@@ -19,7 +19,7 @@
   },
   "mosaic": {
     "status": "idle",
-    "task": "2026-06-11-scout-taco-v2-crud-hardgate — DONE (commit daabbdc1, pushed): E1 FE fix per Vane soft-delete ruling. Hapus→Nonaktifkan (Aktif rows only, soft-delete) + Aktifkan (Nonaktif rows, PATCH active:true) + toasts dinonaktifkan/diaktifkan, confirm 'Nonaktifkan sales ini?', dropped 'Sales dihapus'. List keeps both Aktif+Nonaktif. RowActions extra-slot (kit unforked). tsc+eslint clean, route 200. Mortar's BE TACO-CRUD-01 landed in parallel — both live, Scout can re-run E1.",
+    "task": "2026-06-11-taco-dashboard-v2-kc-fixes (FE half) — DONE (pushed). AC-1+AC-4: perlu-review badge now follows BE needs_review_count (list chip shows count; detail Status Baris badge hides at 0); killed matched_sku_id re-derivation -> per-line uses BE li.needs_review. AC-2: antrian filter rebuilt to exactly Pending/Selesai/Semua -> ?filter=; verified 3/6/9 vs DB. AC-3: Area CRUD on /v2/areas (regions type=area, 18 rows) + BU picker /v2/regions?type=bu (5) — already shipped 837b85bd, re-verified. AC-5: killed all dashboard mock fallback; live recap 9/60/461, trending real, ai-insight live Sonnet. tsc+eslint clean, routes 200 on dev:4014. NOTE: whether 90a9c95d (count=2) should be perlu-review is a Grout classification Q flagged to KC by Mortar — out of FE scope; FE just follows the count.",
     "role": "frontend",
     "updated_at": "2026-06-11"
   },

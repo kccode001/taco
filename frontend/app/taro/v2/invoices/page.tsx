@@ -22,14 +22,14 @@ import {
 import { getAreas, getStoresV2, unwrapList } from "@/lib/v2/api";
 import type { AreaV2, StoreV2 } from "@/lib/v2/types";
 
-// Status filter tabs — review queue first (the admin's primary job).
-const STATUS_TABS: { key: InvoiceV2Status | "all"; label: string }[] = [
-  { key: "needs_review", label: "Perlu Review" },
-  { key: "ocr_processing", label: "Proses OCR" },
-  { key: "validating", label: "Validasi" },
-  { key: "done", label: "Selesai" },
-  { key: "failed", label: "Gagal" },
-  { key: "all", label: "Semua" },
+// Antrian queue filter — exactly three options (KC AC-2). Each maps to Mortar's
+// `GET /api/v2/invoices?filter=` status SET: pending = anything still in the
+// pipeline / awaiting action, selesai = done, semua = everything.
+type QueueFilter = "pending" | "selesai" | "semua";
+const FILTER_TABS: { key: QueueFilter; label: string }[] = [
+  { key: "pending", label: "Pending" },
+  { key: "selesai", label: "Selesai" },
+  { key: "semua", label: "Semua" },
 ];
 
 const STATUS_META: Record<InvoiceV2Status, { label: string; cls: string }> = {
@@ -40,13 +40,20 @@ const STATUS_META: Record<InvoiceV2Status, { label: string; cls: string }> = {
   failed: { label: "Gagal", cls: "bg-red-50 text-taco-error border-red-100" },
 };
 
-function statusChip(status: InvoiceV2Status) {
+function statusChip(status: InvoiceV2Status, needsReviewCount?: number) {
   const m = STATUS_META[status] ?? STATUS_META.needs_review;
+  // "Perlu Review" carries the authoritative row count (AC-1): show the number
+  // when ≥1. The BE status is itself driven by this count (needs_review ⟺ >0),
+  // so we trust it rather than re-deriving from line fields.
+  const label =
+    status === "needs_review" && needsReviewCount && needsReviewCount > 0
+      ? `${m.label} · ${needsReviewCount}`
+      : m.label;
   return (
     <span
       className={`inline-flex text-[11px] font-medium px-2.5 py-1 rounded-full border ${m.cls}`}
     >
-      {m.label}
+      {label}
     </span>
   );
 }
@@ -63,7 +70,7 @@ function fmtDate(iso?: string | null): string {
 }
 
 export default function AdminV2InvoiceQueuePage() {
-  const [tab, setTab] = useState<InvoiceV2Status | "all">("needs_review");
+  const [filter, setFilter] = useState<QueueFilter>("pending");
   const [rows, setRows] = useState<InvoiceV2[]>([]);
   const [total, setTotal] = useState(0);
   const [areas, setAreas] = useState<AreaV2[]>([]);
@@ -111,10 +118,7 @@ export default function AdminV2InvoiceQueuePage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await listV2Invoices({
-        status: tab === "all" ? undefined : tab,
-        limit: 100,
-      });
+      const res = await listV2Invoices({ filter, limit: 100 });
       setRows(res.items);
       setTotal(res.total);
     } catch {
@@ -124,7 +128,7 @@ export default function AdminV2InvoiceQueuePage() {
     } finally {
       setLoading(false);
     }
-  }, [tab]);
+  }, [filter]);
 
   useEffect(() => {
     load();
@@ -156,15 +160,15 @@ export default function AdminV2InvoiceQueuePage() {
         }
       />
 
-      {/* Status filter tabs */}
+      {/* Antrian filter — Pending / Selesai / Semua (AC-2) */}
       <div className="flex items-center gap-1 flex-wrap mb-4">
-        {STATUS_TABS.map((t) => {
-          const active = tab === t.key;
+        {FILTER_TABS.map((t) => {
+          const active = filter === t.key;
           return (
             <button
               key={t.key}
               type="button"
-              onClick={() => setTab(t.key)}
+              onClick={() => setFilter(t.key)}
               className={`text-[13px] font-medium px-3 h-9 rounded-lg border transition-colors ${
                 active
                   ? "bg-taco-accent text-white border-taco-accent"
@@ -186,7 +190,7 @@ export default function AdminV2InvoiceQueuePage() {
       <div className="bg-white border border-taco-border rounded-xl overflow-hidden">
         <div className="px-4 py-2.5 border-b border-taco-divider bg-taco-page flex items-center justify-between">
           <span className="text-[12px] font-semibold text-taco-muted uppercase tracking-wider">
-            {STATUS_TABS.find((t) => t.key === tab)?.label}
+            {FILTER_TABS.find((t) => t.key === filter)?.label}
           </span>
           <span className="text-[12px] text-taco-muted">{total} invoice</span>
         </div>
@@ -216,9 +220,11 @@ export default function AdminV2InvoiceQueuePage() {
             ) : rows.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-10 text-center text-[13px] text-taco-muted">
-                  {tab === "needs_review"
-                    ? "Tidak ada invoice yang perlu direview. 🎉"
-                    : "Belum ada invoice di status ini."}
+                  {filter === "pending"
+                    ? "Tidak ada invoice yang menunggu tindakan. 🎉"
+                    : filter === "selesai"
+                      ? "Belum ada invoice yang selesai."
+                      : "Belum ada invoice."}
                 </td>
               </tr>
             ) : (
@@ -245,7 +251,9 @@ export default function AdminV2InvoiceQueuePage() {
                   <td className="px-4 py-3 text-[13px] text-taco-sub whitespace-nowrap">
                     {inv.line_count ?? inv.line_items?.length ?? "—"}
                   </td>
-                  <td className="px-4 py-3">{statusChip(inv.status)}</td>
+                  <td className="px-4 py-3">
+                    {statusChip(inv.status, inv.needs_review_count)}
+                  </td>
                   <td className="px-4 py-3 text-[13px] text-taco-muted">
                     {fmtDate(inv.created_at)}
                   </td>

@@ -104,6 +104,10 @@ export interface InvoiceV2 {
   /** List-only display fields the BE decorates (see InvoicesV2Service.list). */
   line_count?: number;
   thumb_image_id?: string | null;
+  /** Authoritative count of line items still flagged `needs_review` (decorated
+   *  on both list + detail). The FE drives its "Perlu Review" badge off THIS —
+   *  hide at 0, show the number at ≥1 — never re-derive from matched_sku_id. */
+  needs_review_count?: number;
 }
 
 // ── PWA status presentation (shared by home/history/detail screens) ────────
@@ -212,6 +216,10 @@ export async function processV2Invoice(invoiceId: string): Promise<InvoiceV2> {
 // ── Admin queue (list) ─────────────────────────────────────────────────────
 
 export interface ListV2InvoicesParams {
+  /** Antrian queue filter — maps to a BE status SET. Takes precedence over the
+   *  exact `status` param. `pending` = every non-done state, `selesai` = done,
+   *  `semua` = no filter. */
+  filter?: "pending" | "selesai" | "semua";
   status?: InvoiceV2Status;
   area_id?: string;
   page?: number;
@@ -232,6 +240,7 @@ export async function listV2Invoices(
 ): Promise<ListV2InvoicesResult> {
   const res = await api.get("/v2/invoices", {
     params: {
+      ...(params.filter ? { filter: params.filter } : {}),
       ...(params.status ? { status: params.status } : {}),
       ...(params.area_id ? { area_id: params.area_id } : {}),
       page: params.page ?? 1,

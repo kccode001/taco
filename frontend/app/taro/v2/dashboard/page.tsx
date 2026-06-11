@@ -26,14 +26,8 @@ import type {
   TrendingItemV2,
   AiInsightV2,
 } from "@/lib/v2/types";
-import {
-  MOCK_RECAP,
-  MOCK_TRENDING,
-  MOCK_AI_INSIGHT,
-} from "../_components/mockData";
 import { AiInsightCard } from "../_components/AiInsightCard";
 import { V2PageHeader } from "../_components/V2Tabs";
-import { Badge } from "../../../admin/_components/CrudShell";
 
 /** Categorical area palette — greens/blues/teals/greys. NO orange (reserved
  *  for primary CTAs), NO competitor-red semantics (these are areas, not rivals). */
@@ -84,7 +78,7 @@ export default function DashboardV2Page() {
   const [insight, setInsight] = useState<AiInsightV2 | null>(null);
   const [loading, setLoading] = useState(true);
   const [insightLoading, setInsightLoading] = useState(true);
-  const [usingMock, setUsingMock] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   const fetchInsight = useCallback(async () => {
     setInsightLoading(true);
@@ -92,7 +86,8 @@ export default function DashboardV2Page() {
       const res = await getDashboardAiInsight({ period });
       setInsight(adaptAiInsight(res.data));
     } catch {
-      setInsight(MOCK_AI_INSIGHT);
+      // No mock fallback — the dashboard must only ever show real BE figures.
+      setInsight(null);
     } finally {
       setInsightLoading(false);
     }
@@ -105,14 +100,14 @@ export default function DashboardV2Page() {
         getDashboardRecap({ period }),
         getDashboardTrending({ period, area: trendingArea || undefined }),
       ]);
-      const r = adaptRecap(rRes.data);
-      setRecap(r ?? MOCK_RECAP);
+      setRecap(adaptRecap(rRes.data));
       setTrending(adaptTrending(tRes.data));
-      setUsingMock(false);
+      setLoadError(false);
     } catch {
-      setRecap(MOCK_RECAP);
-      setTrending(MOCK_TRENDING);
-      setUsingMock(true);
+      // No mock fallback — surface an honest error, never fabricated numbers.
+      setRecap(null);
+      setTrending([]);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -158,7 +153,6 @@ export default function DashboardV2Page() {
         description="Rekap item tercatat per area dan kuantitas terjual sepanjang waktu — untuk memahami permintaan pasar TACO."
         actions={
           <div className="flex items-center gap-2">
-            {usingMock && <Badge tone="warn">Data demo — BE belum siap</Badge>}
             <div className="flex items-center gap-1 bg-white border border-taco-border rounded-lg p-0.5">
               {PERIODS.map((p) => (
                 <button
@@ -177,6 +171,12 @@ export default function DashboardV2Page() {
           </div>
         }
       />
+
+      {loadError && (
+        <div className="text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-4 py-3">
+          Gagal memuat data dashboard dari server. Periksa koneksi lalu coba lagi.
+        </div>
+      )}
 
       {/* KPI tiles */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

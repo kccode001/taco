@@ -43,12 +43,12 @@ function classFamily(c: LineClassificationV2): Family {
   return "unknown";
 }
 
-function isReviewBucket(c: LineClassificationV2): boolean {
-  return (
-    c.endsWith("low_verify") ||
-    c.endsWith("unreadable_guess") ||
-    c === "unknown_needs_human"
-  );
+/** Authoritative "still needs a human" signal — the BE `needs_review` flag on
+ *  the line, NOT a FE re-derivation from matched_sku_id/classification (that
+ *  re-derivation disagreed with the BE on auto-accepted low-confidence lines and
+ *  wrongly flagged invoices — KC AC-1). */
+function lineNeedsReview(li: InvoiceLineItemV2): boolean {
+  return li.needs_review === true;
 }
 
 const CLASS_LABEL: Record<LineClassificationV2, string> = {
@@ -84,7 +84,8 @@ function lineDisplay(li: InvoiceLineItemV2): LineDisplay {
     }
     return { tone: "ok", badge: "Non-TACO", title: "Bukan produk TACO (tidak diketahui)", family, needsHuman: false };
   }
-  if (isReviewBucket(li.classification)) {
+  // Authoritative: follow the BE needs_review flag, not the classification bucket.
+  if (lineNeedsReview(li)) {
     return { tone: "warn", badge: "Perlu Dicek", title: CLASS_LABEL[li.classification], family, needsHuman: true };
   }
   return { tone: family === "taco" ? "ok" : "neutral", badge: family === "taco" ? "TACO (auto)" : "Bukan TACO (auto)", title: CLASS_LABEL[li.classification], family, needsHuman: false };
@@ -333,10 +334,14 @@ export default function AdminV2InvoiceDetailPage() {
               <span className="text-[11px] font-semibold text-taco-muted uppercase tracking-wider mr-1">
                 Status Baris
               </span>
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#FFF5E6] text-taco-warning text-[11px] font-medium">
-                <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#E07B00" }} />
-                {summary.open} perlu review
-              </span>
+              {/* AC-4: the "Perlu Review" badge renders ONLY when ≥1 row needs
+                  review (driven by the BE needs_review flag, never re-derived). */}
+              {summary.open > 0 && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#FFF5E6] text-taco-warning text-[11px] font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#E07B00" }} />
+                  {summary.open} perlu review
+                </span>
+              )}
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#E6F7F2] text-taco-success text-[11px] font-medium">
                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#1D9E75" }} />
                 {summary.ready} siap
