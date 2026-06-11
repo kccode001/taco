@@ -589,10 +589,20 @@ function ResolveModal({
   }, [tab, sub, brands.length]);
 
   const filteredSkus = useMemo(() => {
-    if (!skuSearch.trim()) return skus.slice(0, 15);
-    const q = skuSearch.toLowerCase();
-    return skus.filter((s) => s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)).slice(0, 15);
-  }, [skus, skuSearch]);
+    let result: TacoSkuRow[];
+    if (!skuSearch.trim()) {
+      result = skus.slice(0, 15);
+    } else {
+      const q = skuSearch.toLowerCase();
+      result = skus.filter((s) => s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)).slice(0, 15);
+    }
+    // Always show the pre-selected SKU (matched_sku_id best-guess) even when it falls
+    // outside the top-15 default slice — pre-select would be invisible without this.
+    if (selectedSku && !result.some((s) => s.id === selectedSku.id)) {
+      result = [selectedSku, ...result.slice(0, 14)];
+    }
+    return result;
+  }, [skus, skuSearch, selectedSku]);
 
   const tacoIsFlip = systemFamily === "not_taco" || systemFamily === "unknown";
   const bukanTacoIsFlip = systemFamily === "taco";
