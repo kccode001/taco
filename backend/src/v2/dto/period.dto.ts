@@ -67,3 +67,30 @@ export class LatestInsightQueryDto {
   @IsUUID()
   area?: string;
 }
+
+/** Analytics endpoints — period + optional single area filter + limit. */
+export class AnalyticsQueryDto {
+  @IsOptional()
+  @IsIn(V2_PERIODS)
+  period?: V2Period;
+
+  @IsOptional()
+  @IsUUID()
+  area?: string;
+
+  /** Optional item limit (top-skus endpoint). */
+  @IsOptional()
+  @IsString()
+  limit?: string;
+}
+
+/** Area drill-down query — requires a single area UUID. */
+export class AnalyticsDrillQueryDto {
+  @IsOptional()
+  @IsIn(V2_PERIODS)
+  period?: V2Period;
+
+  @IsOptional()
+  @IsUUID()
+  area_id?: string;
+}

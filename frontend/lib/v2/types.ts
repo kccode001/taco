@@ -115,6 +115,136 @@ export interface TrendingItemV2 {
   area_name?: string;
 }
 
+// ── Analytics ────────────────────────────────────────────────────────────
+
+/** /analytics/summary — KPI header strip with period-over-period deltas. */
+export interface AnalyticsSummaryV2 {
+  period: string;
+  range: { from: string | null; to: string };
+  filter_area: string | null;
+  kpis: {
+    invoice_count: number;
+    invoice_count_delta: number | null;
+    taco_share_pct: number;
+    taco_share_delta_pp: number | null;
+    taco_value: number;
+    taco_value_delta: number | null;
+    competitor_signal_pct: number;
+    competitor_signal_delta_pp: number | null;
+    unresolved_count: number;
+  };
+}
+
+/** One area row from /analytics/share-by-area. */
+export interface AreaShareRow {
+  area_id: string | null;
+  area_name: string;
+  taco_share_value_pct: number;
+  taco_share_qty_pct: number;
+  taco_share_freq_pct: number;
+  competitor_share_pct: number;
+  taco_value: number;
+  total_value: number;
+  competitor_value: number;
+  unresolved_count: number;
+  invoice_count: number;
+  taco_sku_count: number;
+}
+
+/** /analytics/share-by-area response. */
+export interface ShareByAreaV2 {
+  period: string;
+  range: { from: string | null; to: string };
+  by_area: AreaShareRow[];
+}
+
+/** One bucket in a trend series. */
+export interface TrendBucket {
+  bucket: string;
+  taco_share_value_pct: number;
+}
+
+/** One area's trend series. */
+export interface AreaTrendSeries {
+  area_id: string | null;
+  area_name: string;
+  series: TrendBucket[];
+}
+
+/** /analytics/trend response. */
+export interface AnalyticsTrendV2 {
+  period: string;
+  bucket_type: 'week' | 'month';
+  range: { from: string | null; to: string };
+  per_area: AreaTrendSeries[];
+}
+
+/** One confirmed TACO SKU row. */
+export interface TopSkuRow {
+  sku_id: string;
+  sku_name: string;
+  catalog_category: string | null;
+  total_value: number;
+  total_qty: number;
+  store_count: number;
+}
+
+/** /analytics/top-skus response. */
+export interface TopSkusV2 {
+  period: string;
+  range: { from: string | null; to: string };
+  unmatched_count: number;
+  top_skus: TopSkuRow[];
+}
+
+/** One competitor brand entry. */
+export interface CompetitorBrand {
+  brand_name: string;
+  value: number;
+}
+
+/** One area's competitor signal. */
+export interface AreaCompetitorRow {
+  area_id: string | null;
+  area_name: string;
+  competitor_total_value: number;
+  total_value: number;
+  competitor_pct: number;
+  top_brands: CompetitorBrand[];
+  unnamed_competitor_value: number;
+}
+
+/** /analytics/competitor-brands response. */
+export interface CompetitorBrandsV2 {
+  period: string;
+  range: { from: string | null; to: string };
+  by_area: AreaCompetitorRow[];
+}
+
+/** One store in the drill-down. */
+export interface DrillStoreRow {
+  store_id: string;
+  store_name: string;
+  invoice_count: number;
+  taco_share_value_pct: number;
+  taco_value: number;
+  total_value: number;
+  top_sku_name: string | null;
+}
+
+/** /analytics/area-stores response. */
+export interface AreaStoresDrillV2 {
+  area_id: string | null;
+  area_kpis: {
+    taco_share_value_pct: number;
+    invoice_count: number;
+    competitor_share_pct: number;
+  } | null;
+  period: string;
+  range: { from: string | null; to: string };
+  stores: DrillStoreRow[];
+}
+
 /** /dashboard/ai-insight?period= — single LLM-generated market-demand insight. */
 export interface AiInsightV2 {
   period: string;

@@ -22,6 +22,8 @@ import { SalesController } from './sales/sales.controller';
 import { SalesService } from './sales/sales.service';
 import { V2DashboardController } from './dashboard/v2-dashboard.controller';
 import { V2DashboardService } from './dashboard/v2-dashboard.service';
+import { V2AnalyticsController } from './analytics/v2-analytics.controller';
+import { V2AnalyticsService } from './analytics/v2-analytics.service';
 import { RecommendationsController } from './recommendations/recommendations.controller';
 import { RecommendationsService } from './recommendations/recommendations.service';
 
@@ -60,6 +62,7 @@ import { RecommendationsService } from './recommendations/recommendations.servic
     StoresController,
     SalesController,
     V2DashboardController,
+    V2AnalyticsController,
     RecommendationsController,
   ],
   providers: [
@@ -68,6 +71,7 @@ import { RecommendationsService } from './recommendations/recommendations.servic
     StoresService,
     SalesService,
     V2DashboardService,
+    V2AnalyticsService,
     RecommendationsService,
   ],
 })

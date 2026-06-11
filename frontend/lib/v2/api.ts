@@ -13,6 +13,12 @@ import type {
   DashboardRecapV2,
   TrendingItemV2,
   AiInsightV2,
+  AnalyticsSummaryV2,
+  ShareByAreaV2,
+  AnalyticsTrendV2,
+  TopSkusV2,
+  CompetitorBrandsV2,
+  AreaStoresDrillV2,
 } from "./types";
 
 /** BE responses are sometimes `T[]` and sometimes `{ data: T[] }`. Normalize. */
@@ -98,6 +104,28 @@ export const getDashboardAiInsight = (params: { period?: string }) =>
 /** Fetch the latest SAVED insight for the scope — never triggers LLM recompute. */
 export const getDashboardLatestInsight = (params: { period?: string; area?: string }) =>
   api.get<unknown>("/v2/dashboard/latest-insight", { params });
+
+// ── Analytics ─────────────────────────────────────────────────────────────
+
+type AnalyticsParams = { period?: string; area?: string; limit?: string };
+
+export const getAnalyticsSummary = (params: AnalyticsParams) =>
+  api.get<AnalyticsSummaryV2>("/v2/analytics/summary", { params });
+
+export const getAnalyticsShareByArea = (params: AnalyticsParams) =>
+  api.get<ShareByAreaV2>("/v2/analytics/share-by-area", { params });
+
+export const getAnalyticsTrend = (params: AnalyticsParams) =>
+  api.get<AnalyticsTrendV2>("/v2/analytics/trend", { params });
+
+export const getAnalyticsTopSkus = (params: AnalyticsParams) =>
+  api.get<TopSkusV2>("/v2/analytics/top-skus", { params });
+
+export const getAnalyticsCompetitorBrands = (params: AnalyticsParams) =>
+  api.get<CompetitorBrandsV2>("/v2/analytics/competitor-brands", { params });
+
+export const getAnalyticsAreaStores = (params: { area_id?: string; period?: string }) =>
+  api.get<AreaStoresDrillV2>("/v2/analytics/area-stores", { params });
 
 // ── BE → FE adapters ─────────────────────────────────────────────────────
 // Mortar's live `/api/v2` shapes differ from the BUILD-PLAN scaffold these
