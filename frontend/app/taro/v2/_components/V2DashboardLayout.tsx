@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Home, LogOut } from "lucide-react";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import {
-  BarChart2Icon,
   FileTextIcon,
   LightbulbIcon,
   MapIcon,
@@ -28,30 +28,29 @@ type NavItem = {
 
 type NavSection = { label?: string; items: NavItem[] };
 
-/** v2 management nav — mirrors the v1 TaroDashboardLayout sidebar pattern
- *  (logo / grouped sections / left-accent active state / user + logout) but
- *  points at the v2 routes so the surface self-navigates as a real dashboard
- *  instead of borrowing the v1 sidebar's links. */
+/** v2 management nav — byte-faithful clone of TaroDashboardLayout.
+ *  Same sections, icons, spacing, branding as v1. v2-only items (Area, Toko)
+ *  added at the bottom of "Master & Pengaturan" identically styled. */
 const V2_SECTIONS: NavSection[] = [
   {
     items: [
-      { href: "/taro/v2/dashboard", label: "Dashboard", icon: BarChart2Icon },
+      { href: "/taro/v2/dashboard", label: "Dashboard", icon: Home as IconCmp },
     ],
   },
   {
     label: "Operasional",
     items: [
       { href: "/taro/v2/invoices", label: "Antrian Invoice", icon: FileTextIcon, exact: true },
-      { href: "/taro/v2/recommendations", label: "Rekomendasi", icon: LightbulbIcon },
     ],
   },
   {
-    label: "Master Data",
+    label: "Master & Pengaturan",
     items: [
+      { href: "/taro/v2/taco-skus", label: "TACO SKU", icon: PackageIcon },
+      { href: "/taro/v2/recommendations", label: "Rekomendasi", icon: LightbulbIcon },
+      { href: "/taro/v2/sales", label: "Sales Agent", icon: UsersIcon },
       { href: "/taro/v2/areas", label: "Area", icon: MapIcon },
       { href: "/taro/v2/stores", label: "Toko", icon: StoreIcon },
-      { href: "/taro/v2/sales", label: "Sales", icon: UsersIcon },
-      { href: "/taro/v2/taco-skus", label: "Product Knowledge", icon: PackageIcon },
     ],
   },
 ];
@@ -101,8 +100,6 @@ export function V2DashboardLayout({ children }: { children: React.ReactNode }) {
     let active = pathname === href;
     if (!active && pathname.startsWith(href + "/")) {
       if (exact) {
-        // Light up on detail pages (`/taro/v2/invoices/abc`) but not when the
-        // next segment is itself a registered sibling route.
         const nextSeg = pathname.slice(href.length + 1).split("/")[0];
         if (!SIBLING_PATHS.includes(`${href}/${nextSeg}`)) active = true;
       } else {
@@ -129,16 +126,13 @@ export function V2DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-taco-page flex">
       <aside className="w-[240px] bg-white border-r border-taco-border flex flex-col flex-shrink-0 sticky top-0 h-screen">
-        <div className="px-5 py-4 border-b border-taco-divider flex items-center justify-between gap-2">
+        <div className="px-5 py-4 border-b border-taco-divider">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="https://manage.taco.co.id/asset-images/logo.svg"
             alt="TACO"
             className="h-7"
           />
-          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-taco-accent-tint text-taco-accent text-[10px] font-semibold uppercase tracking-wider">
-            v2
-          </span>
         </div>
 
         <nav className="flex-1 py-2 overflow-y-auto">
@@ -154,24 +148,15 @@ export function V2DashboardLayout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        <div className="border-t border-taco-divider p-4 space-y-3">
-          <Link
-            href="/taro/dashboard"
-            className="block text-[12px] text-taco-muted hover:text-taco-text transition-colors"
+        <div className="border-t border-taco-divider p-4">
+          <div className="text-[13px] text-taco-sub mb-1 truncate">{user?.name}</div>
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 text-[13px] text-taco-muted hover:text-taco-error transition-colors"
           >
-            ← Kembali ke dashboard v1
-          </Link>
-          <div>
-            <div className="text-[13px] text-taco-sub mb-1 truncate">
-              {user?.name}
-            </div>
-            <button
-              onClick={handleLogout}
-              className="text-[13px] text-taco-muted hover:text-taco-error transition-colors"
-            >
-              Keluar
-            </button>
-          </div>
+            <LogOut size={14} />
+            Keluar
+          </button>
         </div>
       </aside>
 

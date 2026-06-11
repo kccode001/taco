@@ -1,16 +1,10 @@
 "use client";
 
-/** TACO v2 — Admin invoice detail + line-item resolution (Pair A FE, Tile).
- *  Copy-and-ADAPTED from the v1 PWA resolve UI (`app/taro-app/upload/[id]/page.tsx`)
- *  — the v1 original is FROZEN and untouched. Differences vs v1:
- *   - lines carry the 9-bucket `classification` enum (not a confidence-derived kind);
- *   - resolve hits the v2 contract `PATCH /api/v2/invoice-line-items/:id`
- *     ({ matched_sku_id, reason } | { brand_id, is_competitor } | { is_competitor } );
- *   - adds the `mismatch_reason` capture when the admin flips a line across the
- *     TACO ↔ not-TACO boundary (feeds the recommendation engine);
- *   - desktop-first (lives under Mosaic's `taro/v2` admin layout), not the PWA shell.
- *  Reuses the shared catalog endpoints (taco-skus, competitor-brands) since v2
- *  line items reference the same TacoSku / CompetitorBrand tables. */
+/** TACO v2 — Admin invoice detail + line-item resolution.
+ *  Layout mirrors v1 `app/taro/invoices/[id]`: photo LEFT (col-span-5),
+ *  meta + line-items RIGHT (col-span-7). The ONLY v2 additions are the
+ *  extended ResolveModal (TACO / Competitor tabs with mismatch-reason capture)
+ *  and the v2 9-bucket classification display. v1 is FROZEN — untouched. */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
@@ -31,6 +25,8 @@ import {
   type InvoiceV2Status,
   type LineClassificationV2,
 } from "@/lib/v2/invoices";
+import { Badge, TableHeader, EmptyRow } from "@/app/admin/_components/CrudShell";
+import { ZoomInIcon } from "@/app/admin/_components/icons";
 
 interface TacoSkuRow {
   id: string;
@@ -38,7 +34,7 @@ interface TacoSkuRow {
   name: string;
 }
 
-// ── Classification helpers (9-bucket taxonomy) ─────────────────────────────
+// ── Classification helpers ──────────────────────────────────────────────────
 type Family = "taco" | "not_taco" | "unknown";
 
 function classFamily(c: LineClassificationV2): Family {
@@ -47,7 +43,6 @@ function classFamily(c: LineClassificationV2): Family {
   return "unknown";
 }
 
-/** Review queue = low_verify + unreadable_guess + unknown. */
 function isReviewBucket(c: LineClassificationV2): boolean {
   return (
     c.endsWith("low_verify") ||
@@ -75,106 +70,35 @@ interface LineDisplay {
   badge: string;
   title: string;
   family: Family;
-  /** still in the review queue and not yet explicitly resolved by an admin */
   needsHuman: boolean;
 }
 
 function lineDisplay(li: InvoiceLineItemV2): LineDisplay {
   const family = classFamily(li.classification);
   if (li.matched_sku_id) {
-    return {
-      tone: "ok",
-      badge: "TACO",
-      title: li.matched_sku?.name ?? li.matched_sku?.code ?? "Produk TACO",
-      family,
-      needsHuman: false,
-    };
+    return { tone: "ok", badge: "TACO", title: li.matched_sku?.name ?? li.matched_sku?.code ?? "Produk TACO", family, needsHuman: false };
   }
   if (li.is_competitor) {
     if (li.brand_id || li.brand_name) {
-      return {
-        tone: "ok",
-        badge: "Kompetitor",
-        title: li.brand_name
-          ? `Kompetitor · ${li.brand_name}`
-          : "Produk kompetitor",
-        family,
-        needsHuman: false,
-      };
+      return { tone: "ok", badge: "Kompetitor", title: li.brand_name ? `Kompetitor · ${li.brand_name}` : "Produk kompetitor", family, needsHuman: false };
     }
-    return {
-      tone: "ok",
-      badge: "Non-TACO",
-      title: "Bukan produk TACO (tidak diketahui)",
-      family,
-      needsHuman: false,
-    };
+    return { tone: "ok", badge: "Non-TACO", title: "Bukan produk TACO (tidak diketahui)", family, needsHuman: false };
   }
-  // No explicit admin resolution yet — drive off the classification bucket.
   if (isReviewBucket(li.classification)) {
-    return {
-      tone: "warn",
-      badge: "Perlu Dicek",
-      title: CLASS_LABEL[li.classification],
-      family,
-      needsHuman: true,
-    };
+    return { tone: "warn", badge: "Perlu Dicek", title: CLASS_LABEL[li.classification], family, needsHuman: true };
   }
-  // Auto-accepted (very/high) — resolved, but still editable.
-  return {
-    tone: family === "taco" ? "ok" : "neutral",
-    badge: family === "taco" ? "TACO (auto)" : "Bukan TACO (auto)",
-    title: CLASS_LABEL[li.classification],
-    family,
-    needsHuman: false,
-  };
+  return { tone: family === "taco" ? "ok" : "neutral", badge: family === "taco" ? "TACO (auto)" : "Bukan TACO (auto)", title: CLASS_LABEL[li.classification], family, needsHuman: false };
 }
 
 function isResolvedLine(li: InvoiceLineItemV2): boolean {
   return !lineDisplay(li).needsHuman;
 }
 
-/** Fallback for the header badge when the BE doesn't echo a status — every line
- *  resolved → done, else needs_review. Never overrides in-flight states. */
-function recomputeStatus(
-  lines: InvoiceLineItemV2[],
-  current: InvoiceV2Status
-): InvoiceV2Status {
-  if (
-    current === "validating" ||
-    current === "ocr_processing" ||
-    current === "failed"
-  )
-    return current;
+function recomputeStatus(lines: InvoiceLineItemV2[], current: InvoiceV2Status): InvoiceV2Status {
+  if (current === "validating" || current === "ocr_processing" || current === "failed") return current;
   if (lines.length === 0) return current;
   return lines.every(isResolvedLine) ? "done" : "needs_review";
 }
-
-const STATUS_META: Record<
-  InvoiceV2Status,
-  { label: string; cls: string }
-> = {
-  validating: {
-    label: "Validasi",
-    cls: "bg-blue-50 text-taco-info border-blue-100",
-  },
-  ocr_processing: {
-    label: "Proses OCR",
-    cls: "bg-blue-50 text-taco-info border-blue-100",
-  },
-  needs_review: {
-    label: "Perlu Review",
-    cls: "bg-amber-50 text-taco-warning border-amber-100",
-  },
-  done: {
-    label: "Selesai",
-    cls: "bg-emerald-50 text-taco-success border-emerald-100",
-  },
-  failed: {
-    label: "Gagal",
-    cls: "bg-red-50 text-taco-error border-red-100",
-  },
-};
 
 function toneChipCls(tone: Tone): string {
   if (tone === "ok") return "bg-emerald-50 text-taco-success border-emerald-100";
@@ -182,21 +106,33 @@ function toneChipCls(tone: Tone): string {
   return "bg-taco-page text-taco-sub border-taco-border";
 }
 
+function statusBadge(status: InvoiceV2Status) {
+  switch (status) {
+    case "done": return <Badge tone="ok">Selesai</Badge>;
+    case "needs_review": return <Badge tone="warn">Perlu Review</Badge>;
+    case "validating":
+    case "ocr_processing": return <Badge tone="info">Proses OCR</Badge>;
+    case "failed": return <Badge tone="err">Gagal</Badge>;
+    default: return <Badge tone="muted">Antrian</Badge>;
+  }
+}
+
 function formatIdr(value?: number | string | null) {
   const n = typeof value === "string" ? Number(value) : value;
   if (n == null || Number.isNaN(n)) return "—";
-  return new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    maximumFractionDigits: 0,
-  }).format(n);
+  return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n);
+}
+
+function formatDateTime(iso?: string | null) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function extractErrorMessage(err: unknown): string {
   if (err instanceof AxiosError) {
-    const data = err.response?.data as
-      | { message?: string | string[]; error?: string }
-      | undefined;
+    const data = err.response?.data as { message?: string | string[]; error?: string } | undefined;
     const msg = data?.message;
     if (Array.isArray(msg)) return msg.join(", ");
     if (typeof msg === "string") return msg;
@@ -218,7 +154,7 @@ export default function AdminV2InvoiceDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<InvoiceLineItemV2 | null>(null);
-  const [zoomUrl, setZoomUrl] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -232,25 +168,14 @@ export default function AdminV2InvoiceDetailPage() {
       setInvoice(inv);
       const ls = inv.line_items ?? [];
       setLines(ls);
-      // Recompute on load so the header never contradicts the line states.
       setStatus(recomputeStatus(ls, inv.status));
-      // Images are served behind JWT — resolve a signed URL per image so the
-      // <img> tags can load them. BE findOne returns file_path, not a URL.
       const imgs = inv.images ?? [];
       if (imgs.length > 0) {
         const urls = await Promise.all(
           imgs.map((img) => (img.url ? Promise.resolve(img.url) : getV2ImageUrl(img.id)))
         );
         setInvoice((prev) =>
-          prev
-            ? {
-                ...prev,
-                images: (prev.images ?? []).map((img, i) => ({
-                  ...img,
-                  url: urls[i] ?? img.url ?? null,
-                })),
-              }
-            : prev
+          prev ? { ...prev, images: (prev.images ?? []).map((img, i) => ({ ...img, url: urls[i] ?? img.url ?? null })) } : prev
         );
       }
     } catch (err) {
@@ -264,13 +189,10 @@ export default function AdminV2InvoiceDetailPage() {
     if (id) load();
   }, [id, load]);
 
-  // Apply a resolved line + recomputed status without a full reload.
   const applyResolved = useCallback(
     (lineId: string, patch: Partial<InvoiceLineItemV2>, next?: InvoiceV2Status) => {
       setLines((prev) => {
-        const updated = prev.map((l) =>
-          l.id === lineId ? { ...l, ...patch } : l
-        );
+        const updated = prev.map((l) => (l.id === lineId ? { ...l, ...patch } : l));
         setStatus(next ?? recomputeStatus(updated, status));
         return updated;
       });
@@ -285,250 +207,259 @@ export default function AdminV2InvoiceDetailPage() {
     return { total, open, ready: total - open };
   }, [lines]);
 
-  const statusMeta = STATUS_META[status] ?? STATUS_META.needs_review;
-  const images = invoice?.images ?? [];
+  if (loading) {
+    return <div className="text-[13px] text-taco-muted">Memuat invoice…</div>;
+  }
+
+  if (!invoice) {
+    return (
+      <div className="space-y-3">
+        {error && (
+          <div className="text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+            {error}
+          </div>
+        )}
+        <Link href="/taro/v2/invoices" className="text-[12px] text-taco-sub hover:text-taco-text">
+          ← Kembali ke Antrian Invoice
+        </Link>
+      </div>
+    );
+  }
+
+  const primaryImageUrl = (invoice.images ?? [])[0]?.url ?? null;
+  const storeName = invoice.store?.name ?? invoice.store_name ?? null;
+  const areaName = invoice.area?.name ?? invoice.area_name ?? null;
 
   return (
-    <div className="px-4 md:px-8 py-6 max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <Link
-            href="/taro/v2/invoices"
-            className="text-[13px] text-taco-sub hover:text-taco-text inline-flex items-center gap-1"
-          >
-            ← Kembali ke Antrian Invoice
-          </Link>
-          <h1 className="text-[20px] font-semibold text-taco-text mt-1">
-            Invoice #{id.slice(0, 8)}
-          </h1>
-          {invoice && (
-            <div className="text-[13px] text-taco-sub mt-0.5">
-              {invoice.store?.name ?? invoice.store_name ?? "Toko —"} ·{" "}
-              {invoice.area?.name ?? invoice.area_name ?? "Area —"}
-            </div>
+    <div className="space-y-4">
+      {/* Breadcrumb */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <Link href="/taro/v2/invoices" className="text-[12px] text-taco-sub hover:text-taco-text">
+          ← Kembali ke Antrian Invoice
+        </Link>
+        <div className="flex items-center gap-3">
+          {error && (
+            <span className="text-[12px] text-taco-error">{error}</span>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          <span
-            className={`text-[12px] font-medium px-3 py-1.5 rounded-full border ${statusMeta.cls}`}
-          >
-            {statusMeta.label}
-          </span>
-          <button
-            type="button"
-            onClick={load}
-            className="text-[13px] font-medium px-3 py-1.5 rounded-lg border border-taco-border bg-white text-taco-sub hover:bg-taco-page"
-          >
-            Muat ulang
-          </button>
+          <div className="text-[12px] text-taco-sub">
+            Diunggah {formatDateTime(invoice.created_at)}
+          </div>
         </div>
       </div>
 
-      {error && (
-        <div className="mt-4 text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2">
-          {error}
-        </div>
-      )}
-
-      {!loading && invoice && (
-        <div className="mt-5 bg-white border border-taco-border rounded-xl p-5">
-          <div className="text-[11px] font-semibold text-taco-muted uppercase tracking-wider mb-3">
-            Ringkasan Invoice
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-y-3 gap-x-6 text-[13px]">
-            <div>
-              <div className="text-taco-muted text-[12px]">Toko</div>
-              <div className="text-taco-text font-medium mt-0.5">
-                {invoice.store?.name ?? invoice.store_name ?? "—"}
-              </div>
-            </div>
-            <div>
-              <div className="text-taco-muted text-[12px]">Area</div>
-              <div className="text-taco-text font-medium mt-0.5">
-                {invoice.area?.name ?? invoice.area_name ?? "—"}
-              </div>
-            </div>
-            <div>
-              <div className="text-taco-muted text-[12px]">Diunggah oleh</div>
-              <div className="text-taco-text font-medium mt-0.5">
-                {invoice.uploaded_by_name ?? "—"}
-              </div>
-            </div>
-            <div>
-              <div className="text-taco-muted text-[12px]">Tanggal upload</div>
-              <div className="text-taco-text font-medium mt-0.5">
-                {invoice.created_at
-                  ? new Date(invoice.created_at).toLocaleString("id-ID", {
-                      day: "2-digit",
-                      month: "short",
-                      year: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                  : "—"}
-              </div>
-            </div>
-            <div>
-              <div className="text-taco-muted text-[12px]">Total baris</div>
-              <div className="text-taco-text font-semibold mt-0.5">
-                {summary.total}
-              </div>
-            </div>
-            <div>
-              <div className="text-taco-muted text-[12px]">Perlu review</div>
-              <div
-                className={`font-semibold mt-0.5 ${
-                  summary.open > 0 ? "text-taco-warning" : "text-taco-text"
-                }`}
-              >
-                {summary.open}
-              </div>
-            </div>
-            <div>
-              <div className="text-taco-muted text-[12px]">Siap</div>
-              <div className="text-taco-success font-semibold mt-0.5">
-                {summary.ready}/{summary.total}
-              </div>
-            </div>
-            <div>
-              <div className="text-taco-muted text-[12px]">Total nilai</div>
-              <div className="text-taco-text font-semibold mt-0.5">
-                {formatIdr(invoice.total_amount)}
-              </div>
-            </div>
-          </div>
-          {invoice.error_message && (
-            <div className="mt-3 text-[12px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2">
-              {invoice.error_message}
-            </div>
-          )}
-        </div>
-      )}
-
-      {loading ? (
-        <div className="mt-8 text-[13px] text-taco-muted">Memuat invoice…</div>
-      ) : (
-        <div className="mt-5 grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">
-          {/* Left: images */}
-          <div className="space-y-3">
-            <div className="text-[13px] font-medium text-taco-sub">
-              Foto Invoice ({images.length})
-            </div>
-            {images.length === 0 ? (
-              <div className="text-[13px] text-taco-muted bg-white border border-taco-border rounded-xl px-4 py-6 text-center">
-                Tidak ada gambar.
-              </div>
+      {/* Split layout: image left (~45%), meta + line items right (~55%) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:h-[calc(100vh-160px)]">
+        {/* LEFT — Image preview, full height, click to zoom */}
+        <div className="lg:col-span-5 lg:sticky lg:top-4 lg:self-start lg:h-full">
+          <button
+            type="button"
+            onClick={() => primaryImageUrl && setZoom(true)}
+            className="relative w-full h-[420px] lg:h-full bg-[#1A1A1A] border border-taco-border rounded-xl overflow-hidden group flex items-center justify-center"
+            aria-label="Klik untuk perbesar"
+          >
+            {primaryImageUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={primaryImageUrl}
+                alt={`Invoice ${id.slice(0, 8)}`}
+                className="max-w-full max-h-full object-contain"
+              />
             ) : (
-              <div className="space-y-3">
-                {images.map((img) =>
-                  img.url ? (
-                    <button
-                      key={img.id}
-                      type="button"
-                      onClick={() => setZoomUrl(img.url ?? null)}
-                      className="block w-full group relative"
-                      title="Klik untuk perbesar"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={img.url}
-                        alt={img.file_name ?? "invoice"}
-                        className="w-full rounded-xl border border-taco-border bg-white object-contain group-hover:border-taco-text transition-colors"
-                      />
-                      <span className="absolute bottom-2 right-2 text-[11px] bg-black/60 text-white px-2 py-0.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
-                        Perbesar
-                      </span>
-                    </button>
-                  ) : (
-                    <div
-                      key={img.id}
-                      className="text-[12px] text-taco-muted bg-white border border-taco-border rounded-xl px-4 py-6 text-center"
-                    >
-                      {img.file_name ?? "Gambar"} — pratinjau tidak tersedia
-                    </div>
-                  )
+              <div className="flex flex-col items-center gap-3 text-taco-page/60 animate-pulse">
+                <div className="w-16 h-16 rounded-full border border-taco-page/30 flex items-center justify-center">
+                  <ZoomInIcon size={28} />
+                </div>
+                <div className="text-[12px]">Memuat pratinjau invoice…</div>
+              </div>
+            )}
+            {primaryImageUrl && (
+              <div className="absolute top-3 right-3 inline-flex items-center gap-1.5 px-2.5 py-1 bg-black/60 backdrop-blur-sm text-white rounded-full text-[11px] opacity-0 group-hover:opacity-100 transition-opacity">
+                <ZoomInIcon size={12} /> Klik untuk perbesar
+              </div>
+            )}
+            {(invoice.images ?? []).length > 1 && (
+              <div className="absolute bottom-3 left-3 inline-flex items-center gap-1 px-2 py-0.5 bg-black/60 text-white rounded-full text-[11px]">
+                {(invoice.images ?? []).length} foto
+              </div>
+            )}
+          </button>
+        </div>
+
+        {/* RIGHT — Meta (top) + Line items (bottom, scrollable) */}
+        <div className="lg:col-span-7 flex flex-col gap-4 lg:h-full lg:overflow-hidden">
+          {/* META */}
+          <div className="bg-white border border-taco-border rounded-xl p-5 flex-shrink-0">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div className="min-w-0">
+                <h1 className="text-[18px] font-bold text-taco-text leading-tight truncate">
+                  Invoice {id.slice(0, 8)}
+                </h1>
+                {storeName && (
+                  <div className="text-[13px] text-taco-text font-medium mt-0.5 truncate">
+                    {storeName}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-
-          {/* Right: line items */}
-          <div>
-            <div className="flex items-center justify-between gap-2 mb-3">
-              <div className="text-[13px] font-medium text-taco-sub">
-                Baris Invoice ({summary.total})
-              </div>
-              <div className="text-[12px] text-taco-muted">
-                {summary.open} perlu review · {summary.ready}/{summary.total} siap
-              </div>
+              {statusBadge(status)}
             </div>
 
-            {lines.length === 0 ? (
-              <div className="text-[13px] text-taco-muted bg-white border border-taco-border rounded-xl px-4 py-8 text-center">
-                Belum ada baris. Jalankan OCR atau tunggu proses selesai.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {lines.map((li) => {
-                  const d = lineDisplay(li);
-                  return (
-                    <div
-                      key={li.id}
-                      className={`bg-white border rounded-xl p-3.5 ${
-                        d.needsHuman ? "border-amber-200" : "border-taco-border"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${toneChipCls(
-                                d.tone
-                              )}`}
-                            >
-                              {d.badge}
-                            </span>
-                            {li.line_no != null && (
-                              <span className="text-[11px] text-taco-muted">
-                                #{li.line_no}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[14px] font-medium text-taco-text mt-1.5 truncate">
-                            {d.title}
-                          </div>
-                          <div className="text-[12px] text-taco-sub mt-0.5 line-clamp-2">
-                            <span className="text-taco-muted">OCR:</span>{" "}
-                            {li.raw_text}
-                          </div>
-                          {(li.quantity != null || li.unit_price != null) && (
-                            <div className="text-[12px] text-taco-muted mt-1">
-                              {li.quantity ?? "—"} {li.unit ?? ""} ·{" "}
-                              {formatIdr(li.unit_price)}
-                            </div>
-                          )}
-                          {li.mismatch_reason && (
-                            <div className="text-[11px] text-taco-sub mt-1.5 bg-taco-page border border-taco-divider rounded-md px-2 py-1">
-                              <span className="text-taco-muted">Alasan:</span>{" "}
-                              {li.mismatch_reason}
-                            </div>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setEditing(li)}
-                          className="text-[13px] font-medium px-3 py-2 rounded-lg border border-taco-border bg-white text-taco-text hover:bg-taco-page shrink-0"
-                        >
-                          {d.needsHuman ? "Resolusi" : "Edit"}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <div className="grid grid-cols-2 gap-y-2 gap-x-6 text-[12px]">
+              <div className="text-taco-sub">Area</div>
+              <div className="text-taco-text truncate">{areaName ?? <span className="text-taco-muted italic">Tanpa Area</span>}</div>
+
+              <div className="text-taco-sub">Toko</div>
+              <div className="text-taco-text truncate">{storeName ?? <span className="text-taco-muted italic">Tanpa Toko</span>}</div>
+
+              {invoice.uploaded_by_name && (
+                <>
+                  <div className="text-taco-sub">Diunggah oleh</div>
+                  <div className="text-taco-text truncate">{invoice.uploaded_by_name}</div>
+                </>
+              )}
+
+              <div className="text-taco-sub">Jumlah baris</div>
+              <div className="text-taco-text">{summary.total}</div>
+
+              {invoice.total_amount != null && (
+                <>
+                  <div className="text-taco-sub">Total nilai</div>
+                  <div className="text-taco-text font-semibold">{formatIdr(invoice.total_amount)}</div>
+                </>
+              )}
+            </div>
+
+            {/* Review summary chips */}
+            <div className="mt-3 pt-3 border-t border-taco-divider flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] font-semibold text-taco-muted uppercase tracking-wider mr-1">
+                Status Baris
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#FFF5E6] text-taco-warning text-[11px] font-medium">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#E07B00" }} />
+                {summary.open} perlu review
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#E6F7F2] text-taco-success text-[11px] font-medium">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#1D9E75" }} />
+                {summary.ready} siap
+              </span>
+              <span className="ml-auto text-[12px] text-taco-text">
+                Total{" "}
+                <span className="font-semibold">{summary.total}</span>
+              </span>
+            </div>
           </div>
+
+          {/* LINE ITEMS — Scrollable */}
+          <div className="bg-white border border-taco-border rounded-xl overflow-hidden flex-1 min-h-0 flex flex-col">
+            <div className="px-4 py-3 border-b border-taco-divider flex-shrink-0 flex items-center justify-between">
+              <div className="text-[14px] font-semibold text-taco-text">
+                Line Items ({lines.length})
+              </div>
+              <div className="text-[11px] text-taco-muted">
+                Klik <span className="text-taco-text font-medium">Resolusi</span> untuk koreksi SKU atau tandai kompetitor
+              </div>
+            </div>
+            <div className="overflow-auto flex-1 min-h-0">
+              <table className="w-full">
+                <TableHeader cols={["Raw OCR", "Jenis", "Qty", "Total", ""]} />
+                <tbody>
+                  {lines.length === 0 ? (
+                    <EmptyRow colSpan={5} label="Belum ada line item." />
+                  ) : (
+                    lines.map((li) => {
+                      const d = lineDisplay(li);
+                      const accent = d.needsHuman
+                        ? "border-l-[3px] border-l-taco-warning"
+                        : d.tone === "ok"
+                          ? "border-l-[3px] border-l-transparent"
+                          : "border-l-[3px] border-l-transparent";
+                      return (
+                        <tr
+                          key={li.id}
+                          className={`${accent} border-b border-taco-divider last:border-0 hover:bg-taco-page`}
+                        >
+                          <td className="px-3 py-2.5 text-[12px] text-taco-sub max-w-[160px]">
+                            <div className="flex items-center gap-2">
+                              {li.line_no != null && (
+                                <span className="text-taco-muted text-[10px] font-mono">
+                                  {li.line_no}
+                                </span>
+                              )}
+                              <div className="truncate" title={li.raw_text}>
+                                {li.raw_text}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-[12px] max-w-[200px]">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span
+                                className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${toneChipCls(d.tone)}`}
+                              >
+                                {d.badge}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-taco-sub mt-0.5 truncate" title={d.title}>
+                              {d.title}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-[12px] text-taco-text whitespace-nowrap">
+                            {li.quantity != null ? (
+                              <>
+                                {li.quantity}
+                                <span className="text-taco-muted text-[10px] ml-0.5">{li.unit}</span>
+                              </>
+                            ) : (
+                              <span className="text-taco-muted">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-[12px] text-taco-text whitespace-nowrap">
+                            {li.unit_price != null ? (
+                              <>
+                                <div className="font-semibold">{formatIdr(li.unit_price)}</div>
+                              </>
+                            ) : (
+                              <span className="text-taco-muted">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <button
+                              onClick={() => setEditing(li)}
+                              className="h-[26px] px-2 border border-taco-border rounded-md text-[11px] text-taco-sub hover:text-taco-text hover:border-taco-text"
+                            >
+                              {d.needsHuman ? "Resolusi" : "Edit"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Zoom modal */}
+      {zoom && primaryImageUrl && (
+        <div
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-6"
+          onClick={() => setZoom(false)}
+        >
+          <button
+            type="button"
+            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white inline-flex items-center justify-center text-[16px]"
+            onClick={() => setZoom(false)}
+            aria-label="Tutup"
+          >
+            ✕
+          </button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={primaryImageUrl}
+            alt={`Invoice ${id.slice(0, 8)}`}
+            className="max-w-full max-h-full object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
       )}
 
@@ -538,29 +469,6 @@ export default function AdminV2InvoiceDetailPage() {
           onClose={() => setEditing(null)}
           onResolved={applyResolved}
         />
-      )}
-
-      {zoomUrl && (
-        <div
-          className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-6"
-          onClick={() => setZoomUrl(null)}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={zoomUrl}
-            alt="Invoice diperbesar"
-            className="max-w-full max-h-full object-contain rounded-lg"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <button
-            type="button"
-            onClick={() => setZoomUrl(null)}
-            aria-label="Tutup"
-            className="fixed top-5 right-6 w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 text-white text-[20px] leading-none flex items-center justify-center"
-          >
-            ✕
-          </button>
-        </div>
       )}
     </div>
   );
@@ -588,20 +496,15 @@ function ResolveModal({
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
-  // TACO tab
   const [skus, setSkus] = useState<TacoSkuRow[]>([]);
   const [skuSearch, setSkuSearch] = useState("");
   const [selectedSku, setSelectedSku] = useState<TacoSkuRow | null>(null);
 
-  // Competitor tab
   const [brands, setBrands] = useState<CompetitorBrand[]>([]);
   const [brandsLoading, setBrandsLoading] = useState(false);
 
-  // Mismatch reason — required only when the admin's action flips the line
-  // across the TACO ↔ not-TACO boundary the system predicted.
   const [mismatchReason, setMismatchReason] = useState("");
 
-  // Close on Esc (state-driven; no history funnel — avoids the v1 BUG-6 trap).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -610,7 +513,6 @@ function ResolveModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Load SKUs when the TACO tab is first needed.
   useEffect(() => {
     if (tab !== "taco" || skus.length > 0) return;
     let cancelled = false;
@@ -618,8 +520,7 @@ function ResolveModal({
       try {
         const res = await getTacoSkus();
         const data =
-          ((res.data as { data?: TacoSkuRow[] })?.data ??
-            (res.data as TacoSkuRow[])) ?? [];
+          ((res.data as { data?: TacoSkuRow[] })?.data ?? (res.data as TacoSkuRow[])) ?? [];
         if (!cancelled) {
           setSkus(data);
           if (line.matched_sku_id) {
@@ -628,16 +529,12 @@ function ResolveModal({
           }
         }
       } catch (err) {
-        if (!cancelled)
-          setError(`Tidak bisa memuat SKU: ${extractErrorMessage(err)}`);
+        if (!cancelled) setError(`Tidak bisa memuat SKU: ${extractErrorMessage(err)}`);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [tab, skus.length, line.matched_sku_id]);
 
-  // Load brands when the competitor tab is first needed.
   useEffect(() => {
     if (tab !== "competitor" || brands.length > 0) return;
     let cancelled = false;
@@ -646,43 +543,29 @@ function ResolveModal({
       try {
         const res = await getCompetitorBrands();
         const raw =
-          ((res.data as { data?: CompetitorBrand[] })?.data ??
-            (res.data as CompetitorBrand[])) ?? [];
-        const active = raw
-          .filter((b) => b.is_active !== false)
-          .sort((a, b) => a.name.localeCompare(b.name));
+          ((res.data as { data?: CompetitorBrand[] })?.data ?? (res.data as CompetitorBrand[])) ?? [];
+        const active = raw.filter((b) => b.is_active !== false).sort((a, b) => a.name.localeCompare(b.name));
         if (!cancelled) setBrands(active);
       } catch (err) {
-        if (!cancelled)
-          setError(`Tidak bisa memuat merek: ${extractErrorMessage(err)}`);
+        if (!cancelled) setError(`Tidak bisa memuat merek: ${extractErrorMessage(err)}`);
       } finally {
         if (!cancelled) setBrandsLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [tab, brands.length]);
 
   const filteredSkus = useMemo(() => {
     if (!skuSearch.trim()) return skus.slice(0, 15);
     const q = skuSearch.toLowerCase();
-    return skus
-      .filter(
-        (s) =>
-          s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
-      )
-      .slice(0, 15);
+    return skus.filter((s) => s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)).slice(0, 15);
   }, [skus, skuSearch]);
 
-  // A flip happens when the chosen action disagrees with the system family.
   const tacoIsFlip = systemFamily === "not_taco" || systemFamily === "unknown";
   const competitorIsFlip = systemFamily === "taco";
 
-  const finish = (
-    patch: Partial<InvoiceLineItemV2>,
-    next?: InvoiceV2Status
-  ) => onResolved(line.id, patch, next);
+  const finish = (patch: Partial<InvoiceLineItemV2>, next?: InvoiceV2Status) =>
+    onResolved(line.id, patch, next);
 
   const saveAsTaco = async () => {
     if (!selectedSku || busyKey) return;
@@ -695,22 +578,17 @@ function ResolveModal({
     try {
       const resp = await patchV2LineItem(line.id, {
         matched_sku_id: selectedSku.id,
-        reason: tacoIsFlip
-          ? mismatchReason.trim()
-          : "Dipetakan oleh admin.",
+        reason: tacoIsFlip ? mismatchReason.trim() : "Dipetakan oleh admin.",
         ...(tacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       });
-      finish(
-        {
-          matched_sku_id: selectedSku.id,
-          matched_sku: { id: selectedSku.id, code: selectedSku.code, name: selectedSku.name },
-          brand_id: null,
-          brand_name: null,
-          is_competitor: false,
-          ...(tacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
-        },
-        readInvoiceStatus(resp)
-      );
+      finish({
+        matched_sku_id: selectedSku.id,
+        matched_sku: { id: selectedSku.id, code: selectedSku.code, name: selectedSku.name },
+        brand_id: null,
+        brand_name: null,
+        is_competitor: false,
+        ...(tacoIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
+      }, readInvoiceStatus(resp));
     } catch (err) {
       setBusyKey(null);
       setError(`Gagal menyimpan: ${extractErrorMessage(err)}`);
@@ -731,17 +609,14 @@ function ResolveModal({
         is_competitor: true,
         ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       });
-      finish(
-        {
-          brand_id: brand.id,
-          brand_name: brand.name,
-          is_competitor: true,
-          matched_sku_id: null,
-          matched_sku: null,
-          ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
-        },
-        readInvoiceStatus(resp)
-      );
+      finish({
+        brand_id: brand.id,
+        brand_name: brand.name,
+        is_competitor: true,
+        matched_sku_id: null,
+        matched_sku: null,
+        ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
+      }, readInvoiceStatus(resp));
     } catch (err) {
       setBusyKey(null);
       setError(`Gagal menyimpan merek: ${extractErrorMessage(err)}`);
@@ -761,17 +636,14 @@ function ResolveModal({
         is_competitor: true,
         ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
       });
-      finish(
-        {
-          is_competitor: true,
-          brand_id: null,
-          brand_name: null,
-          matched_sku_id: null,
-          matched_sku: null,
-          ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
-        },
-        readInvoiceStatus(resp)
-      );
+      finish({
+        is_competitor: true,
+        brand_id: null,
+        brand_name: null,
+        matched_sku_id: null,
+        matched_sku: null,
+        ...(competitorIsFlip ? { mismatch_reason: mismatchReason.trim() } : {}),
+      }, readInvoiceStatus(resp));
     } catch (err) {
       setBusyKey(null);
       setError(`Gagal menyimpan: ${extractErrorMessage(err)}`);
@@ -779,8 +651,7 @@ function ResolveModal({
   };
 
   const showFlipReason =
-    (tab === "taco" && tacoIsFlip) ||
-    (tab === "competitor" && competitorIsFlip);
+    (tab === "taco" && tacoIsFlip) || (tab === "competitor" && competitorIsFlip);
 
   return (
     <div
@@ -819,45 +690,25 @@ function ResolveModal({
           )}
 
           <div className="bg-taco-page border border-taco-divider rounded-lg p-3">
-            <div className="text-[11px] uppercase tracking-wider text-taco-muted font-semibold">
-              Teks OCR
-            </div>
+            <div className="text-[11px] uppercase tracking-wider text-taco-muted font-semibold">Teks OCR</div>
             <div className="text-[14px] text-taco-text mt-1">{line.raw_text}</div>
           </div>
 
-          {/* Tab switch */}
           <div className="grid grid-cols-2 gap-1 bg-taco-page border border-taco-border rounded-xl p-1">
-            <button
-              type="button"
-              onClick={() => {
-                setTab("taco");
-                setError(null);
-              }}
-              className={`min-h-[40px] rounded-lg text-[13px] font-medium transition-colors ${
-                tab === "taco"
-                  ? "bg-white text-taco-text shadow-sm"
-                  : "text-taco-sub"
-              }`}
-            >
-              Produk TACO
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTab("competitor");
-                setError(null);
-              }}
-              className={`min-h-[40px] rounded-lg text-[13px] font-medium transition-colors ${
-                tab === "competitor"
-                  ? "bg-white text-taco-text shadow-sm"
-                  : "text-taco-sub"
-              }`}
-            >
-              Kompetitor
-            </button>
+            {(["taco", "competitor"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => { setTab(t); setError(null); }}
+                className={`min-h-[40px] rounded-lg text-[13px] font-medium transition-colors ${
+                  tab === t ? "bg-white text-taco-text shadow-sm" : "text-taco-sub"
+                }`}
+              >
+                {t === "taco" ? "Produk TACO" : "Kompetitor"}
+              </button>
+            ))}
           </div>
 
-          {/* Mismatch reason (shown on a TACO↔not-TACO flip) */}
           {showFlipReason && (
             <div>
               <label className="block text-[13px] font-medium text-taco-text mb-1.5">
@@ -867,24 +718,15 @@ function ResolveModal({
                 value={mismatchReason}
                 onChange={(e) => setMismatchReason(e.target.value)}
                 rows={2}
-                placeholder={
-                  tab === "taco"
-                    ? "Sistem mengira bukan TACO — jelaskan kenapa ini TACO"
-                    : "Sistem mengira TACO — jelaskan kenapa ini bukan TACO"
-                }
+                placeholder={tab === "taco" ? "Sistem mengira bukan TACO — jelaskan kenapa ini TACO" : "Sistem mengira TACO — jelaskan kenapa ini bukan TACO"}
                 className="w-full border border-taco-border rounded-xl px-3 py-2.5 text-[14px] text-taco-text bg-white outline-none focus:border-taco-text resize-none"
               />
-              <div className="text-[11px] text-taco-muted mt-1">
-                Disimpan untuk rekomendasi sistem (mis. tambah sinonim / SKU baru).
-              </div>
             </div>
           )}
 
           {tab === "taco" ? (
             <div>
-              <label className="block text-[13px] font-medium text-taco-text mb-1.5">
-                Pilih SKU TACO
-              </label>
+              <label className="block text-[13px] font-medium text-taco-text mb-1.5">Pilih SKU TACO</label>
               <input
                 type="text"
                 value={skuSearch}
@@ -894,9 +736,7 @@ function ResolveModal({
               />
               <div className="mt-2 max-h-[260px] overflow-y-auto border border-taco-divider rounded-xl divide-y divide-taco-divider">
                 {filteredSkus.length === 0 ? (
-                  <div className="px-3 py-3 text-[12px] text-taco-muted">
-                    Tidak ada SKU cocok.
-                  </div>
+                  <div className="px-3 py-3 text-[12px] text-taco-muted">Tidak ada SKU cocok.</div>
                 ) : (
                   filteredSkus.map((s) => {
                     const active = selectedSku?.id === s.id;
@@ -905,13 +745,9 @@ function ResolveModal({
                         key={s.id}
                         type="button"
                         onClick={() => setSelectedSku(s)}
-                        className={`w-full text-left px-3 py-2.5 active:bg-taco-page ${
-                          active ? "bg-taco-accent-tint" : "bg-white"
-                        }`}
+                        className={`w-full text-left px-3 py-2.5 active:bg-taco-page ${active ? "bg-taco-accent-tint" : "bg-white"}`}
                       >
-                        <div className="font-mono text-[11px] text-taco-muted">
-                          {s.code}
-                        </div>
+                        <div className="font-mono text-[11px] text-taco-muted">{s.code}</div>
                         <div className="text-[14px] text-taco-text">{s.name}</div>
                       </button>
                     );
@@ -921,20 +757,14 @@ function ResolveModal({
             </div>
           ) : (
             <div>
-              <label className="block text-[13px] font-medium text-taco-text mb-1.5">
-                Merek kompetitor
-              </label>
+              <label className="block text-[13px] font-medium text-taco-text mb-1.5">Merek kompetitor</label>
               {brandsLoading ? (
-                <div className="py-6 text-center text-[13px] text-taco-muted">
-                  Memuat merek…
-                </div>
+                <div className="py-6 text-center text-[13px] text-taco-muted">Memuat merek…</div>
               ) : (
                 <>
                   <div className="border border-taco-divider rounded-xl divide-y divide-taco-divider overflow-hidden max-h-[240px] overflow-y-auto">
                     {brands.length === 0 ? (
-                      <div className="px-3 py-3 text-[12px] text-taco-muted">
-                        Belum ada merek aktif.
-                      </div>
+                      <div className="px-3 py-3 text-[12px] text-taco-muted">Belum ada merek aktif.</div>
                     ) : (
                       brands.map((b) => {
                         const active = b.id === line.brand_id;
@@ -944,23 +774,13 @@ function ResolveModal({
                             type="button"
                             onClick={() => pickBrand(b)}
                             disabled={!!busyKey}
-                            className={`w-full text-left px-3 min-h-[48px] flex items-center justify-between gap-2 active:bg-taco-page disabled:opacity-50 ${
-                              active ? "bg-taco-accent-tint" : "bg-white"
-                            }`}
+                            className={`w-full text-left px-3 min-h-[48px] flex items-center justify-between gap-2 active:bg-taco-page disabled:opacity-50 ${active ? "bg-taco-accent-tint" : "bg-white"}`}
                           >
                             <div className="min-w-0">
-                              <div className="text-[14px] text-taco-text truncate">
-                                {b.name}
-                              </div>
-                              {b.country && (
-                                <div className="text-[11px] text-taco-sub truncate">
-                                  {b.country}
-                                </div>
-                              )}
+                              <div className="text-[14px] text-taco-text truncate">{b.name}</div>
+                              {b.country && <div className="text-[11px] text-taco-sub truncate">{b.country}</div>}
                             </div>
-                            {busyKey === b.id && (
-                              <span className="text-[11px] text-taco-sub">…</span>
-                            )}
+                            {busyKey === b.id && <span className="text-[11px] text-taco-sub">…</span>}
                           </button>
                         );
                       })
