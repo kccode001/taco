@@ -8,9 +8,13 @@ import { InvoiceV2 } from '../database/entities/v2/invoice-v2.entity';
 import { InvoiceLineItemV2 } from '../database/entities/v2/invoice-line-item-v2.entity';
 import { RecommendationV2 } from '../database/entities/v2/recommendation-v2.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
+import { Region } from '../database/entities/region.entity';
+import { TaroAgentRegion } from '../database/entities/taro-agent-region.entity';
 
 import { AreasController } from './areas/areas.controller';
 import { AreasService } from './areas/areas.service';
+import { RegionsV2Controller } from './regions/regions-v2.controller';
+import { RegionsV2Service } from './regions/regions-v2.service';
 import { StoresController } from './stores/stores.controller';
 import { StoresService } from './stores/stores.service';
 import { SalesController } from './sales/sales.controller';
@@ -44,10 +48,13 @@ import { RecommendationsService } from './recommendations/recommendations.servic
       InvoiceLineItemV2,
       RecommendationV2,
       TacoSku,
+      Region,
+      TaroAgentRegion,
     ]),
   ],
   controllers: [
     AreasController,
+    RegionsV2Controller,
     StoresController,
     SalesController,
     V2DashboardController,
@@ -55,6 +62,7 @@ import { RecommendationsService } from './recommendations/recommendations.servic
   ],
   providers: [
     AreasService,
+    RegionsV2Service,
     StoresService,
     SalesService,
     V2DashboardService,

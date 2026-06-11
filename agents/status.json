@@ -13,7 +13,7 @@
   },
   "mortar": {
     "status": "idle",
-    "task": "2026-06-11-taco-v2-sales-create-active — DONE: TACO-CRUD-01 fixed. create() now honors the Aktif flag (is_active: dto.active ?? true) + added `active` to CreateSalesDto (whitelist ValidationPipe was silently stripping it — service one-liner alone wasn't enough). remove() UNCHANGED (Vane: soft-deactivate is the spec). Verified e2e on :5013: active:false→is_active:false, active:true→true, omitted→true (API+DB agree), DB back to baseline. tsc+eslint clean. FE relabel (Hapus→Nonaktifkan) is Mosaic's, not BE.",
+    "task": "2026-06-11-taco-dashboard-v2-kc-fixes — DONE (BE): AC-2 Antrian filter ?filter=pending|selesai|semua on GET /api/v2/invoices (3/6/9=DB); AC-3 Area CRUD on public.regions via NEW /api/v2/regions (18 areas read; create/update/soft-delete(active=false)/reactivate verified vs DB); AC-1+AC-4 exposed needs_review_count on invoice detail+list. AC-1 root cause = FE re-derivation (lineDisplay uses matched_sku_id, ignores BE needs_review); BE status is spec-correct (90a9c95d has 2 taco_low_verify lines that DO need review). Flipping it to not-perlu-review = locked low_verify->review routing change = Grout spine → FLAGGED to KC, not patched. tsc+eslint clean, verified live :5013.",
     "role": "backend",
     "updated_at": "2026-06-11"
   },

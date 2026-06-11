@@ -100,7 +100,8 @@ export class InvoicesV2Service {
       }
     } else {
       const name = (dto.store_name ?? '').trim();
-      if (!name) throw new BadRequestException('store_id or store_name is required');
+      if (!name)
+        throw new BadRequestException('store_id or store_name is required');
       storeId = await this.findOrCreateStore(area.id, name, user.id);
     }
 
@@ -130,7 +131,11 @@ export class InvoicesV2Service {
       .getOne();
     if (existing) return existing.id;
     const store = await this.storesRepo.save(
-      this.storesRepo.create({ area_id: areaId, name, created_by: userId ?? null }),
+      this.storesRepo.create({
+        area_id: areaId,
+        name,
+        created_by: userId ?? null,
+      }),
     );
     return store.id;
   }
@@ -166,7 +171,9 @@ export class InvoicesV2Service {
     // Re-arming after an add: an invoice that had failed/processed goes back to
     // validating since there are now unvalidated images.
     if (invoice.status !== InvoiceV2Status.VALIDATING) {
-      await this.invoicesRepo.update(invoice.id, { status: InvoiceV2Status.VALIDATING });
+      await this.invoicesRepo.update(invoice.id, {
+        status: InvoiceV2Status.VALIDATING,
+      });
     }
     return saved;
   }
@@ -179,7 +186,11 @@ export class InvoicesV2Service {
   async validate(
     invoiceId: string,
     user: AuthedUser,
-  ): Promise<{ images: InvoiceImageV2[]; all_valid: boolean; pending_count: number }> {
+  ): Promise<{
+    images: InvoiceImageV2[];
+    all_valid: boolean;
+    pending_count: number;
+  }> {
     const invoice = await this.findInvoiceOrThrow(invoiceId, user);
     const pending = await this.imagesRepo.find({
       where: {
@@ -199,9 +210,12 @@ export class InvoicesV2Service {
         image.is_invoice = result.is_invoice;
       } catch (e) {
         // Don't hard-fail the batch on one image; mark invalid w/ Indonesian reason.
-        this.logger.warn(`Validation error for image ${image.id}: ${(e as Error).message}`);
+        this.logger.warn(
+          `Validation error for image ${image.id}: ${(e as Error).message}`,
+        );
         image.validation_status = InvoiceImageV2ValidationStatus.INVALID;
-        image.invalid_reason = 'Gagal memvalidasi gambar. Mohon coba unggah ulang.';
+        image.invalid_reason =
+          'Gagal memvalidasi gambar. Mohon coba unggah ulang.';
         image.clarity_ok = null;
         image.is_invoice = null;
       }
@@ -212,7 +226,10 @@ export class InvoicesV2Service {
   }
 
   /** Delete an invalid/wrong image (allowed during the upload step). */
-  async deleteImage(imageId: string, user: AuthedUser): Promise<{ deleted: true }> {
+  async deleteImage(
+    imageId: string,
+    user: AuthedUser,
+  ): Promise<{ deleted: true }> {
     const image = await this.imagesRepo.findOne({ where: { id: imageId } });
     if (!image) throw new NotFoundException('Image not found');
     await this.findInvoiceOrThrow(image.invoice_id, user);
@@ -220,16 +237,20 @@ export class InvoicesV2Service {
       try {
         fs.unlinkSync(image.file_path);
       } catch (e) {
-        this.logger.warn(`Failed to unlink ${image.file_path}: ${(e as Error).message}`);
+        this.logger.warn(
+          `Failed to unlink ${image.file_path}: ${(e as Error).message}`,
+        );
       }
     }
     await this.imagesRepo.delete({ id: image.id });
     return { deleted: true };
   }
 
-  private async imageSummary(
-    invoiceId: string,
-  ): Promise<{ images: InvoiceImageV2[]; all_valid: boolean; pending_count: number }> {
+  private async imageSummary(invoiceId: string): Promise<{
+    images: InvoiceImageV2[];
+    all_valid: boolean;
+    pending_count: number;
+  }> {
     const images = await this.imagesRepo.find({
       where: { invoice_id: invoiceId },
       order: { created_at: 'ASC' },
@@ -239,21 +260,28 @@ export class InvoicesV2Service {
     ).length;
     const all_valid =
       images.length > 0 &&
-      images.every((i) => i.validation_status === InvoiceImageV2ValidationStatus.VALID);
+      images.every(
+        (i) => i.validation_status === InvoiceImageV2ValidationStatus.VALID,
+      );
     return { images, all_valid, pending_count };
   }
 
   // --------------------------------------------------------------- process
 
   /** Kick OCR + classification. Requires ≥1 image and ALL images valid. */
-  async process(invoiceId: string, user: AuthedUser): Promise<{ status: InvoiceV2Status }> {
+  async process(
+    invoiceId: string,
+    user: AuthedUser,
+  ): Promise<{ status: InvoiceV2Status }> {
     const invoice = await this.findInvoiceOrThrow(invoiceId, user);
     const { images, all_valid } = await this.imageSummary(invoice.id);
     if (images.length === 0) {
       throw new BadRequestException('Tidak ada gambar untuk diproses');
     }
     if (!all_valid) {
-      throw new BadRequestException('Semua gambar harus valid sebelum diproses');
+      throw new BadRequestException(
+        'Semua gambar harus valid sebelum diproses',
+      );
     }
     await this.invoicesRepo.update(invoice.id, {
       status: InvoiceV2Status.OCR_PROCESSING,
@@ -269,8 +297,14 @@ export class InvoicesV2Service {
   async findOne(invoiceId: string, user: AuthedUser): Promise<InvoiceV2> {
     const invoice = await this.findInvoiceOrThrow(invoiceId, user);
     const [images, lineItems, area, store] = await Promise.all([
-      this.imagesRepo.find({ where: { invoice_id: invoice.id }, order: { created_at: 'ASC' } }),
-      this.lineItemsRepo.find({ where: { invoice_id: invoice.id }, order: { line_no: 'ASC' } }),
+      this.imagesRepo.find({
+        where: { invoice_id: invoice.id },
+        order: { created_at: 'ASC' },
+      }),
+      this.lineItemsRepo.find({
+        where: { invoice_id: invoice.id },
+        order: { line_no: 'ASC' },
+      }),
       this.areasRepo.findOne({ where: { id: invoice.area_id } }),
       this.storesRepo.findOne({ where: { id: invoice.store_id } }),
     ]);
@@ -280,23 +314,43 @@ export class InvoicesV2Service {
     // eager-loaded; populate them here so admin detail renders "Toko/Area".
     invoice.area = area ?? undefined;
     invoice.store = store ?? undefined;
+    // Authoritative "Status Baris" count — rows still flagged needs_review. The
+    // FE must drive its perlu-review badge off this (hide when 0), NOT re-derive
+    // from matched_sku_id (which disagrees on auto-matched low-confidence lines).
+    (invoice as InvoiceV2 & { needs_review_count: number }).needs_review_count =
+      lineItems.filter((l) => l.needs_review === true).length;
     return invoice;
   }
 
   async list(params: {
     status?: InvoiceV2Status;
+    statusIn?: InvoiceV2Status[];
     area_id?: string;
     page: number;
     limit: number;
     user: AuthedUser;
-  }): Promise<{ items: InvoiceV2[]; total: number; page: number; limit: number }> {
+  }): Promise<{
+    items: InvoiceV2[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     const qb = this.invoicesRepo
       .createQueryBuilder('inv')
       .orderBy('inv.created_at', 'DESC')
       .skip((params.page - 1) * params.limit)
       .take(params.limit);
-    if (params.status) qb.andWhere('inv.status = :status', { status: params.status });
-    if (params.area_id) qb.andWhere('inv.area_id = :areaId', { areaId: params.area_id });
+    // A status SET (Pending = every non-done state) takes precedence over an
+    // exact single status, so the Antrian Pending/Selesai/Semua filter works.
+    if (params.statusIn && params.statusIn.length > 0) {
+      qb.andWhere('inv.status IN (:...statuses)', {
+        statuses: params.statusIn,
+      });
+    } else if (params.status) {
+      qb.andWhere('inv.status = :status', { status: params.status });
+    }
+    if (params.area_id)
+      qb.andWhere('inv.area_id = :areaId', { areaId: params.area_id });
     // taro_agent → scope to own uploads.
     if (params.user.role === 'taro_agent') {
       qb.andWhere('inv.uploaded_by = :uid', { uid: params.user.id });
@@ -319,26 +373,41 @@ export class InvoicesV2Service {
     const storeIds = [...new Set(items.map((i) => i.store_id))];
     const invoiceIds = items.map((i) => i.id);
 
-    const [areas, stores, lineCounts, firstImages] = await Promise.all([
-      this.areasRepo.findBy({ id: In(areaIds) }),
-      this.storesRepo.findBy({ id: In(storeIds) }),
-      this.lineItemsRepo
-        .createQueryBuilder('li')
-        .select('li.invoice_id', 'invoice_id')
-        .addSelect('COUNT(*)', 'count')
-        .where('li.invoice_id IN (:...ids)', { ids: invoiceIds })
-        .groupBy('li.invoice_id')
-        .getRawMany<{ invoice_id: string; count: string }>(),
-      this.imagesRepo.find({
-        where: { invoice_id: In(invoiceIds) },
-        order: { created_at: 'ASC' },
-      }),
-    ]);
+    const [areas, stores, lineCounts, reviewCounts, firstImages] =
+      await Promise.all([
+        this.areasRepo.findBy({ id: In(areaIds) }),
+        this.storesRepo.findBy({ id: In(storeIds) }),
+        this.lineItemsRepo
+          .createQueryBuilder('li')
+          .select('li.invoice_id', 'invoice_id')
+          .addSelect('COUNT(*)', 'count')
+          .where('li.invoice_id IN (:...ids)', { ids: invoiceIds })
+          .groupBy('li.invoice_id')
+          .getRawMany<{ invoice_id: string; count: string }>(),
+        // Authoritative per-invoice count of rows still needing review — same
+        // source of truth as the invoice status (NEEDS_REVIEW ⟺ count > 0). Lets
+        // the FE drive the "Perlu Review" badge off a number, not re-derivation.
+        this.lineItemsRepo
+          .createQueryBuilder('li')
+          .select('li.invoice_id', 'invoice_id')
+          .addSelect('COUNT(*)', 'count')
+          .where('li.invoice_id IN (:...ids)', { ids: invoiceIds })
+          .andWhere('li.needs_review = true')
+          .groupBy('li.invoice_id')
+          .getRawMany<{ invoice_id: string; count: string }>(),
+        this.imagesRepo.find({
+          where: { invoice_id: In(invoiceIds) },
+          order: { created_at: 'ASC' },
+        }),
+      ]);
 
     const areaById = new Map<string, AreaV2>(areas.map((a) => [a.id, a]));
     const storeById = new Map<string, StoreV2>(stores.map((s) => [s.id, s]));
     const countByInvoice = new Map(
       lineCounts.map((r) => [r.invoice_id, parseInt(r.count, 10) || 0]),
+    );
+    const reviewByInvoice = new Map(
+      reviewCounts.map((r) => [r.invoice_id, parseInt(r.count, 10) || 0]),
     );
     const thumbByInvoice = new Map<string, string>();
     for (const img of firstImages) {
@@ -354,6 +423,8 @@ export class InvoicesV2Service {
       // the entity persistence layer.
       (inv as InvoiceV2 & { line_count: number }).line_count =
         countByInvoice.get(inv.id) ?? 0;
+      (inv as InvoiceV2 & { needs_review_count: number }).needs_review_count =
+        reviewByInvoice.get(inv.id) ?? 0;
       (inv as InvoiceV2 & { thumb_image_id: string | null }).thumb_image_id =
         thumbByInvoice.get(inv.id) ?? null;
     }
@@ -375,7 +446,9 @@ export class InvoicesV2Service {
     invoice_status: InvoiceV2Status;
     invoice_status_label: string;
   }> {
-    const line = await this.lineItemsRepo.findOne({ where: { id: lineItemId } });
+    const line = await this.lineItemsRepo.findOne({
+      where: { id: lineItemId },
+    });
     if (!line) throw new NotFoundException('Line item not found');
     const invoice = await this.findInvoiceOrThrow(line.invoice_id, user);
 
@@ -412,7 +485,9 @@ export class InvoicesV2Service {
       line.is_competitor = false;
       line.needs_review = skuId ? false : true;
     } else if (hasBrand) {
-      const brand = await this.brandsRepo.findOne({ where: { id: dto.brand_id! } });
+      const brand = await this.brandsRepo.findOne({
+        where: { id: dto.brand_id! },
+      });
       if (!brand) throw new BadRequestException('Unknown brand_id');
       line.brand_id = brand.id;
       line.brand_name = brand.name;
@@ -445,7 +520,9 @@ export class InvoicesV2Service {
    * processing/failed states. DONE when no line needs review, else NEEDS_REVIEW.
    */
   async recomputeInvoiceStatus(invoiceId: string): Promise<InvoiceV2Status> {
-    const invoice = await this.invoicesRepo.findOne({ where: { id: invoiceId } });
+    const invoice = await this.invoicesRepo.findOne({
+      where: { id: invoiceId },
+    });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (
       invoice.status !== InvoiceV2Status.NEEDS_REVIEW &&
@@ -453,10 +530,14 @@ export class InvoicesV2Service {
     ) {
       return invoice.status;
     }
-    const lines = await this.lineItemsRepo.find({ where: { invoice_id: invoiceId } });
+    const lines = await this.lineItemsRepo.find({
+      where: { invoice_id: invoiceId },
+    });
     const anyNeedsReview = lines.some((l) => l.needs_review === true);
     const next =
-      lines.length > 0 && anyNeedsReview ? InvoiceV2Status.NEEDS_REVIEW : InvoiceV2Status.DONE;
+      lines.length > 0 && anyNeedsReview
+        ? InvoiceV2Status.NEEDS_REVIEW
+        : InvoiceV2Status.DONE;
     if (next !== invoice.status) {
       await this.invoicesRepo.update(invoiceId, { status: next });
     }
@@ -496,7 +577,9 @@ export class InvoicesV2Service {
     invoiceId: string,
     user: AuthedUser,
   ): Promise<InvoiceV2> {
-    const invoice = await this.invoicesRepo.findOne({ where: { id: invoiceId } });
+    const invoice = await this.invoicesRepo.findOne({
+      where: { id: invoiceId },
+    });
     if (!invoice) throw new NotFoundException('Invoice not found');
     // taro_agent → can only touch their own uploads (probing-resistant 404).
     if (user.role === 'taro_agent' && invoice.uploaded_by !== user.id) {

@@ -40,6 +40,30 @@ function getContentType(filePath: string): string {
 }
 
 /**
+ * Antrian Invoice queue filter. Exactly three options:
+ *   - `pending` → every non-done state (validating, ocr_processing, needs_review,
+ *                 failed) — i.e. anything still in the pipeline / awaiting action.
+ *   - `selesai` → done only.
+ *   - `semua`   → no filter (undefined).
+ * Returns the status SET for `pending`/`selesai`, or undefined for `semua`/unknown.
+ */
+function resolveQueueFilter(filter?: string): InvoiceV2Status[] | undefined {
+  switch ((filter ?? '').trim().toLowerCase()) {
+    case 'pending':
+      return [
+        InvoiceV2Status.VALIDATING,
+        InvoiceV2Status.OCR_PROCESSING,
+        InvoiceV2Status.NEEDS_REVIEW,
+        InvoiceV2Status.FAILED,
+      ];
+    case 'selesai':
+      return [InvoiceV2Status.DONE];
+    default:
+      return undefined;
+  }
+}
+
+/**
  * TACO v2 invoice spine — PWA upload + admin read. Mounted under `/api/v2`
  * (global `api` prefix + `v2` base). taro_agent is scoped to their own uploads
  * at the service layer; admin/manager have full access.
@@ -92,6 +116,7 @@ export class InvoicesV2Controller {
   list(
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: UserRole,
+    @Query('filter') filter?: string,
     @Query('status') status?: string,
     @Query('area_id') areaId?: string,
     @Query('page') page?: string,
@@ -99,13 +124,20 @@ export class InvoicesV2Controller {
   ) {
     const p = Math.max(1, parseInt(page ?? '1', 10) || 1);
     const l = Math.min(100, Math.max(1, parseInt(limit ?? '20', 10) || 20));
+    // Antrian filter (Pending/Selesai/Semua) maps to a status SET and takes
+    // precedence; the legacy exact `status` param still works when no filter.
+    const statusIn = resolveQueueFilter(filter);
     const st =
-      status && Object.values(InvoiceV2Status).includes(status as InvoiceV2Status)
+      !statusIn &&
+      status &&
+      Object.values(InvoiceV2Status).includes(status as InvoiceV2Status)
         ? (status as InvoiceV2Status)
         : undefined;
-    const area = typeof areaId === 'string' && areaId.trim() ? areaId.trim() : undefined;
+    const area =
+      typeof areaId === 'string' && areaId.trim() ? areaId.trim() : undefined;
     return this.invoices.list({
       status: st,
+      statusIn,
       area_id: area,
       page: p,
       limit: l,
@@ -138,7 +170,11 @@ export class InvoicesV2Controller {
     @CurrentUser('email') email: string,
     @CurrentUser('role') role: UserRole,
   ): Promise<{ url: string }> {
-    const url = await this.invoices.signImageUrl(id, { id: userId, email, role });
+    const url = await this.invoices.signImageUrl(id, {
+      id: userId,
+      email,
+      role,
+    });
     return { url };
   }
 
