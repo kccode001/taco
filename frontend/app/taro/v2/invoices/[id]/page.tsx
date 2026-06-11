@@ -75,6 +75,12 @@ interface LineDisplay {
 
 function lineDisplay(li: InvoiceLineItemV2): LineDisplay {
   const family = classFamily(li.classification);
+  // Authoritative: the BE needs_review flag takes priority. A line can have a
+  // matched_sku_id AND still need human review (e.g. taco_low_verify where the
+  // auto-match confidence is low). Never let matched_sku_id mask a needs_review flag.
+  if (lineNeedsReview(li)) {
+    return { tone: "warn", badge: "Perlu Dicek", title: CLASS_LABEL[li.classification], family, needsHuman: true };
+  }
   if (li.matched_sku_id) {
     return { tone: "ok", badge: "TACO", title: li.matched_sku?.name ?? li.matched_sku?.code ?? "Produk TACO", family, needsHuman: false };
   }
@@ -83,10 +89,6 @@ function lineDisplay(li: InvoiceLineItemV2): LineDisplay {
       return { tone: "ok", badge: "Kompetitor", title: li.brand_name ? `Kompetitor · ${li.brand_name}` : "Produk kompetitor", family, needsHuman: false };
     }
     return { tone: "ok", badge: "Non-TACO", title: "Bukan produk TACO (tidak diketahui)", family, needsHuman: false };
-  }
-  // Authoritative: follow the BE needs_review flag, not the classification bucket.
-  if (lineNeedsReview(li)) {
-    return { tone: "warn", badge: "Perlu Dicek", title: CLASS_LABEL[li.classification], family, needsHuman: true };
   }
   return { tone: family === "taco" ? "ok" : "neutral", badge: family === "taco" ? "TACO (auto)" : "Bukan TACO (auto)", title: CLASS_LABEL[li.classification], family, needsHuman: false };
 }

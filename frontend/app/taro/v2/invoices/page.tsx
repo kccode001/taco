@@ -41,12 +41,14 @@ const STATUS_META: Record<InvoiceV2Status, { label: string; cls: string }> = {
 };
 
 function statusChip(status: InvoiceV2Status, needsReviewCount?: number) {
-  const m = STATUS_META[status] ?? STATUS_META.needs_review;
-  // "Perlu Review" carries the authoritative row count (AC-1): show the number
-  // when ≥1. The BE status is itself driven by this count (needs_review ⟺ >0),
-  // so we trust it rather than re-deriving from line fields.
+  // Drive display off the authoritative count: if the BE exposes needs_review_count=0
+  // the invoice's lines are all resolved — show as Selesai regardless of the status
+  // field, which may lag behind the count after a resolve cycle.
+  const displayStatus =
+    status === "needs_review" && needsReviewCount === 0 ? "done" : status;
+  const m = STATUS_META[displayStatus] ?? STATUS_META.needs_review;
   const label =
-    status === "needs_review" && needsReviewCount && needsReviewCount > 0
+    displayStatus === "needs_review" && needsReviewCount && needsReviewCount > 0
       ? `${m.label} · ${needsReviewCount}`
       : m.label;
   return (
@@ -270,7 +272,7 @@ export default function AdminV2InvoiceQueuePage() {
                         href={`/taro/v2/invoices/${inv.id}`}
                         className="text-[13px] font-medium px-3 py-1.5 rounded-lg border border-taco-border bg-white text-taco-text hover:bg-taco-page"
                       >
-                        {inv.status === "needs_review" ? "Resolusi" : "Lihat"}
+                        {inv.status === "needs_review" && (inv.needs_review_count ?? 0) > 0 ? "Resolusi" : "Lihat"}
                       </Link>
                     </div>
                   </td>
