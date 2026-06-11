@@ -215,6 +215,24 @@ export default function LoginPage() {
                 <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-page text-taco-sub text-[12px] font-bold border border-taco-border">PWA</span>
                 <span>Taro Sales Agent (PWA)</span>
               </button>
+              <button
+                type="button"
+                onClick={() => demoLogin("admin@taco.id", "/taro/v2/dashboard")}
+                disabled={loading}
+                className="w-full h-[52px] bg-white border border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-text transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-page text-taco-sub text-[12px] font-bold border border-taco-border">V2</span>
+                <span>V2 Dashboard →</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => demoLogin("taro1@taco.id", "/taro-app/v2/upload")}
+                disabled={loading}
+                className="w-full h-[52px] bg-white border border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-text transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-page text-taco-sub text-[12px] font-bold border border-taco-border">V2</span>
+                <span>V2 Upload (PWA) →</span>
+              </button>
             </div>
             <p className="text-[11px] text-taco-muted text-center mt-3">
               Manual: gunakan <code className="text-taco-text">rep@taco.id</code> · <code className="text-taco-text">manager@taco.id</code> · <code className="text-taco-text">admin@taco.id</code> · <code className="text-taco-text">taro1@taco.id</code> dengan password <code className="text-taco-text">password123</code>
