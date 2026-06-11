@@ -28,6 +28,7 @@ import {
   SpinnerIcon,
   AlertTriangleIcon,
   ChevronLeftIcon,
+  ChevronRightIcon,
   ExpandIcon,
 } from "../../_components/icons";
 
@@ -70,6 +71,8 @@ export default function TaroV2UploadPage() {
   const [areas, setAreas] = useState<AreaV2[]>([]);
   const [areasLoading, setAreasLoading] = useState(true);
   const [selectedArea, setSelectedArea] = useState<AreaV2 | null>(null);
+  const [areaPickerOpen, setAreaPickerOpen] = useState(false);
+  const [areaQuery, setAreaQuery] = useState("");
   const [stores, setStores] = useState<StoreV2[]>([]);
   const [storesLoading, setStoresLoading] = useState(false);
   const [storeQuery, setStoreQuery] = useState("");
@@ -142,6 +145,16 @@ export default function TaroV2UploadPage() {
       thumbs.forEach((url) => URL.revokeObjectURL(url));
     };
   }, []);
+
+  const filteredAreas = useMemo(() => {
+    const q = areaQuery.trim().toLowerCase();
+    if (!q) return areas;
+    return areas.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        (a.code ?? "").toLowerCase().includes(q)
+    );
+  }, [areas, areaQuery]);
 
   const filteredStores = useMemo(() => {
     const q = storeQuery.trim().toLowerCase();
@@ -459,55 +472,56 @@ export default function TaroV2UploadPage() {
             <label className="block text-[13px] font-medium text-taco-sub mb-1.5">
               Area <span className="text-taco-error">*</span>
             </label>
-            {areasLoading ? (
-              <div className="text-[13px] text-taco-muted py-3">Memuat area…</div>
-            ) : areas.length === 0 ? (
-              <div className="text-[13px] text-taco-muted bg-white border border-taco-border rounded-xl px-4 py-3">
-                Belum ada area. Hubungi admin untuk menambahkan area.
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {areas.map((a) => {
-                  const sel = selectedArea?.id === a.id;
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedArea(a);
-                        setSelectedStore(null);
-                        setStoreQuery("");
-                      }}
-                      className={[
-                        "w-full min-h-[52px] rounded-xl border px-4 flex items-center gap-2.5 text-left transition-colors",
-                        sel
-                          ? "border-taco-text bg-taco-accent-tint"
-                          : "border-taco-border bg-white",
-                      ].join(" ")}
-                    >
-                      <span className="text-taco-sub shrink-0">
-                        <PinIcon size={18} />
+            <button
+              type="button"
+              onClick={() => {
+                setAreaQuery("");
+                setAreaPickerOpen(true);
+              }}
+              disabled={areasLoading || areas.length === 0}
+              className={[
+                "w-full min-h-[52px] rounded-xl border px-4 flex items-center gap-2.5 text-left transition-colors",
+                selectedArea
+                  ? "border-taco-text bg-taco-accent-tint"
+                  : "border-taco-border bg-white",
+                (areasLoading || areas.length === 0) ? "opacity-60" : "",
+              ].join(" ")}
+            >
+              <span className="text-taco-sub shrink-0">
+                <PinIcon size={18} />
+              </span>
+              <span className="flex-1 min-w-0">
+                {areasLoading ? (
+                  <span className="text-[15px] text-taco-muted">Memuat area…</span>
+                ) : areas.length === 0 ? (
+                  <span className="text-[15px] text-taco-muted">
+                    Belum ada area — hubungi admin.
+                  </span>
+                ) : selectedArea ? (
+                  <>
+                    <span className="block text-[15px] font-medium text-taco-text truncate">
+                      {selectedArea.name}
+                    </span>
+                    {selectedArea.code && (
+                      <span className="block text-[11px] text-taco-muted">
+                        {selectedArea.code}
                       </span>
-                      <span className="flex-1 min-w-0">
-                        <span className="block text-[15px] font-medium text-taco-text truncate">
-                          {a.name}
-                        </span>
-                        {a.code && (
-                          <span className="block text-[11px] text-taco-muted">
-                            {a.code}
-                          </span>
-                        )}
-                      </span>
-                      {sel && (
-                        <span className="text-taco-success shrink-0">
-                          <CheckIcon size={18} />
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[15px] text-taco-muted">Pilih area…</span>
+                )}
+              </span>
+              {selectedArea ? (
+                <span className="text-taco-success shrink-0">
+                  <CheckIcon size={18} />
+                </span>
+              ) : (
+                <span className="text-taco-muted shrink-0 rotate-90 inline-flex">
+                  <ChevronRightIcon size={18} />
+                </span>
+              )}
+            </button>
 
             {/* Store autocomplete (free-type-new) */}
             <div className="mt-5">
@@ -936,6 +950,92 @@ export default function TaroV2UploadPage() {
           </div>
         )}
       </div>
+
+      {/* ── Area picker bottom sheet ─────────────────────────────────────── */}
+      {areaPickerOpen && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setAreaPickerOpen(false)}
+          />
+          <div className="relative z-10 bg-white rounded-t-2xl max-h-[75vh] flex flex-col">
+            <div className="flex items-center justify-between px-4 pt-4 pb-2 border-b border-taco-divider shrink-0">
+              <span className="text-[15px] font-semibold text-taco-text">
+                Pilih Area
+              </span>
+              <button
+                type="button"
+                onClick={() => setAreaPickerOpen(false)}
+                className="w-8 h-8 flex items-center justify-center text-taco-muted rounded-lg active:bg-taco-page"
+              >
+                <CloseIcon size={18} />
+              </button>
+            </div>
+            <div className="px-4 py-3 border-b border-taco-divider shrink-0">
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-taco-muted pointer-events-none">
+                  <SearchIcon size={16} />
+                </span>
+                <input
+                  autoFocus
+                  type="text"
+                  inputMode="search"
+                  placeholder="Cari nama atau kode area…"
+                  value={areaQuery}
+                  onChange={(e) => setAreaQuery(e.target.value)}
+                  className="w-full h-[44px] border border-taco-border rounded-xl pl-9 pr-4 text-[15px] text-taco-text bg-taco-page outline-none focus:border-taco-text"
+                />
+              </div>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {filteredAreas.length === 0 ? (
+                <div className="px-4 py-5 text-[13px] text-taco-muted text-center">
+                  Tidak ada area yang cocok.
+                </div>
+              ) : (
+                filteredAreas.map((a) => {
+                  const sel = selectedArea?.id === a.id;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedArea(a);
+                        setSelectedStore(null);
+                        setStoreQuery("");
+                        setAreaPickerOpen(false);
+                      }}
+                      className={[
+                        "w-full min-h-[56px] px-4 flex items-center gap-3 text-left border-b border-taco-divider last:border-0",
+                        sel ? "bg-taco-accent-tint" : "active:bg-taco-page",
+                      ].join(" ")}
+                    >
+                      <span className="text-taco-sub shrink-0">
+                        <PinIcon size={18} />
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-[15px] font-medium text-taco-text truncate">
+                          {a.name}
+                        </span>
+                        {a.code && (
+                          <span className="block text-[11px] text-taco-muted">
+                            {a.code}
+                          </span>
+                        )}
+                      </span>
+                      {sel && (
+                        <span className="text-taco-success shrink-0">
+                          <CheckIcon size={18} />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {preview && (
         <ImageLightboxV2 src={preview} onClose={() => setPreview(null)} />
