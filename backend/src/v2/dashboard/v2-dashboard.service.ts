@@ -151,6 +151,25 @@ export class V2DashboardService {
     return 0;
   }
 
+  /**
+   * Format an instant as a naive local-time string ("YYYY-MM-DD HH:mm:ss") for
+   * the window-bound parameters.
+   *
+   * `inv.created_at` is `timestamp without time zone` and the ingest path writes
+   * local wall-clock into it. Comparing it against a `toISOString()` (UTC) bound
+   * shifts the window by the server's UTC offset, so the `< to` upper bound lands
+   * `offset` hours in the past and silently drops every invoice created within
+   * that window — which empties the whole dashboard. Formatting the bounds in the
+   * same local frame the column is stored in keeps the comparison honest.
+   */
+  private toLocalNaive(d: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return (
+      `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+      `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+    );
+  }
+
   /** Apply the period window + optional area filter to a line-item query. */
   private applyScope<T extends import('typeorm').ObjectLiteral>(
     qb: SelectQueryBuilder<T>,
@@ -159,10 +178,10 @@ export class V2DashboardService {
   ): SelectQueryBuilder<T> {
     if (range.from) {
       qb.andWhere('inv.created_at >= :from', {
-        from: range.from.toISOString(),
+        from: this.toLocalNaive(range.from),
       });
     }
-    qb.andWhere('inv.created_at < :to', { to: range.to.toISOString() });
+    qb.andWhere('inv.created_at < :to', { to: this.toLocalNaive(range.to) });
     if (area) qb.andWhere('inv.area_id = :area', { area });
     return qb;
   }
@@ -177,7 +196,10 @@ export class V2DashboardService {
       this.lineItems
         .createQueryBuilder('li')
         .innerJoin('li.invoice', 'inv')
-        .leftJoin('inv.area', 'area')
+        // Area names live in the consolidated `regions` table (the area master),
+        // joined raw by area_id so this does not depend on the InvoiceV2.area
+        // entity relation — same source decorateListItems() resolves names from.
+        .leftJoin('regions', 'area', 'area.id = inv.area_id')
         .select('inv.area_id', 'area_id')
         .addSelect('MAX(area.name)', 'area_name')
         .addSelect('COUNT(DISTINCT inv.id)', 'invoice_count')
@@ -280,7 +302,7 @@ export class V2DashboardService {
       this.lineItems
         .createQueryBuilder('li')
         .innerJoin('li.invoice', 'inv')
-        .leftJoin('inv.area', 'area')
+        .leftJoin('regions', 'area', 'area.id = inv.area_id')
         .leftJoin('li.matched_sku', 'sku')
         .select('inv.area_id', 'area_id')
         .addSelect('MAX(area.name)', 'area_name')
