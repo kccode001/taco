@@ -11,10 +11,12 @@ import {
   validateV2Images,
   deleteV2Image,
   processV2Invoice,
+  getV2ImageUrl,
   type InvoiceImageV2,
 } from "@/lib/v2/invoices";
 import { TopBar } from "../../_components/TopBar";
 import { useTaroGuard } from "../../_components/useTaroGuard";
+import { ImageLightboxV2 } from "@/components/pwa-v2/ImageLightboxV2";
 import {
   CameraIcon,
   CheckIcon,
@@ -26,6 +28,7 @@ import {
   SpinnerIcon,
   AlertTriangleIcon,
   ChevronLeftIcon,
+  ExpandIcon,
 } from "../../_components/icons";
 
 type Step = 1 | 2 | 3 | 4;
@@ -84,6 +87,10 @@ export default function TaroV2UploadPage() {
 
   const [busy, setBusy] = useState(false); // upload/validate/process in flight
   const validateTimer = useRef<number | undefined>(undefined);
+
+  // Full-screen preview of an uploaded photo (feedback #4 — rep can preview the
+  // photo[s] they uploaded before processing).
+  const [preview, setPreview] = useState<string | null>(null);
 
   // ── Load areas on mount ──────────────────────────────────────────────────
   useEffect(() => {
@@ -298,6 +305,17 @@ export default function TaroV2UploadPage() {
     }
   };
 
+  // Open a full-screen preview for an uploaded image. Prefer the local object
+  // URL (instant, no network); fall back to a signed server URL on reload.
+  const openImagePreview = async (img: ImageCard) => {
+    if (img._thumb) {
+      setPreview(img._thumb);
+      return;
+    }
+    const url = (await getV2ImageUrl(img.id)) ?? img.url ?? null;
+    if (url) setPreview(url);
+  };
+
   const handleDeleteImage = async (imageId: string) => {
     setBusy(true);
     setError(null);
@@ -332,10 +350,11 @@ export default function TaroV2UploadPage() {
     try {
       await processV2Invoice(invoiceId);
       if (validateTimer.current) window.clearTimeout(validateTimer.current);
-      setStep(4);
+      // Hand off to the detail view, which renders ALL extracted rows and shows
+      // a spinner while OCR finishes (feedback #3). No bare success screen.
+      router.push(`/taro-app/v2/invoice/${invoiceId}`);
     } catch (err) {
       setError(`Gagal memproses: ${extractErrorMessage(err)}`);
-    } finally {
       setBusy(false);
     }
   };
@@ -373,7 +392,7 @@ export default function TaroV2UploadPage() {
             step < 4 ? (
               <button
                 type="button"
-                onClick={() => router.push("/taro-app/home")}
+                onClick={() => router.push("/taro-app/v2/home")}
                 className="text-[13px] font-medium text-taco-sub px-2 py-1"
               >
                 Batal
@@ -731,20 +750,30 @@ export default function TaroV2UploadPage() {
                       invalid ? "border-red-200" : "border-taco-border",
                     ].join(" ")}
                   >
-                    <div className="w-16 h-16 rounded-lg overflow-hidden bg-taco-page border border-taco-border shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openImagePreview(img)}
+                      aria-label="Lihat foto"
+                      className="relative w-16 h-16 rounded-lg overflow-hidden bg-taco-page border border-taco-border shrink-0 active:opacity-80"
+                    >
                       {img._thumb || img.url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={img._thumb ?? img.url ?? ""}
-                          alt={img.file_name ?? "invoice"}
-                          className="w-full h-full object-cover"
-                        />
+                        <>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={img._thumb ?? img.url ?? ""}
+                            alt={img.file_name ?? "invoice"}
+                            className="w-full h-full object-cover"
+                          />
+                          <span className="absolute bottom-0.5 right-0.5 w-5 h-5 rounded-md bg-black/55 text-white flex items-center justify-center pointer-events-none">
+                            <ExpandIcon size={12} />
+                          </span>
+                        </>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center text-taco-muted">
                           <StoreIcon size={20} />
                         </div>
                       )}
-                    </div>
+                    </button>
                     <div className="flex-1 min-w-0 flex flex-col justify-center">
                       {valid && (
                         <div className="flex items-center gap-1.5 text-taco-success text-[13px] font-medium">
@@ -898,7 +927,7 @@ export default function TaroV2UploadPage() {
               </button>
               <button
                 type="button"
-                onClick={() => router.push("/taro-app/home")}
+                onClick={() => router.push("/taro-app/v2/home")}
                 className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border flex items-center justify-center gap-1.5"
               >
                 <ChevronLeftIcon size={16} /> Kembali ke Beranda
@@ -907,6 +936,10 @@ export default function TaroV2UploadPage() {
           </div>
         )}
       </div>
+
+      {preview && (
+        <ImageLightboxV2 src={preview} onClose={() => setPreview(null)} />
+      )}
     </div>
   );
 }

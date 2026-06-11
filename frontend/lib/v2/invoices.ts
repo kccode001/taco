@@ -71,6 +71,8 @@ export interface InvoiceLineItemV2 {
   is_competitor?: boolean;
   /** Captured when the system's TACO/not-TACO call was wrong (feeds rec engine). */
   mismatch_reason?: string | null;
+  /** BE-authoritative resolved flag — false once a line is confirmed/mapped. */
+  needs_review?: boolean;
   quantity?: string | number;
   unit?: string | null;
   unit_price?: string | number;
@@ -89,9 +91,61 @@ export interface InvoiceV2 {
   uploaded_by?: string | null;
   uploaded_by_name?: string | null;
   status: InvoiceV2Status;
+  supplier_name?: string | null;
+  invoice_date?: string | null;
+  total_amount?: string | number | null;
+  notes?: string | null;
+  error_message?: string | null;
+  progress_percent?: number;
   created_at?: string;
+  updated_at?: string;
   images?: InvoiceImageV2[];
   line_items?: InvoiceLineItemV2[];
+  /** List-only display fields the BE decorates (see InvoicesV2Service.list). */
+  line_count?: number;
+  thumb_image_id?: string | null;
+}
+
+// ── PWA status presentation (shared by home/history/detail screens) ────────
+/** Indonesian status label, mirroring the BE INVOICE_V2_STATUS_LABELS map. */
+export function v2StatusLabel(status: InvoiceV2Status): string {
+  switch (status) {
+    case "validating":
+      return "Memvalidasi";
+    case "ocr_processing":
+      return "Memproses";
+    case "needs_review":
+      return "Perlu Review";
+    case "done":
+      return "Selesai";
+    case "failed":
+      return "Gagal";
+    default:
+      return "Antrian";
+  }
+}
+
+export function v2StatusTone(
+  status: InvoiceV2Status
+): "ok" | "warn" | "err" | "info" | "muted" {
+  switch (status) {
+    case "done":
+      return "ok";
+    case "needs_review":
+      return "warn";
+    case "failed":
+      return "err";
+    case "validating":
+    case "ocr_processing":
+      return "info";
+    default:
+      return "muted";
+  }
+}
+
+/** True while the OCR/validation pipeline is still running (drives polling). */
+export function v2IsProcessing(status: InvoiceV2Status): boolean {
+  return status === "validating" || status === "ocr_processing";
 }
 
 // ── Upload-flow helpers (PWA) ──────────────────────────────────────────────
@@ -211,7 +265,17 @@ export async function getV2ImageUrl(imageId: string): Promise<string | null> {
       `/v2/invoice-images/${imageId}/image-url`
     );
     const body = res.data as { url?: string; data?: { url?: string } };
-    return body?.url ?? body?.data?.url ?? null;
+    const raw = body?.url ?? body?.data?.url ?? null;
+    if (!raw) return null;
+    if (raw.startsWith("http")) return raw;
+    // The BE returns a server-relative URL ("/api/v2/..."). The API lives on a
+    // different origin than the FE (axios baseURL is absolute), so an <img src>
+    // would otherwise resolve "/api/..." against the FE origin and 404. Resolve
+    // it against the API origin, mirroring v1's getInvoiceImageUrl.
+    const apiBase =
+      process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
+    const apiOrigin = apiBase.replace(/\/api\/?$/, "");
+    return `${apiOrigin}${raw}`;
   } catch {
     return null;
   }

@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectQueue } from '@nestjs/bull';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import type { Queue } from 'bull';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -302,7 +302,61 @@ export class InvoicesV2Service {
       qb.andWhere('inv.uploaded_by = :uid', { uid: params.user.id });
     }
     const [items, total] = await qb.getManyAndCount();
+    await this.decorateListItems(items);
     return { items, total, page: params.page, limit: params.limit };
+  }
+
+  /**
+   * Attach the display fields the PWA list needs (Area/Store names, the OCR line
+   * count, and a thumbnail image id) onto the bare invoice rows. Batched (one
+   * query per relation, keyed by the page's ids) so the list stays O(1) queries
+   * regardless of page size — no N+1. Additive: existing fields are untouched, so
+   * the admin resolve queue keeps reading the same shape.
+   */
+  private async decorateListItems(items: InvoiceV2[]): Promise<void> {
+    if (items.length === 0) return;
+    const areaIds = [...new Set(items.map((i) => i.area_id))];
+    const storeIds = [...new Set(items.map((i) => i.store_id))];
+    const invoiceIds = items.map((i) => i.id);
+
+    const [areas, stores, lineCounts, firstImages] = await Promise.all([
+      this.areasRepo.findBy({ id: In(areaIds) }),
+      this.storesRepo.findBy({ id: In(storeIds) }),
+      this.lineItemsRepo
+        .createQueryBuilder('li')
+        .select('li.invoice_id', 'invoice_id')
+        .addSelect('COUNT(*)', 'count')
+        .where('li.invoice_id IN (:...ids)', { ids: invoiceIds })
+        .groupBy('li.invoice_id')
+        .getRawMany<{ invoice_id: string; count: string }>(),
+      this.imagesRepo.find({
+        where: { invoice_id: In(invoiceIds) },
+        order: { created_at: 'ASC' },
+      }),
+    ]);
+
+    const areaById = new Map<string, AreaV2>(areas.map((a) => [a.id, a]));
+    const storeById = new Map<string, StoreV2>(stores.map((s) => [s.id, s]));
+    const countByInvoice = new Map(
+      lineCounts.map((r) => [r.invoice_id, parseInt(r.count, 10) || 0]),
+    );
+    const thumbByInvoice = new Map<string, string>();
+    for (const img of firstImages) {
+      if (!thumbByInvoice.has(img.invoice_id)) {
+        thumbByInvoice.set(img.invoice_id, img.id);
+      }
+    }
+
+    for (const inv of items) {
+      inv.area = areaById.get(inv.area_id) ?? undefined;
+      inv.store = storeById.get(inv.store_id) ?? undefined;
+      // Non-column display fields — serialized on the JSON response, ignored by
+      // the entity persistence layer.
+      (inv as InvoiceV2 & { line_count: number }).line_count =
+        countByInvoice.get(inv.id) ?? 0;
+      (inv as InvoiceV2 & { thumb_image_id: string | null }).thumb_image_id =
+        thumbByInvoice.get(inv.id) ?? null;
+    }
   }
 
   // ------------------------------------------------------------- resolve
