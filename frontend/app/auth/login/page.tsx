@@ -226,12 +226,12 @@ export default function LoginPage() {
               </button>
               <button
                 type="button"
-                onClick={() => demoLogin("taro1@taco.id", "/taro-app/v2/upload")}
+                onClick={() => demoLogin("taro1@taco.id", "/taro-app/v2/home")}
                 disabled={loading}
                 className="w-full h-[52px] bg-white border border-taco-border rounded-xl text-[15px] font-semibold text-taco-text hover:border-taco-text transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-taco-page text-taco-sub text-[12px] font-bold border border-taco-border">V2</span>
-                <span>V2 Upload (PWA) →</span>
+                <span>V2 Home (PWA) →</span>
               </button>
             </div>
             <p className="text-[11px] text-taco-muted text-center mt-3">
