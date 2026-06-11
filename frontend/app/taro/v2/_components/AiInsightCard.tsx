@@ -3,107 +3,85 @@
 import { SparkleIcon } from "../../../admin/_components/icons";
 import type { AiInsightV2 } from "@/lib/v2/types";
 
-/** Single AI-insight card — renders Mortar's `/dashboard/ai-insight` LLM output
- *  over the selected period. Distinctive (subtle indigo wash + sparkle) but
- *  uses NO orange — that token is reserved for primary CTAs. */
+/** Compact dashboard entry point for the AI insight.
+ *  Shows latest-generated date + "Lihat Insight" button when insight exists.
+ *  Empty state shows a Generate CTA. Clicking "Lihat Insight" opens the modal. */
 export function AiInsightCard({
   insight,
   loading,
   period,
   onRegenerate,
   regenerating,
+  onViewInsight,
 }: {
   insight: AiInsightV2 | null;
   loading: boolean;
   period: string;
   onRegenerate?: () => void;
   regenerating?: boolean;
+  onViewInsight?: () => void;
 }) {
+  const formattedDate = insight?.generated_at
+    ? new Date(insight.generated_at).toLocaleString("id-ID", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+
   return (
     <div className="relative overflow-hidden rounded-xl border border-[#D9DEEC] bg-gradient-to-br from-[#F5F7FF] to-white p-5">
-      <div className="flex items-start justify-between gap-4 mb-3">
-        <div className="flex items-center gap-2.5">
-          <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-[#4F46E5]/10 text-[#4F46E5]">
-            <SparkleIcon size={16} />
+      <div className="flex items-center justify-between gap-4">
+        {/* Left: icon + label + date */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-[#4F46E5]/10 text-[#4F46E5] flex-shrink-0">
+            <SparkleIcon size={17} />
           </span>
-          <div>
+          <div className="min-w-0">
             <div className="text-[14px] font-semibold text-taco-text leading-tight">
-              AI Insight
+              AI Insight · Permintaan Pasar
             </div>
             <div className="text-[11px] text-taco-muted">
               Periode {period} · ditenagai Claude
             </div>
-            {insight?.generated_at && (
-              <div className="text-[10px] text-taco-muted mt-0.5">
-                Diperbarui: {new Date(insight.generated_at).toLocaleString("id-ID", {
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
+            {loading ? (
+              <div className="mt-1 h-3 bg-[#E6EAF5] rounded w-40 animate-pulse" />
+            ) : formattedDate ? (
+              <div className="text-[11px] text-taco-muted mt-0.5">
+                Diperbarui: {formattedDate}
+              </div>
+            ) : (
+              <div className="text-[11px] text-taco-muted mt-0.5">
+                Belum ada insight untuk periode ini
               </div>
             )}
           </div>
         </div>
-        {onRegenerate && (
-          <button
-            onClick={onRegenerate}
-            disabled={regenerating || loading}
-            className="h-[32px] px-3 inline-flex items-center gap-1.5 border border-[#C7CEE6] text-[#4F46E5] rounded-lg text-[12px] font-semibold hover:bg-[#4F46E5]/5 transition-colors disabled:opacity-60"
-          >
-            <SparkleIcon size={12} />
-            {regenerating ? "Menganalisa…" : "Perbarui"}
-          </button>
-        )}
-      </div>
 
-      {loading ? (
-        <div className="space-y-2.5 py-1">
-          <div className="h-4 bg-[#E6EAF5] rounded w-3/4 animate-pulse" />
-          <div className="h-3 bg-[#E6EAF5] rounded w-full animate-pulse" />
-          <div className="h-3 bg-[#E6EAF5] rounded w-5/6 animate-pulse" />
-        </div>
-      ) : !insight ? (
-        <div className="py-3">
-          <p className="text-[13px] text-taco-muted mb-3">
-            Belum ada insight tersimpan untuk periode ini.
-          </p>
-          {onRegenerate && (
+        {/* Right: action buttons */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {!loading && insight && onViewInsight && (
+            <button
+              onClick={onViewInsight}
+              className="h-[32px] px-3.5 inline-flex items-center gap-1.5 bg-[#F97316] text-white rounded-lg text-[12px] font-semibold hover:bg-[#EA6C0A] transition-colors"
+            >
+              Lihat Insight
+            </button>
+          )}
+          {!loading && !insight && onRegenerate && (
             <button
               onClick={onRegenerate}
               disabled={regenerating}
-              className="h-[34px] px-4 inline-flex items-center gap-1.5 bg-[#4F46E5] text-white rounded-lg text-[13px] font-semibold hover:bg-[#4338CA] transition-colors disabled:opacity-60"
+              className="h-[32px] px-3.5 inline-flex items-center gap-1.5 bg-[#F97316] text-white rounded-lg text-[12px] font-semibold hover:bg-[#EA6C0A] transition-colors disabled:opacity-60"
             >
-              <SparkleIcon size={13} />
+              <SparkleIcon size={12} />
               {regenerating ? "Menganalisa…" : "Generate Insight"}
             </button>
           )}
         </div>
-      ) : (
-        <>
-          {insight.headline && (
-            <h3 className="text-[15px] font-semibold text-taco-text leading-snug mb-2">
-              {insight.headline}
-            </h3>
-          )}
-          <p className="text-[13px] text-taco-sub leading-relaxed whitespace-pre-line">
-            {insight.insight}
-          </p>
-          {insight.highlights && insight.highlights.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-3.5">
-              {insight.highlights.map((h, i) => (
-                <span
-                  key={i}
-                  className="inline-flex items-center px-2.5 py-1 rounded-full bg-white border border-[#D9DEEC] text-[11px] font-medium text-[#3B3F66]"
-                >
-                  {h}
-                </span>
-              ))}
-            </div>
-          )}
-        </>
-      )}
+      </div>
     </div>
   );
 }

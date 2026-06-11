@@ -29,6 +29,7 @@ import type {
   AiInsightV2,
 } from "@/lib/v2/types";
 import { AiInsightCard } from "../_components/AiInsightCard";
+import { AiInsightModal } from "../_components/AiInsightModal";
 import { V2PageHeader } from "../_components/V2Tabs";
 
 /** Categorical area palette — greens/blues/teals/greys. NO orange (reserved
@@ -80,6 +81,7 @@ export default function DashboardV2Page() {
   const [insight, setInsight] = useState<AiInsightV2 | null>(null);
   const [loading, setLoading] = useState(true);
   const [insightLoading, setInsightLoading] = useState(true);
+  const [insightModalOpen, setInsightModalOpen] = useState(false);
   const [loadError, setLoadError] = useState(false);
 
   /** On page load: fetch the latest SAVED insight (no LLM call). */
@@ -201,8 +203,18 @@ export default function DashboardV2Page() {
         <KpiTile label="Area Aktif" value={totals ? String(totals.active_areas) : "—"} />
       </div>
 
-      {/* AI insight — centerpiece, full width */}
+      {/* AI insight — compact entry point; full content in modal */}
       <AiInsightCard
+        insight={insight}
+        loading={insightLoading}
+        period={PERIODS.find((p) => p.value === period)?.label ?? period}
+        onRegenerate={generateInsight}
+        regenerating={insightLoading}
+        onViewInsight={() => setInsightModalOpen(true)}
+      />
+      <AiInsightModal
+        open={insightModalOpen}
+        onOpenChange={setInsightModalOpen}
         insight={insight}
         loading={insightLoading}
         period={PERIODS.find((p) => p.value === period)?.label ?? period}
