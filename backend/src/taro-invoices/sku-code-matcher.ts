@@ -171,3 +171,54 @@ export function findExactSkuCode(
 export function matchExactSkuCode(rawText: string, skus: SkuCodeRow[]): ExactCodeMatch | null {
   return findExactSkuCode(rawText, buildCodeIndex(skus));
 }
+
+/**
+ * Suffix / partial-code matching for TACO review lines where the OCR only
+ * captured the tail of a SKU code (e.g. "056 AA" from a truncated "TH 056 AA").
+ *
+ * Strategy: normalize the raw_text (uppercase, strip spaces/dots/dashes) and
+ * check if any catalog code ENDS WITH that normalized fragment. Requires the
+ * fragment to be ≥4 chars to avoid false positives.
+ *
+ * Returns the first unambiguous hit with confidence 0.70 (high enough to be a
+ * useful pre-select hint, low enough that needs_review stays true). Returns
+ * null when no match exists or multiple SKUs tie (ambiguous prefix).
+ */
+export function findSuffixSkuCode(
+  rawText: string,
+  skus: SkuCodeRow[],
+): ExactCodeMatch | null {
+  if (!rawText) return null;
+  const fragment = normalizeSkuCode(rawText);
+  if (fragment.length < 4) return null;
+
+  const hits: Array<{ sku_id: string; matched_code: string }> = [];
+  for (const sku of skus) {
+    const codeNorm = normalizeSkuCode(sku.code);
+    if (codeNorm.length > fragment.length && codeNorm.endsWith(fragment)) {
+      hits.push({ sku_id: sku.id, matched_code: sku.code });
+      continue;
+    }
+    for (const alias of sku.product_name_aliases ?? []) {
+      if (typeof alias !== 'string') continue;
+      const aliasNorm = normalizeSkuCode(alias);
+      if (aliasNorm.length > fragment.length && aliasNorm.endsWith(fragment)) {
+        hits.push({ sku_id: sku.id, matched_code: sku.code });
+        break;
+      }
+    }
+  }
+
+  // Deduplicate by sku_id (an alias hit and a code hit for the same SKU count once).
+  const uniqueIds = Array.from(new Set(hits.map((h) => h.sku_id)));
+  if (uniqueIds.length !== 1) return null; // no match or ambiguous
+
+  const hit = hits.find((h) => h.sku_id === uniqueIds[0])!;
+  return {
+    sku_id: hit.sku_id,
+    matched_code: hit.matched_code,
+    matched_via: 'alias',
+    raw_window: rawText,
+    confidence: 0.70,
+  };
+}

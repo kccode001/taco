@@ -23,6 +23,7 @@ import {
   InvoiceV2Status,
   InvoiceImageV2ValidationStatus,
   isTacoClassification,
+  classificationNeedsReview,
 } from '../database/entities/v2/invoice-v2.enums';
 import { ImageValidationService } from './image-validation.service';
 import { PatchLineItemV2Dto } from './dto/patch-line-item-v2.dto';
@@ -33,6 +34,10 @@ import {
   TARO_V2_UPLOAD_SUBDIR,
   TARO_V2_IMAGE_SCOPE,
 } from './taro-v2.constants';
+import { EmbeddingsService } from '../embeddings/embeddings.service';
+import { SkuEmbeddingCache } from '../embeddings/sku-embedding-cache.service';
+import { topKPrecomputed } from '../embeddings/similarity';
+import { findSuffixSkuCode } from '../taro-invoices/sku-code-matcher';
 
 interface AuthedUser {
   id: string;
@@ -77,6 +82,8 @@ export class InvoicesV2Service {
     private readonly validation: ImageValidationService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly embeddings: EmbeddingsService,
+    private readonly skuCache: SkuEmbeddingCache,
   ) {
     fs.mkdirSync(this.uploadDir, { recursive: true });
   }
@@ -630,5 +637,118 @@ export class InvoicesV2Service {
   /** Helper kept for symmetry with the classifier (TACO vs competitor view). */
   lineIsTaco(line: InvoiceLineItemV2): boolean {
     return isTacoClassification(line.classification);
+  }
+
+  /**
+   * Backfill pre-select hints for existing TACO review lines that have
+   * needs_review=true and matched_sku_id=null.
+   *
+   * Uses the same RAG pipeline as the OCR processor but with a lower similarity
+   * threshold (≥0.10) since these lines are already in the review queue — the
+   * hint is a starting point for the human resolver, not a confirmed match.
+   * needs_review stays true after the update.
+   */
+  async backfillPreSelectHints(): Promise<{
+    scanned: number;
+    updated: number;
+    skipped: number;
+    results: { line_id: string; raw_text: string; sku_code: string; score: number }[];
+  }> {
+    const skuMaster = await this.skuCache.getAll();
+    const usable = skuMaster.filter((s) => s.vec !== null);
+    if (usable.length === 0) {
+      this.logger.warn('backfillPreSelectHints: no SKU embeddings available');
+      return { scanned: 0, updated: 0, skipped: 0, results: [] };
+    }
+
+    const lines = await this.lineItemsRepo
+      .createQueryBuilder('li')
+      .where('li.needs_review = true')
+      .andWhere('li.matched_sku_id IS NULL')
+      .getMany();
+
+    const tacoReviewLines = lines.filter(
+      (li) =>
+        isTacoClassification(li.classification) &&
+        classificationNeedsReview(li.classification),
+    );
+
+    this.logger.log(
+      `backfillPreSelectHints: found ${tacoReviewLines.length} TACO review lines with null matched_sku_id`,
+    );
+
+    let updated = 0;
+    let skipped = 0;
+    const results: { line_id: string; raw_text: string; sku_code: string; score: number }[] = [];
+
+    const skuRows = skuMaster.map((s) => ({
+      id: s.id,
+      code: s.code,
+      product_name_aliases: s.product_name_aliases,
+    }));
+
+    for (const li of tacoReviewLines) {
+      const text = (li.raw_text ?? '').trim();
+      if (!text) {
+        skipped++;
+        continue;
+      }
+
+      let candidateId: string | null = null;
+      let candidateCode = '';
+      let candidateScore = 0;
+
+      // Strategy 1: suffix/partial code matching (deterministic, no API needed).
+      // Handles OCR fragments like "056 AA" → TH 056 AA.
+      const suffixHit = findSuffixSkuCode(text, skuRows);
+      if (suffixHit) {
+        candidateId = suffixHit.sku_id;
+        candidateCode = suffixHit.matched_code;
+        candidateScore = suffixHit.confidence;
+        this.logger.log(
+          `backfill suffix match: line ${li.id} (${text.slice(0, 40)}) → ${suffixHit.matched_code} (conf=${suffixHit.confidence.toFixed(2)})`,
+        );
+      }
+
+      // Strategy 2: RAG embedding (when OpenAI key is available).
+      if (!candidateId && usable.length > 0) {
+        try {
+          const vec = await this.embeddings.embed(text);
+          if (vec) {
+            let qn = 0;
+            for (let i = 0; i < vec.length; i++) qn += vec[i] * vec[i];
+            qn = Math.sqrt(qn);
+            const hits = topKPrecomputed(vec, qn, usable, 1);
+            const top = hits[0] ?? null;
+            if (top && top.score >= 0.10) {
+              candidateId = top.item.id;
+              candidateCode = top.item.code;
+              candidateScore = top.score;
+              this.logger.log(
+                `backfill RAG match: line ${li.id} (${text.slice(0, 40)}) → ${top.item.code} (score=${top.score.toFixed(3)})`,
+              );
+            }
+          }
+        } catch (e) {
+          this.logger.warn(
+            `backfill embed failed for line ${li.id}: ${(e as Error).message}`,
+          );
+        }
+      }
+
+      if (!candidateId) {
+        this.logger.log(
+          `backfill skip line ${li.id} (${text.slice(0, 40)}): no candidate found`,
+        );
+        skipped++;
+        continue;
+      }
+
+      await this.lineItemsRepo.update(li.id, { matched_sku_id: candidateId });
+      results.push({ line_id: li.id, raw_text: text, sku_code: candidateCode, score: candidateScore });
+      updated++;
+    }
+
+    return { scanned: tacoReviewLines.length, updated, skipped, results };
   }
 }

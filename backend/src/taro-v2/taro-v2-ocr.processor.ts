@@ -11,7 +11,7 @@ import { mediaTypeFor, ImageMediaType } from '../invoices/ocr-utils';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
 import { topKPrecomputed } from '../embeddings/similarity';
 import { SkuEmbeddingCache, CachedSku } from '../embeddings/sku-embedding-cache.service';
-import { buildCodeIndex, findExactSkuCode } from '../taro-invoices/sku-code-matcher';
+import { buildCodeIndex, findExactSkuCode, findSuffixSkuCode } from '../taro-invoices/sku-code-matcher';
 import { InvoiceV2 } from '../database/entities/v2/invoice-v2.entity';
 import { InvoiceImageV2 } from '../database/entities/v2/invoice-image-v2.entity';
 import { InvoiceLineItemV2 } from '../database/entities/v2/invoice-line-item-v2.entity';
@@ -22,6 +22,7 @@ import {
   bandForClassification,
   classificationNeedsReview,
   isTacoClassification,
+  REVIEW_QUEUE_CLASSIFICATIONS,
 } from '../database/entities/v2/invoice-v2.enums';
 import { QUEUE_TARO_V2_OCR, JOB_PROCESS_TARO_V2 } from './taro-v2.constants';
 
@@ -172,6 +173,23 @@ export class TaroV2OcrProcessor {
             if (!matchedId) {
               const topRag = ragHits[idx]?.[0] ?? null;
               if (topRag && topRag.score >= 0.55) matchedId = topRag.item.id;
+            }
+            // Pre-select hint (step 1): for review-queue TACO lines still unmatched,
+            // try suffix/partial code matching — catches truncated OCR fragments like
+            // "056 AA" which are clearly the tail of a catalog code ("TH 056 AA").
+            // Confidence 0.70 < 0.85 threshold so needs_review stays true.
+            if (!matchedId && REVIEW_QUEUE_CLASSIFICATIONS.has(classification)) {
+              const suffixHit = findSuffixSkuCode(
+                li.raw_text ?? '',
+                skuMaster.map((s) => ({ id: s.id, code: s.code, product_name_aliases: s.product_name_aliases })),
+              );
+              if (suffixHit) matchedId = suffixHit.sku_id;
+            }
+            // Pre-select hint (step 2): if suffix matching also failed, try top RAG
+            // candidate at a lower threshold (≥0.10). needs_review stays true.
+            if (!matchedId && REVIEW_QUEUE_CLASSIFICATIONS.has(classification)) {
+              const topRag = ragHits[idx]?.[0] ?? null;
+              if (topRag && topRag.score >= 0.10) matchedId = topRag.item.id;
             }
           }
 

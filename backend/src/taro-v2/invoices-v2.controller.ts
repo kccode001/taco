@@ -187,6 +187,12 @@ export class InvoicesV2Controller {
     return { url };
   }
 
+  @Post('admin/backfill-pre-select')
+  @Roles(UserRole.ADMIN)
+  async backfillPreSelect() {
+    return this.invoices.backfillPreSelectHints();
+  }
+
   @Get('invoice-images/:id/image')
   async getImage(
     @Param('id', ParseUUIDPipe) id: string,
