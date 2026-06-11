@@ -8,31 +8,34 @@ import {
   RowActions,
   Badge,
 } from "../../../admin/_components/CrudShell";
-import { Modal, FormField } from "../../../admin/_components/Modal";
+import { Modal, FormField, FormSelect } from "../../../admin/_components/Modal";
 import {
   getAreas,
   getStoresV2,
+  getRegionsV2,
   createArea,
   updateArea,
   deleteArea,
   unwrapList,
 } from "@/lib/v2/api";
-import type { AreaV2, StoreV2 } from "@/lib/v2/types";
+import type { AreaV2, RegionBU } from "@/lib/v2/types";
 import { MOCK_AREAS } from "../_components/mockData";
 import { useToast } from "../_components/useToast";
 
 export default function AreasV2Page() {
   const [areas, setAreas] = useState<AreaV2[]>([]);
+  const [bus, setBus] = useState<RegionBU[]>([]);
   const [loading, setLoading] = useState(true);
   const [usingMock, setUsingMock] = useState(false);
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState<{ open: boolean; row?: AreaV2 }>({
     open: false,
   });
-  const [form, setForm] = useState<{ name: string; code: string }>({
-    name: "",
-    code: "",
-  });
+  const [form, setForm] = useState<{
+    name: string;
+    code: string;
+    parent_id: string;
+  }>({ name: "", code: "", parent_id: "" });
   const [busy, setBusy] = useState(false);
   const { show, node: toastNode } = useToast();
 
@@ -41,10 +44,11 @@ export default function AreasV2Page() {
     try {
       const res = await getAreas();
       let data = unwrapList<AreaV2>(res.data);
-      // The areas list doesn't carry a store count, so derive it client-side
-      // from the stores list (best-effort — non-fatal if stores fetch fails).
+      // Derive store counts client-side from the stores list (best-effort).
       try {
-        const stores = unwrapList<StoreV2>((await getStoresV2()).data);
+        const stores = unwrapList<{ area_id: string }>(
+          (await getStoresV2()).data
+        );
         if (stores.length) {
           const counts = stores.reduce<Record<string, number>>((m, s) => {
             if (s.area_id) m[s.area_id] = (m[s.area_id] ?? 0) + 1;
@@ -56,9 +60,8 @@ export default function AreasV2Page() {
           }));
         }
       } catch {
-        /* leave store_count as the areas payload provided it */
+        /* leave store_count as-is */
       }
-      // Live endpoint up but empty is still "live" — only fall back to mock on error.
       setAreas(data);
       setUsingMock(false);
     } catch {
@@ -68,6 +71,17 @@ export default function AreasV2Page() {
       setLoading(false);
     }
   }, []);
+
+  // Load BUs for the parent picker (only needed on create modal open).
+  const loadBus = useCallback(async () => {
+    if (bus.length > 0) return;
+    try {
+      const res = await getRegionsV2({ type: "bu" });
+      setBus(unwrapList<RegionBU>(res.data));
+    } catch {
+      /* BU picker unavailable — create still works without parent */
+    }
+  }, [bus.length]);
 
   useEffect(() => {
     refetch();
@@ -84,59 +98,59 @@ export default function AreasV2Page() {
   }, [areas, search]);
 
   const openCreate = () => {
-    setForm({ name: "", code: "" });
+    setForm({ name: "", code: "", parent_id: "" });
+    loadBus();
     setModal({ open: true });
   };
   const openEdit = (row: AreaV2) => {
-    setForm({ name: row.name, code: row.code ?? "" });
+    setForm({ name: row.name, code: row.code ?? "", parent_id: "" });
     setModal({ open: true, row });
   };
 
   const handleSave = async () => {
     if (!form.name.trim()) return;
     setBusy(true);
-    const payload = {
-      name: form.name.trim(),
-      code: form.code.trim() || undefined,
-    };
     try {
-      if (modal.row?.id) await updateArea(modal.row.id, payload);
-      else await createArea(payload);
+      if (modal.row?.id) {
+        // Edit: only name + code
+        await updateArea(modal.row.id, {
+          name: form.name.trim(),
+          code: form.code.trim() || undefined,
+        });
+      } else {
+        // Create: name + code + optional parent BU
+        await createArea({
+          name: form.name.trim(),
+          code: form.code.trim() || undefined,
+          parent_id: form.parent_id || undefined,
+        });
+      }
       await refetch();
       show(modal.row ? "Area diperbarui" : "Area ditambahkan");
+      setModal({ open: false });
     } catch {
-      // Optimistic local update so the scaffold is usable pre-BE.
-      if (modal.row?.id) {
-        setAreas((p) =>
-          p.map((r) => (r.id === modal.row!.id ? { ...r, ...payload } : r))
-        );
-      } else {
-        setAreas((p) => [
-          { id: `new-${Date.now()}`, store_count: 0, ...payload },
-          ...p,
-        ]);
-      }
-      show(usingMock ? "Disimpan (mode demo)" : "Tersimpan lokal — BE belum siap", "ok");
+      show("Gagal menyimpan area", "err");
     } finally {
       setBusy(false);
-      setModal({ open: false });
     }
   };
 
   const handleDelete = async (row: AreaV2) => {
     if (
       !confirm(
-        `Hapus area "${row.name}"? Toko di area ini bisa kehilangan referensi.`
+        `Hapus area "${row.name}"? Toko dan invoice di area ini akan terpengaruh.`
       )
     )
       return;
     try {
       await deleteArea(row.id);
       await refetch();
-      show("Area dihapus");
-    } catch {
-      setAreas((p) => p.filter((r) => r.id !== row.id));
-      show("Dihapus lokal — BE belum siap", "ok");
+      show("Area dinonaktifkan");
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { message?: string } } })?.response?.data
+          ?.message ?? "Gagal menghapus area";
+      show(msg, "err");
     }
   };
 
@@ -144,7 +158,7 @@ export default function AreasV2Page() {
     <>
       <CrudShell
         title="Area"
-        description="Wilayah penjualan. Dipakai tim Taro saat memilih toko ketika mengunggah invoice."
+        description="Wilayah penjualan ASM. Dipakai tim Taro saat memilih toko ketika mengunggah invoice."
         addLabel="+ Tambah Area"
         onAdd={openCreate}
         searchPlaceholder="Cari area atau kode…"
@@ -157,7 +171,9 @@ export default function AreasV2Page() {
         }
       >
         <table className="w-full">
-          <TableHeader cols={["Nama Area", "Kode", "Jumlah Toko", "Dibuat", ""]} />
+          <TableHeader
+            cols={["Nama Area", "Kode", "Jumlah Toko", "Dibuat", ""]}
+          />
           <tbody>
             {loading ? (
               <EmptyRow colSpan={5} label="Memuat area…" />
@@ -181,7 +197,7 @@ export default function AreasV2Page() {
                   </td>
                   <td className="px-4 py-3 text-[13px] text-taco-sub">
                     {a.code ? (
-                      <span className="font-mono">{a.code}</span>
+                      <span className="font-mono text-[11px]">{a.code}</span>
                     ) : (
                       <span className="text-taco-muted">—</span>
                     )}
@@ -217,15 +233,24 @@ export default function AreasV2Page() {
             label="Nama Area"
             value={form.name}
             onChange={(v) => setForm((f) => ({ ...f, name: v }))}
-            placeholder="cth. Bandung"
+            placeholder="cth. ASM Bekasi"
           />
           <FormField
             label="Kode (opsional)"
             value={form.code}
             onChange={(v) => setForm((f) => ({ ...f, code: v }))}
-            placeholder="cth. BDG"
-            hint="Kode singkat untuk tampilan ringkas."
+            placeholder="cth. C-BU1-ASM-BEKASI"
+            hint="Kode unik untuk area. Diisi otomatis jika dikosongkan."
           />
+          {!modal.row && bus.length > 0 && (
+            <FormSelect
+              label="Parent BU (opsional)"
+              value={form.parent_id}
+              onChange={(v) => setForm((f) => ({ ...f, parent_id: v }))}
+              options={bus.map((b) => ({ value: b.id, label: b.display_path }))}
+              hint="Pilih BU induk untuk menempatkan area dalam hierarki wilayah."
+            />
+          )}
         </Modal>
       )}
 

@@ -9,7 +9,7 @@ import {
   OneToMany,
   Index,
 } from 'typeorm';
-import { AreaV2 } from './area-v2.entity';
+import { Region } from '../region.entity';
 import { StoreV2 } from './store-v2.entity';
 import { User } from '../user.entity';
 import { InvoiceImageV2 } from './invoice-image-v2.entity';
@@ -35,9 +35,9 @@ export class InvoiceV2 {
   @Column({ type: 'uuid' })
   area_id: string;
 
-  @ManyToOne(() => AreaV2, { nullable: false, onDelete: 'RESTRICT' })
+  @ManyToOne(() => Region, { nullable: false, onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'area_id' })
-  area?: AreaV2;
+  area?: Region;
 
   @Column({ type: 'uuid' })
   store_id: string;

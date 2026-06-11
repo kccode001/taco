@@ -8,15 +8,15 @@ import {
   JoinColumn,
   Index,
 } from 'typeorm';
-import { AreaV2 } from './area-v2.entity';
+import { Region } from '../region.entity';
 
 /**
  * TACO v2 — Store master (management surface, CRUD).
  *
- * A store belongs to one Area. The PWA upload step-1 lets the sales team pick
- * an existing store OR free-type a new one — a free-typed store is persisted
- * here (via the invoice-create path) so it's selectable next time. `created_by`
- * records the user id that first introduced it (nullable for seed/admin rows).
+ * A store belongs to one Area (a `regions` row with type='area'). The PWA
+ * upload step-1 lets the sales team pick an existing store OR free-type a new
+ * one — a free-typed store is persisted here so it's selectable next time.
+ * `created_by` records the user id that first introduced it.
  */
 @Entity('taro_v2_stores')
 @Index(['area_id'])
@@ -28,9 +28,9 @@ export class StoreV2 {
   @Column({ type: 'uuid' })
   area_id: string;
 
-  @ManyToOne(() => AreaV2, { nullable: false, onDelete: 'CASCADE' })
+  @ManyToOne(() => Region, { nullable: false, onDelete: 'CASCADE' })
   @JoinColumn({ name: 'area_id' })
-  area?: AreaV2;
+  area?: Region;
 
   @Column({ type: 'text' })
   name: string;

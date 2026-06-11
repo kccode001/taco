@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, Repository } from 'typeorm';
 import { SalesAgentV2 } from '../../database/entities/v2/sales-agent-v2.entity';
-import { AreaV2 } from '../../database/entities/v2/area-v2.entity';
+import { Region, RegionType } from '../../database/entities/region.entity';
 import { CreateSalesDto } from './dto/create-sales.dto';
 import { UpdateSalesDto } from './dto/update-sales.dto';
 
@@ -16,8 +16,8 @@ export class SalesService {
   constructor(
     @InjectRepository(SalesAgentV2)
     private readonly agents: Repository<SalesAgentV2>,
-    @InjectRepository(AreaV2)
-    private readonly areas: Repository<AreaV2>,
+    @InjectRepository(Region)
+    private readonly areas: Repository<Region>,
   ) {}
 
   list(params: { area_id?: string; search?: string }): Promise<SalesAgentV2[]> {
@@ -40,7 +40,9 @@ export class SalesService {
   }
 
   private async assertAreaExists(areaId: string): Promise<void> {
-    const count = await this.areas.count({ where: { id: areaId } });
+    const count = await this.areas.count({
+      where: { id: areaId, type: RegionType.AREA, active: true },
+    });
     if (count === 0) throw new NotFoundException(`Area ${areaId} not found`);
   }
 

@@ -15,7 +15,7 @@ import * as path from 'path';
 import { InvoiceV2 } from '../database/entities/v2/invoice-v2.entity';
 import { InvoiceImageV2 } from '../database/entities/v2/invoice-image-v2.entity';
 import { InvoiceLineItemV2 } from '../database/entities/v2/invoice-line-item-v2.entity';
-import { AreaV2 } from '../database/entities/v2/area-v2.entity';
+import { Region } from '../database/entities/region.entity';
 import { StoreV2 } from '../database/entities/v2/store-v2.entity';
 import { CompetitorBrand } from '../database/entities/competitor-brand.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
@@ -65,8 +65,8 @@ export class InvoicesV2Service {
     private readonly imagesRepo: Repository<InvoiceImageV2>,
     @InjectRepository(InvoiceLineItemV2)
     private readonly lineItemsRepo: Repository<InvoiceLineItemV2>,
-    @InjectRepository(AreaV2)
-    private readonly areasRepo: Repository<AreaV2>,
+    @InjectRepository(Region)
+    private readonly areasRepo: Repository<Region>,
     @InjectRepository(StoreV2)
     private readonly storesRepo: Repository<StoreV2>,
     @InjectRepository(CompetitorBrand)
@@ -401,7 +401,7 @@ export class InvoicesV2Service {
         }),
       ]);
 
-    const areaById = new Map<string, AreaV2>(areas.map((a) => [a.id, a]));
+    const areaById = new Map<string, Region>(areas.map((a) => [a.id, a]));
     const storeById = new Map<string, StoreV2>(stores.map((s) => [s.id, s]));
     const countByInvoice = new Map(
       lineCounts.map((r) => [r.invoice_id, parseInt(r.count, 10) || 0]),

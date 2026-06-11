@@ -8,11 +8,20 @@
 export interface AreaV2 {
   id: string;
   name: string;
-  /** Optional short code, e.g. "BDG". */
+  /** Short code, e.g. "C-BU1-ASM-BANDUNG" (from the regions table). */
   code?: string;
   created_at?: string;
   /** Convenience count surfaced by some list responses. */
   store_count?: number;
+}
+
+/** A BU (Business Unit) row from the regions hierarchy — used as parent picker
+ *  when creating a new area. */
+export interface RegionBU {
+  id: string;
+  code: string;
+  name: string;
+  display_path: string;
 }
 
 export interface StoreV2 {

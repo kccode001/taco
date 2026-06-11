@@ -8,14 +8,14 @@ import {
   JoinColumn,
   Index,
 } from 'typeorm';
-import { AreaV2 } from './area-v2.entity';
+import { Region } from '../region.entity';
 
 /**
  * TACO v2 — Sales agent master (management surface, "Sales list" CRUD).
  *
  * A directory entry for the Taro sales team. Distinct from the auth `users`
  * table — this is an admin-managed roster row (name/phone/area), optionally
- * linked to a login user via `user_id`. New v2 table.
+ * linked to a login user via `user_id`. Area FK points to `regions` (type='area').
  */
 @Entity('taro_v2_sales_agents')
 @Index(['area_id'])
@@ -33,13 +33,13 @@ export class SalesAgentV2 {
   @Column({ type: 'text', nullable: true })
   email: string | null;
 
-  /** Optional home area for this agent. */
+  /** Optional home area (a `regions` row with type='area'). */
   @Column({ type: 'uuid', nullable: true })
   area_id: string | null;
 
-  @ManyToOne(() => AreaV2, { nullable: true, onDelete: 'SET NULL' })
+  @ManyToOne(() => Region, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'area_id' })
-  area?: AreaV2 | null;
+  area?: Region | null;
 
   /** Optional link to the auth `users` row this agent logs in as. */
   @Column({ type: 'uuid', nullable: true })

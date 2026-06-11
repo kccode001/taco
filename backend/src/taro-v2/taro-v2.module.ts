@@ -6,6 +6,7 @@ import { memoryStorage } from 'multer';
 import { AuthModule } from '../auth/auth.module';
 import { EmbeddingsModule } from '../embeddings/embeddings.module';
 import { AreaV2 } from '../database/entities/v2/area-v2.entity';
+import { Region } from '../database/entities/region.entity';
 import { StoreV2 } from '../database/entities/v2/store-v2.entity';
 import { SalesAgentV2 } from '../database/entities/v2/sales-agent-v2.entity';
 import { InvoiceV2 } from '../database/entities/v2/invoice-v2.entity';
@@ -28,6 +29,7 @@ import { QUEUE_TARO_V2_OCR } from './taro-v2.constants';
   imports: [
     TypeOrmModule.forFeature([
       AreaV2,
+      Region,
       StoreV2,
       SalesAgentV2,
       InvoiceV2,

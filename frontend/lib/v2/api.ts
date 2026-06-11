@@ -6,6 +6,7 @@
 import { api } from "@/lib/api";
 import type {
   AreaV2,
+  RegionBU,
   StoreV2,
   SalesAgentV2,
   RecommendationV2,
@@ -32,11 +33,16 @@ export function unwrapOne<T>(body: unknown): T | null {
 // ── Areas ────────────────────────────────────────────────────────────────
 export const getAreas = (params?: Record<string, string>) =>
   api.get<AreaV2[] | { data: AreaV2[] }>("/v2/areas", { params });
-export const createArea = (data: Partial<AreaV2>) =>
+export const createArea = (data: { name: string; code?: string; parent_id?: string }) =>
   api.post("/v2/areas", data);
-export const updateArea = (id: string, data: Partial<AreaV2>) =>
+export const updateArea = (id: string, data: { name?: string; code?: string }) =>
   api.patch(`/v2/areas/${id}`, data);
 export const deleteArea = (id: string) => api.delete(`/v2/areas/${id}`);
+
+/** Fetch region rows (BUs or areas) from the authoritative regions table.
+ *  Pass type=bu to get the BU list for the area-create parent picker. */
+export const getRegionsV2 = (params?: Record<string, string>) =>
+  api.get<RegionBU[] | { data: RegionBU[] }>("/v2/regions", { params });
 
 // ── Stores ───────────────────────────────────────────────────────────────
 export const getStoresV2 = (params?: Record<string, string>) =>
