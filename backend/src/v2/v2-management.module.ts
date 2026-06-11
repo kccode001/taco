@@ -7,6 +7,7 @@ import { SalesAgentV2 } from '../database/entities/v2/sales-agent-v2.entity';
 import { InvoiceV2 } from '../database/entities/v2/invoice-v2.entity';
 import { InvoiceLineItemV2 } from '../database/entities/v2/invoice-line-item-v2.entity';
 import { RecommendationV2 } from '../database/entities/v2/recommendation-v2.entity';
+import { MarketInsightV2 } from '../database/entities/v2/market-insight-v2.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
 import { Region } from '../database/entities/region.entity';
 import { TaroAgentRegion } from '../database/entities/taro-agent-region.entity';
@@ -47,6 +48,7 @@ import { RecommendationsService } from './recommendations/recommendations.servic
       InvoiceV2,
       InvoiceLineItemV2,
       RecommendationV2,
+      MarketInsightV2,
       TacoSku,
       Region,
       TaroAgentRegion,

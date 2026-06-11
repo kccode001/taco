@@ -6,6 +6,7 @@ import { UserRole } from '../../database/entities/user.entity';
 import { V2DashboardService } from './v2-dashboard.service';
 import {
   AiInsightQueryDto,
+  LatestInsightQueryDto,
   RecapQueryDto,
   TrendingQueryDto,
 } from '../dto/period.dto';
@@ -36,5 +37,11 @@ export class V2DashboardController {
   @Get('ai-insight')
   aiInsight(@Query() query: AiInsightQueryDto) {
     return this.service.aiInsight(query);
+  }
+
+  /** Returns the latest SAVED insight for the scope without calling the LLM. */
+  @Get('latest-insight')
+  latestInsight(@Query() query: LatestInsightQueryDto) {
+    return this.service.latestInsight(query);
   }
 }

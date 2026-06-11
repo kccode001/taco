@@ -95,6 +95,10 @@ export const getDashboardAiInsight = (params: { period?: string }) =>
     params,
   });
 
+/** Fetch the latest SAVED insight for the scope — never triggers LLM recompute. */
+export const getDashboardLatestInsight = (params: { period?: string; area?: string }) =>
+  api.get<unknown>("/v2/dashboard/latest-insight", { params });
+
 // ── BE → FE adapters ─────────────────────────────────────────────────────
 // Mortar's live `/api/v2` shapes differ from the BUILD-PLAN scaffold these
 // pages were authored against (different field names + nesting). These adapters
@@ -238,6 +242,26 @@ export function adaptAiInsight(body: unknown): AiInsightV2 | null {
     highlights: r.highlights,
     model: r.model ?? undefined,
     generated_at: r.generated_at,
+  };
+}
+
+interface RawLatestInsight {
+  period: string;
+  found: boolean;
+  insight: string | null;
+  model: string | null;
+  generated_at: string | null;
+}
+
+/** latest-insight: maps the saved-row response; returns null when nothing saved yet. */
+export function adaptLatestInsight(body: unknown): AiInsightV2 | null {
+  const r = unwrapOne<RawLatestInsight>(body);
+  if (!r || !r.found || !r.insight) return null;
+  return {
+    period: r.period,
+    insight: r.insight,
+    model: r.model ?? undefined,
+    generated_at: r.generated_at ?? undefined,
   };
 }
 

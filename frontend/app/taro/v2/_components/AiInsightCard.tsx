@@ -33,6 +33,17 @@ export function AiInsightCard({
             <div className="text-[11px] text-taco-muted">
               Periode {period} · ditenagai Claude
             </div>
+            {insight?.generated_at && (
+              <div className="text-[10px] text-taco-muted mt-0.5">
+                Diperbarui: {new Date(insight.generated_at).toLocaleString("id-ID", {
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </div>
+            )}
           </div>
         </div>
         {onRegenerate && (
@@ -54,8 +65,20 @@ export function AiInsightCard({
           <div className="h-3 bg-[#E6EAF5] rounded w-5/6 animate-pulse" />
         </div>
       ) : !insight ? (
-        <div className="text-[13px] text-taco-muted py-2">
-          Belum ada insight untuk periode ini.
+        <div className="py-3">
+          <p className="text-[13px] text-taco-muted mb-3">
+            Belum ada insight tersimpan untuk periode ini.
+          </p>
+          {onRegenerate && (
+            <button
+              onClick={onRegenerate}
+              disabled={regenerating}
+              className="h-[34px] px-4 inline-flex items-center gap-1.5 bg-[#4F46E5] text-white rounded-lg text-[13px] font-semibold hover:bg-[#4338CA] transition-colors disabled:opacity-60"
+            >
+              <SparkleIcon size={13} />
+              {regenerating ? "Menganalisa…" : "Generate Insight"}
+            </button>
+          )}
         </div>
       ) : (
         <>

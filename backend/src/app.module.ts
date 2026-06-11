@@ -73,6 +73,7 @@ import { TaroV2Module } from './taro-v2/taro-v2.module';
 import { V2ManagementModule } from './v2/v2-management.module';
 // --- TACO v2 MANAGEMENT surface entity (Mortar-owned: reason-derived recs) ---
 import { RecommendationV2 } from './database/entities/v2/recommendation-v2.entity';
+import { MarketInsightV2 } from './database/entities/v2/market-insight-v2.entity';
 
 @Module({
   imports: [
@@ -98,6 +99,7 @@ import { RecommendationV2 } from './database/entities/v2/recommendation-v2.entit
           AreaV2, StoreV2, SalesAgentV2,
           InvoiceV2, InvoiceImageV2, InvoiceLineItemV2,
           RecommendationV2,
+          MarketInsightV2,
         ],
         synchronize: true,
         logging: false,

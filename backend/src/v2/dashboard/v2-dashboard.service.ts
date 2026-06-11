@@ -1,11 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, SelectQueryBuilder } from 'typeorm';
+import { IsNull, Repository, SelectQueryBuilder } from 'typeorm';
 import Anthropic from '@anthropic-ai/sdk';
 
 import { InvoiceLineItemV2 } from '../../database/entities/v2/invoice-line-item-v2.entity';
+import { MarketInsightV2 } from '../../database/entities/v2/market-insight-v2.entity';
 import {
   AiInsightQueryDto,
+  LatestInsightQueryDto,
   RecapQueryDto,
   TrendingQueryDto,
   V2Period,
@@ -95,6 +97,8 @@ export class V2DashboardService {
   constructor(
     @InjectRepository(InvoiceLineItemV2)
     private readonly lineItems: Repository<InvoiceLineItemV2>,
+    @InjectRepository(MarketInsightV2)
+    private readonly insights: Repository<MarketInsightV2>,
   ) {
     this.anthropic = process.env.ANTHROPIC_API_KEY
       ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -436,6 +440,7 @@ export class V2DashboardService {
         period: range.label,
         range: recap.range,
         model: null,
+        generated_at: null,
         insight:
           'Belum ada data invoice pada periode ini, sehingga belum ada insight permintaan pasar yang bisa ditampilkan. Pastikan tim Taro sudah mengunggah invoice untuk periode terpilih.',
         rollups,
@@ -443,11 +448,14 @@ export class V2DashboardService {
     }
 
     if (!this.anthropic) {
+      const insightText = this.fallbackInsight(rollups);
+      const saved = await this.persistInsight(insightText, null, range.label, query.area ?? null);
       return {
         period: range.label,
         range: recap.range,
         model: null,
-        insight: this.fallbackInsight(rollups),
+        generated_at: saved.generated_at.toISOString(),
+        insight: insightText,
         rollups,
       };
     }
@@ -473,29 +481,83 @@ export class V2DashboardService {
         ],
       });
 
-      const insight = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim();
+      const insightText = (
+        response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('\n')
+          .trim() || this.fallbackInsight(rollups)
+      );
+
+      const saved = await this.persistInsight(insightText, INSIGHT_MODEL, range.label, query.area ?? null);
 
       return {
         period: range.label,
         range: recap.range,
         model: INSIGHT_MODEL,
-        insight: insight || this.fallbackInsight(rollups),
+        generated_at: saved.generated_at.toISOString(),
+        insight: insightText,
         rollups,
       };
     } catch (err) {
       this.logger.error(`AI insight failed: ${String(err)}`);
+      const insightText = this.fallbackInsight(rollups);
+      const saved = await this.persistInsight(insightText, null, range.label, query.area ?? null);
       return {
         period: range.label,
         range: recap.range,
         model: null,
-        insight: this.fallbackInsight(rollups),
+        generated_at: saved.generated_at.toISOString(),
+        insight: insightText,
         rollups,
       };
     }
+  }
+
+  /** Returns the most recent saved insight for the given scope without calling the LLM. */
+  async latestInsight(query: LatestInsightQueryDto) {
+    const period = query.period ?? '30d';
+    const areaId = query.area ?? null;
+
+    const row = await this.insights.findOne({
+      where: { period, area_id: areaId === null ? IsNull() : areaId },
+      order: { generated_at: 'DESC' },
+    });
+
+    if (!row) {
+      return {
+        period,
+        area_id: areaId,
+        found: false,
+        insight: null,
+        model: null,
+        generated_at: null,
+      };
+    }
+
+    return {
+      period,
+      area_id: areaId,
+      found: true,
+      insight: row.insight_text,
+      model: row.model,
+      generated_at: row.generated_at.toISOString(),
+    };
+  }
+
+  private async persistInsight(
+    insightText: string,
+    model: string | null,
+    period: string,
+    areaId: string | null,
+  ): Promise<MarketInsightV2> {
+    const row = this.insights.create({
+      insight_text: insightText,
+      model,
+      period,
+      area_id: areaId,
+    });
+    return this.insights.save(row);
   }
 
   /** Deterministic brief used when the LLM is unavailable / errors. */

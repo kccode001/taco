@@ -56,3 +56,14 @@ export class AiInsightQueryDto {
   @IsUUID()
   area?: string;
 }
+
+/** latest-insight reads the most recent SAVED insight row without recomputing. */
+export class LatestInsightQueryDto {
+  @IsOptional()
+  @IsIn(V2_PERIODS)
+  period?: V2Period;
+
+  @IsOptional()
+  @IsUUID()
+  area?: string;
+}

@@ -17,9 +17,11 @@ import {
   getDashboardRecap,
   getDashboardTrending,
   getDashboardAiInsight,
+  getDashboardLatestInsight,
   adaptRecap,
   adaptTrending,
   adaptAiInsight,
+  adaptLatestInsight,
 } from "@/lib/v2/api";
 import type {
   DashboardRecapV2,
@@ -80,13 +82,26 @@ export default function DashboardV2Page() {
   const [insightLoading, setInsightLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
 
-  const fetchInsight = useCallback(async () => {
+  /** On page load: fetch the latest SAVED insight (no LLM call). */
+  const fetchSavedInsight = useCallback(async () => {
+    setInsightLoading(true);
+    try {
+      const res = await getDashboardLatestInsight({ period });
+      setInsight(adaptLatestInsight(res.data));
+    } catch {
+      setInsight(null);
+    } finally {
+      setInsightLoading(false);
+    }
+  }, [period]);
+
+  /** "Perbarui" button: triggers a fresh LLM generation, saves it, updates UI. */
+  const generateInsight = useCallback(async () => {
     setInsightLoading(true);
     try {
       const res = await getDashboardAiInsight({ period });
       setInsight(adaptAiInsight(res.data));
     } catch {
-      // No mock fallback — the dashboard must only ever show real BE figures.
       setInsight(null);
     } finally {
       setInsightLoading(false);
@@ -117,8 +132,8 @@ export default function DashboardV2Page() {
     fetchData();
   }, [fetchData]);
   useEffect(() => {
-    fetchInsight();
-  }, [fetchInsight]);
+    fetchSavedInsight();
+  }, [fetchSavedInsight]);
 
   const byArea = recap?.by_area ?? [];
   const series = recap?.qty_over_time ?? [];
@@ -191,7 +206,7 @@ export default function DashboardV2Page() {
         insight={insight}
         loading={insightLoading}
         period={PERIODS.find((p) => p.value === period)?.label ?? period}
-        onRegenerate={fetchInsight}
+        onRegenerate={generateInsight}
         regenerating={insightLoading}
       />
 
