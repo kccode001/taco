@@ -44,7 +44,7 @@ export function AiInsightCard({
               AI Insight · Permintaan Pasar
             </div>
             <div className="text-[11px] text-taco-muted">
-              Periode {period} · ditenagai Claude
+              Periode {period}
             </div>
             {loading ? (
               <div className="mt-1 h-3 bg-[#E6EAF5] rounded w-40 animate-pulse" />

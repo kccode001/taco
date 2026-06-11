@@ -41,7 +41,7 @@ export function AiInsightModal({
                   AI Insight Permintaan Pasar
                 </Dialog.Title>
                 <div className="text-[11px] text-taco-muted">
-                  Periode {period} · ditenagai Claude
+                  Periode {period}
                 </div>
               </div>
             </div>
