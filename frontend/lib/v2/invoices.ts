@@ -201,6 +201,10 @@ export async function validateV2Images(
   return readImages(res.data);
 }
 
+/** Field-rep delete: remove an invoice (own uploads only; BE enforces ownership). */
+export const deleteV2Invoice = (invoiceId: string) =>
+  api.delete(`/v2/invoices/${invoiceId}`);
+
 /** Delete a single (typically invalid) image inline during upload. */
 export const deleteV2Image = (imageId: string) =>
   api.delete(`/v2/invoice-images/${imageId}`);

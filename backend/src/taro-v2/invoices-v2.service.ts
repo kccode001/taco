@@ -225,6 +225,32 @@ export class InvoicesV2Service {
     return this.imageSummary(invoice.id);
   }
 
+  /** Delete an invoice and all its images (physical files + DB cascade). */
+  async deleteInvoice(
+    invoiceId: string,
+    user: AuthedUser,
+  ): Promise<{ deleted: true }> {
+    const invoice = await this.findInvoiceOrThrow(invoiceId, user);
+    const images = await this.imagesRepo.find({
+      where: { invoice_id: invoice.id },
+    });
+    for (const img of images) {
+      if (img.file_path && fs.existsSync(img.file_path)) {
+        try {
+          fs.unlinkSync(img.file_path);
+        } catch (e) {
+          this.logger.warn(
+            `Failed to unlink ${img.file_path}: ${(e as Error).message}`,
+          );
+        }
+      }
+    }
+    // Images and line_items cascade via DB onDelete:'CASCADE'; deleting the
+    // invoice row is sufficient — but explicitly unlink files first (above).
+    await this.invoicesRepo.delete({ id: invoice.id });
+    return { deleted: true };
+  }
+
   /** Delete an invalid/wrong image (allowed during the upload step). */
   async deleteImage(
     imageId: string,

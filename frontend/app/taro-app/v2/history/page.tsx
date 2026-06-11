@@ -1,22 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   listV2Invoices,
   getV2ImageUrl,
-  v2StatusLabel,
-  v2StatusTone,
+  deleteV2Invoice,
   type InvoiceV2,
-  type InvoiceV2Status,
 } from "@/lib/v2/invoices";
 import { TopBar } from "../../_components/TopBar";
 import { useTaroGuard } from "../../_components/useTaroGuard";
 import { timeAgo } from "../../_components/mockUploads";
-import { SearchIcon, StoreIcon } from "../../_components/icons";
+import { SearchIcon, StoreIcon, TrashIcon } from "../../_components/icons";
 import { BottomNavV2 } from "@/components/pwa-v2/BottomNavV2";
-
-type StatusFilter = "all" | InvoiceV2Status;
+import { ImageLightboxV2 } from "@/components/pwa-v2/ImageLightboxV2";
 
 function dateOf(inv: InvoiceV2): string {
   return inv.created_at ?? "";
@@ -43,38 +39,59 @@ function RowThumbnail({ src }: { src?: string | null }) {
   );
 }
 
-const TONE_BG: Record<"ok" | "warn" | "err" | "info" | "muted", string> = {
-  ok: "bg-emerald-50 text-taco-success",
-  warn: "bg-amber-50 text-taco-warning",
-  err: "bg-red-50 text-taco-error",
-  info: "bg-blue-50 text-taco-info",
-  muted: "bg-taco-page text-taco-sub border border-taco-border",
-};
-const TONE_DOT: Record<"ok" | "warn" | "err" | "info" | "muted", string> = {
-  ok: "bg-taco-success",
-  warn: "bg-taco-warning",
-  err: "bg-taco-error",
-  info: "bg-taco-info",
-  muted: "bg-taco-muted",
-};
-
-const FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: "all", label: "Semua" },
-  { key: "done", label: "Selesai" },
-  { key: "needs_review", label: "Perlu Review" },
-  { key: "ocr_processing", label: "Proses" },
-  { key: "failed", label: "Gagal" },
-];
+function DeleteConfirmDialog({
+  onConfirm,
+  onCancel,
+}: {
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-md bg-white rounded-t-2xl px-5 pt-5 pb-8 flex flex-col gap-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-[16px] font-semibold text-taco-text text-center">
+          Hapus invoice ini?
+        </div>
+        <div className="text-[13px] text-taco-sub text-center leading-relaxed">
+          Invoice dan fotonya akan dihapus permanen.
+        </div>
+        <div className="flex gap-3 mt-1">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 min-h-[52px] rounded-xl border border-taco-border text-taco-text text-[15px] font-medium active:bg-taco-page"
+          >
+            Batal
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="flex-1 min-h-[52px] rounded-xl bg-red-500 text-white text-[15px] font-semibold active:bg-red-600"
+          >
+            Ya, Hapus
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function TaroV2HistoryPage() {
-  const router = useRouter();
   const { ready } = useTaroGuard();
   const [rows, setRows] = useState<InvoiceV2[]>([]);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<StatusFilter>("all");
   const [search, setSearch] = useState("");
+  const [preview, setPreview] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -98,16 +115,13 @@ export default function TaroV2HistoryPage() {
   }, [ready, load]);
 
   const filtered = useMemo(() => {
+    if (!search.trim()) return rows;
+    const q = search.toLowerCase();
     return rows.filter((r) => {
-      if (filter !== "all" && r.status !== filter) return false;
-      if (search.trim()) {
-        const q = search.toLowerCase();
-        const hay = `${r.store?.name ?? ""} ${r.area?.name ?? ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
+      const hay = `${r.store?.name ?? ""} ${r.area?.name ?? ""}`.toLowerCase();
+      return hay.includes(q);
     });
-  }, [rows, filter, search]);
+  }, [rows, search]);
 
   // Signed thumbnails for the currently visible rows (cap 30).
   useEffect(() => {
@@ -135,6 +149,39 @@ export default function TaroV2HistoryPage() {
     };
   }, [filtered, thumbs]);
 
+  async function openPreview(inv: InvoiceV2) {
+    // Use already-loaded thumbnail URL if available; otherwise fetch on demand.
+    if (thumbs[inv.id]) {
+      setPreview(thumbs[inv.id]);
+      return;
+    }
+    if (!inv.thumb_image_id) return;
+    const url = await getV2ImageUrl(inv.thumb_image_id);
+    if (url) {
+      setThumbs((prev) => ({ ...prev, [inv.id]: url }));
+      setPreview(url);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteId || deleting) return;
+    setDeleting(true);
+    try {
+      await deleteV2Invoice(deleteId);
+      setRows((prev) => prev.filter((r) => r.id !== deleteId));
+      setThumbs((prev) => {
+        const next = { ...prev };
+        delete next[deleteId];
+        return next;
+      });
+    } catch {
+      // silently ignore; row stays in list
+    } finally {
+      setDeleting(false);
+      setDeleteId(null);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
       <div className="phone-shell flex flex-col min-h-screen pb-[96px]">
@@ -153,30 +200,6 @@ export default function TaroV2HistoryPage() {
               placeholder="Cari nama toko atau area…"
               className="w-full h-[44px] pl-10 pr-3 border border-taco-border rounded-xl text-[14px] text-taco-text bg-white outline-none focus:border-taco-text"
             />
-          </div>
-        </div>
-
-        {/* Filter pills */}
-        <div className="bg-white border-b border-taco-divider px-4 py-3 overflow-x-auto no-scrollbar">
-          <div className="flex items-center gap-2 min-w-max">
-            {FILTERS.map((f) => {
-              const active = filter === f.key;
-              return (
-                <button
-                  key={f.key}
-                  type="button"
-                  onClick={() => setFilter(f.key)}
-                  className={[
-                    "h-[36px] px-3 rounded-full text-[13px] font-medium border whitespace-nowrap",
-                    active
-                      ? "bg-taco-text text-white border-taco-text"
-                      : "bg-white text-taco-sub border-taco-border",
-                  ].join(" ")}
-                >
-                  {f.label}
-                </button>
-              );
-            })}
           </div>
         </div>
 
@@ -205,53 +228,78 @@ export default function TaroV2HistoryPage() {
             </div>
           ) : (
             <div className="flex flex-col gap-2">
-              {filtered.map((u) => {
-                const tone = v2StatusTone(u.status);
-                return (
+              {filtered.map((u) => (
+                <div
+                  key={u.id}
+                  className="w-full bg-white border border-taco-border rounded-xl px-4 py-3 min-h-[80px] flex items-start gap-3"
+                >
+                  {/* Tap thumbnail to preview image */}
                   <button
-                    key={u.id}
                     type="button"
-                    onClick={() => router.push(`/taro-app/v2/invoice/${u.id}`)}
-                    className="w-full bg-white border border-taco-border rounded-xl px-4 py-3 text-left active:bg-taco-page min-h-[80px]"
+                    onClick={() => openPreview(u)}
+                    className="flex-shrink-0 active:opacity-70"
+                    aria-label="Lihat foto invoice"
                   >
-                    <div className="flex items-start gap-3">
-                      <RowThumbnail src={thumbs[u.id]} />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[15px] font-medium text-taco-text truncate">
-                          {u.store?.name ?? "Toko Tidak Disebutkan"}
-                        </div>
-                        <div className="text-[12px] text-taco-sub mt-0.5 truncate">
-                          {u.area?.name ?? "—"}
-                        </div>
-                        <div className="flex items-center gap-2 mt-2 flex-wrap">
-                          <span
-                            className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full ${TONE_BG[tone]}`}
-                          >
-                            <span
-                              className={`w-1.5 h-1.5 rounded-full ${TONE_DOT[tone]}`}
-                            />
-                            {v2StatusLabel(u.status)}
-                          </span>
-                          {(u.line_count ?? 0) > 0 && (
-                            <span className="text-[11px] text-taco-sub">
-                              {u.line_count} baris
-                            </span>
-                          )}
-                          <span className="text-[11px] text-taco-muted ml-auto">
-                            {timeAgo(dateOf(u))}
-                          </span>
-                        </div>
-                      </div>
+                    <RowThumbnail src={thumbs[u.id]} />
+                  </button>
+
+                  {/* Main content — tap row body to preview image */}
+                  <button
+                    type="button"
+                    onClick={() => openPreview(u)}
+                    className="flex-1 min-w-0 text-left active:opacity-70"
+                  >
+                    <div className="text-[15px] font-medium text-taco-text truncate">
+                      {u.store?.name ?? "Toko Tidak Disebutkan"}
+                    </div>
+                    <div className="text-[12px] text-taco-sub mt-0.5 truncate">
+                      {u.area?.name ?? "—"}
+                    </div>
+                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                      {/* Always show Selesai — field reps don't need processing nuance */}
+                      <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-taco-success">
+                        <span className="w-1.5 h-1.5 rounded-full bg-taco-success" />
+                        Selesai
+                      </span>
+                      {(u.line_count ?? 0) > 0 && (
+                        <span className="text-[11px] text-taco-sub">
+                          {u.line_count} baris
+                        </span>
+                      )}
+                      <span className="text-[11px] text-taco-muted ml-auto">
+                        {timeAgo(dateOf(u))}
+                      </span>
                     </div>
                   </button>
-                );
-              })}
+
+                  {/* Delete button */}
+                  <button
+                    type="button"
+                    onClick={() => setDeleteId(u.id)}
+                    aria-label="Hapus invoice"
+                    className="flex-shrink-0 w-[44px] h-[44px] flex items-center justify-center text-taco-muted active:text-taco-error rounded-lg"
+                  >
+                    <TrashIcon size={18} />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </section>
       </div>
 
       <BottomNavV2 />
+
+      {preview && (
+        <ImageLightboxV2 src={preview} onClose={() => setPreview(null)} />
+      )}
+
+      {deleteId && (
+        <DeleteConfirmDialog
+          onConfirm={confirmDelete}
+          onCancel={() => !deleting && setDeleteId(null)}
+        />
+      )}
     </div>
   );
 }

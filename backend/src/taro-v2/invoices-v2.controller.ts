@@ -154,6 +154,15 @@ export class InvoicesV2Controller {
     return this.invoices.findOne(id, { id: userId, role });
   }
 
+  @Delete('invoices/:id')
+  deleteInvoice(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: UserRole,
+  ) {
+    return this.invoices.deleteInvoice(id, { id: userId, role });
+  }
+
   @Delete('invoice-images/:id')
   deleteImage(
     @Param('id', ParseUUIDPipe) id: string,

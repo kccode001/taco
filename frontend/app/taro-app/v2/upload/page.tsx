@@ -363,9 +363,7 @@ export default function TaroV2UploadPage() {
     try {
       await processV2Invoice(invoiceId);
       if (validateTimer.current) window.clearTimeout(validateTimer.current);
-      // Hand off to the detail view, which renders ALL extracted rows and shows
-      // a spinner while OCR finishes (feedback #3). No bare success screen.
-      router.push(`/taro-app/v2/invoice/${invoiceId}`);
+      router.push(`/taro-app/v2/history`);
     } catch (err) {
       setError(`Gagal memproses: ${extractErrorMessage(err)}`);
       setBusy(false);

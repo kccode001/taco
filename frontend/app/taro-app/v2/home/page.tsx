@@ -5,8 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   listV2Invoices,
   getV2ImageUrl,
-  v2StatusLabel,
-  v2StatusTone,
   type InvoiceV2,
 } from "@/lib/v2/invoices";
 import { TopBar } from "../../_components/TopBar";
@@ -14,22 +12,8 @@ import { useTaroGuard } from "../../_components/useTaroGuard";
 import { isToday, timeAgo } from "../../_components/mockUploads";
 import { FileTextIcon, StoreIcon } from "../../_components/icons";
 import { BottomNavV2 } from "@/components/pwa-v2/BottomNavV2";
+import { ImageLightboxV2 } from "@/components/pwa-v2/ImageLightboxV2";
 
-const TONE_BG: Record<"ok" | "warn" | "err" | "info" | "muted", string> = {
-  ok: "bg-emerald-50 text-taco-success",
-  warn: "bg-amber-50 text-taco-warning",
-  err: "bg-red-50 text-taco-error",
-  info: "bg-blue-50 text-taco-info",
-  muted: "bg-taco-page text-taco-sub border border-taco-border",
-};
-
-const TONE_DOT: Record<"ok" | "warn" | "err" | "info" | "muted", string> = {
-  ok: "bg-taco-success",
-  warn: "bg-taco-warning",
-  err: "bg-taco-error",
-  info: "bg-taco-info",
-  muted: "bg-taco-muted",
-};
 
 const WEEKDAY_SHORT_ID = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
 
@@ -179,6 +163,7 @@ export default function TaroV2HomePage() {
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -226,6 +211,19 @@ export default function TaroV2HomePage() {
       alive = false;
     };
   }, [recent, thumbs]);
+
+  async function openPreview(inv: InvoiceV2) {
+    if (thumbs[inv.id]) {
+      setPreview(thumbs[inv.id]);
+      return;
+    }
+    if (!inv.thumb_image_id) return;
+    const url = await getV2ImageUrl(inv.thumb_image_id);
+    if (url) {
+      setThumbs((prev) => ({ ...prev, [inv.id]: url }));
+      setPreview(url);
+    }
+  }
 
   const todayCount = uploads.filter((u) => isToday(dateOf(u))).length;
   const weekBuckets = useMemo(() => buildLast7DayBuckets(uploads), [uploads]);
@@ -317,55 +315,52 @@ export default function TaroV2HomePage() {
             </div>
           ) : (
             <div className="flex flex-col gap-2">
-              {recent.map((u) => {
-                const tone = v2StatusTone(u.status);
-                return (
-                  <button
-                    key={u.id}
-                    type="button"
-                    onClick={() => router.push(`/taro-app/v2/invoice/${u.id}`)}
-                    className="w-full bg-white border border-taco-border rounded-xl px-4 py-3 text-left active:bg-taco-page min-h-[80px]"
-                  >
-                    <div className="flex items-start gap-3">
-                      <RowThumbnail src={thumbs[u.id]} />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[15px] font-medium text-taco-text truncate">
-                          {u.store?.name ?? "Toko Tidak Disebutkan"}
+              {recent.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => openPreview(u)}
+                  className="w-full bg-white border border-taco-border rounded-xl px-4 py-3 text-left active:bg-taco-page min-h-[80px]"
+                >
+                  <div className="flex items-start gap-3">
+                    <RowThumbnail src={thumbs[u.id]} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[15px] font-medium text-taco-text truncate">
+                        {u.store?.name ?? "Toko Tidak Disebutkan"}
+                      </div>
+                      {u.area?.name ? (
+                        <div className="text-[12px] text-taco-sub mt-0.5 truncate">
+                          {u.area.name}
                         </div>
-                        {u.area?.name ? (
-                          <div className="text-[12px] text-taco-sub mt-0.5 truncate">
-                            {u.area.name}
-                          </div>
-                        ) : null}
-                        <div className="flex items-center gap-2 mt-2 flex-wrap">
-                          <span
-                            className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full ${TONE_BG[tone]}`}
-                          >
-                            <span
-                              className={`w-1.5 h-1.5 rounded-full ${TONE_DOT[tone]}`}
-                            />
-                            {v2StatusLabel(u.status)}
+                      ) : null}
+                      <div className="flex items-center gap-2 mt-2 flex-wrap">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-taco-success">
+                          <span className="w-1.5 h-1.5 rounded-full bg-taco-success" />
+                          Selesai
+                        </span>
+                        {(u.line_count ?? 0) > 0 && (
+                          <span className="text-[11px] text-taco-sub">
+                            {u.line_count} baris
                           </span>
-                          {(u.line_count ?? 0) > 0 && (
-                            <span className="text-[11px] text-taco-sub">
-                              {u.line_count} baris
-                            </span>
-                          )}
-                          <span className="text-[11px] text-taco-muted ml-auto">
-                            {timeAgo(dateOf(u))}
-                          </span>
-                        </div>
+                        )}
+                        <span className="text-[11px] text-taco-muted ml-auto">
+                          {timeAgo(dateOf(u))}
+                        </span>
                       </div>
                     </div>
-                  </button>
-                );
-              })}
+                  </div>
+                </button>
+              ))}
             </div>
           )}
         </section>
       </div>
 
       <BottomNavV2 />
+
+      {preview && (
+        <ImageLightboxV2 src={preview} onClose={() => setPreview(null)} />
+      )}
     </div>
   );
 }
