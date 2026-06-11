@@ -11,11 +11,10 @@
  *  Falls back to id prefixes if those aren't available. */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { V2PageHeader } from "../_components/V2Tabs";
 import {
   listV2Invoices,
-  getV2ImageUrl,
   type InvoiceV2,
   type InvoiceV2Status,
 } from "@/lib/v2/invoices";
@@ -79,23 +78,7 @@ export default function AdminV2InvoiceQueuePage() {
   const [stores, setStores] = useState<StoreV2[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Inline image preview (a "quick look" action so the admin can eyeball the
-  // upload without leaving the queue).
-  const [preview, setPreview] = useState<{
-    invId: string;
-    url: string | null;
-    loading: boolean;
-  } | null>(null);
-
-  const openPreview = useCallback(async (inv: InvoiceV2) => {
-    if (!inv.thumb_image_id) {
-      setPreview({ invId: inv.id, url: null, loading: false });
-      return;
-    }
-    setPreview({ invId: inv.id, url: null, loading: true });
-    const url = await getV2ImageUrl(inv.thumb_image_id);
-    setPreview({ invId: inv.id, url, loading: false });
-  }, []);
+  const router = useRouter();
 
   // Load the small area/store lists once for client-side name mapping.
   useEffect(() => {
@@ -200,7 +183,7 @@ export default function AdminV2InvoiceQueuePage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-taco-divider">
-              {["Invoice", "Toko", "Area", "Baris", "Status", "Tanggal", "Aksi"].map(
+              {["Invoice", "Toko", "Area", "Baris", "Status", "Tanggal"].map(
                 (c) => (
                   <th
                     key={c}
@@ -215,13 +198,13 @@ export default function AdminV2InvoiceQueuePage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-[13px] text-taco-muted">
+                <td colSpan={6} className="px-4 py-10 text-center text-[13px] text-taco-muted">
                   Memuat invoice…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-[13px] text-taco-muted">
+                <td colSpan={6} className="px-4 py-10 text-center text-[13px] text-taco-muted">
                   {filter === "pending"
                     ? "Tidak ada invoice yang menunggu tindakan. 🎉"
                     : filter === "selesai"
@@ -233,7 +216,8 @@ export default function AdminV2InvoiceQueuePage() {
               rows.map((inv) => (
                 <tr
                   key={inv.id}
-                  className="border-b border-taco-divider last:border-0 hover:bg-taco-page/60"
+                  onClick={() => router.push(`/taro/v2/invoices/${inv.id}`)}
+                  className="border-b border-taco-divider last:border-0 hover:bg-taco-page/60 cursor-pointer"
                 >
                   <td className="px-4 py-3 text-[13px] font-mono text-taco-text">
                     {inv.id.slice(0, 8)}
@@ -259,23 +243,6 @@ export default function AdminV2InvoiceQueuePage() {
                   <td className="px-4 py-3 text-[13px] text-taco-muted">
                     {fmtDate(inv.created_at)}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5 justify-end">
-                      <button
-                        type="button"
-                        onClick={() => openPreview(inv)}
-                        className="text-[13px] font-medium px-3 py-1.5 rounded-lg border border-taco-border bg-white text-taco-sub hover:text-taco-text hover:border-taco-text"
-                      >
-                        Pratinjau
-                      </button>
-                      <Link
-                        href={`/taro/v2/invoices/${inv.id}`}
-                        className="text-[13px] font-medium px-3 py-1.5 rounded-lg border border-taco-border bg-white text-taco-text hover:bg-taco-page"
-                      >
-                        {inv.status === "needs_review" && (inv.needs_review_count ?? 0) > 0 ? "Resolusi" : "Lihat"}
-                      </Link>
-                    </div>
-                  </td>
                 </tr>
               ))
             )}
@@ -283,57 +250,6 @@ export default function AdminV2InvoiceQueuePage() {
         </table>
       </div>
 
-      {preview && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          onClick={() => setPreview(null)}
-        >
-          <div
-            className="bg-white rounded-2xl max-w-2xl w-full max-h-[88vh] flex flex-col overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-5 py-3 border-b border-taco-divider flex items-center justify-between">
-              <span className="text-[14px] font-semibold text-taco-text">
-                Pratinjau Invoice #{preview.invId.slice(0, 8)}
-              </span>
-              <div className="flex items-center gap-3">
-                <Link
-                  href={`/taro/v2/invoices/${preview.invId}`}
-                  className="text-[13px] font-medium text-taco-accent hover:underline"
-                >
-                  Buka detail →
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => setPreview(null)}
-                  aria-label="Tutup"
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-taco-sub hover:bg-taco-page text-[18px] leading-none"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-            <div className="p-4 overflow-auto flex items-center justify-center bg-taco-page min-h-[200px]">
-              {preview.loading ? (
-                <span className="text-[13px] text-taco-muted">
-                  Memuat gambar…
-                </span>
-              ) : preview.url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={preview.url}
-                  alt="Pratinjau invoice"
-                  className="max-w-full max-h-[70vh] object-contain rounded-lg border border-taco-border bg-white"
-                />
-              ) : (
-                <span className="text-[13px] text-taco-muted">
-                  Tidak ada gambar untuk invoice ini.
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

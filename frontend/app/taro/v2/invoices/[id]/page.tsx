@@ -429,8 +429,13 @@ export default function AdminV2InvoiceDetailPage() {
                           </td>
                           <td className="px-3 py-2.5">
                             <button
+                              type="button"
                               onClick={() => setEditing(li)}
-                              className="h-[26px] px-2 border border-taco-border rounded-md text-[11px] text-taco-sub hover:text-taco-text hover:border-taco-text"
+                              className={`h-[26px] px-2.5 border rounded-md text-[11px] font-medium transition-colors ${
+                                d.needsHuman
+                                  ? "border-taco-accent bg-taco-accent text-white hover:bg-taco-accent-dark"
+                                  : "border-taco-border text-taco-sub hover:text-taco-text hover:border-taco-text"
+                              }`}
                             >
                               {d.needsHuman ? "Resolusi" : "Edit"}
                             </button>
@@ -797,7 +802,7 @@ function ResolveModal({
                     type="button"
                     onClick={pickUnknown}
                     disabled={!!busyKey}
-                    className="mt-2 w-full min-h-[48px] rounded-xl border border-dashed border-taco-border bg-taco-page text-[14px] font-medium text-taco-text active:bg-taco-divider disabled:opacity-50"
+                    className="mt-2 w-full min-h-[48px] rounded-xl bg-taco-accent text-white text-[14px] font-medium active:bg-taco-accent-dark disabled:opacity-50 transition-colors"
                   >
                     {busyKey === "unknown" ? "Menyimpan…" : "Tidak diketahui"}
                   </button>
