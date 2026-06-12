@@ -1,10 +1,38 @@
 import axios, { AxiosError } from "axios";
 import { useAuthStore } from "./store";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
+// BE port — the API lives on a different port than the FE (4014).
+const API_PORT = "5013";
+
+/** Resolve the API base URL at RUNTIME so it follows whatever host served the
+ *  page (localhost→localhost, 192.168.x→192.168.x). This is what lets the PWA
+ *  load over a LAN IP from a phone: a hardcoded `localhost` would resolve to
+ *  the phone itself → connection refused.
+ *
+ *  Precedence:
+ *   1. NEXT_PUBLIC_API_URL — explicit absolute override (empty by default).
+ *   2. `window.location.hostname` — runtime derivation (browser).
+ *   3. localhost — SSR fallback only (no `window`).
+ *
+ *  NOTE: env wins because it's build-time baked; keep it empty in .env.local
+ *  so runtime derivation is the default. */
+export function getApiBase(): string {
+  const override = process.env.NEXT_PUBLIC_API_URL;
+  if (override) return override;
+  if (typeof window !== "undefined") {
+    return `http://${window.location.hostname}:${API_PORT}/api`;
+  }
+  return `http://localhost:${API_PORT}/api`;
+}
+
+/** API origin without the trailing `/api` — for prefixing server-relative
+ *  image paths the BE ships (`/api/...`). */
+export function getApiOrigin(): string {
+  return getApiBase().replace(/\/api\/?$/, "");
+}
 
 export const api = axios.create({
-  baseURL: API_BASE,
+  baseURL: getApiBase(),
   headers: { "Content-Type": "application/json" },
   timeout: 30000,
 });
@@ -936,8 +964,7 @@ function toAbsoluteApiUrl(
   rawImg: string | null | undefined
 ): string | null | undefined {
   if (!rawImg) return rawImg;
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
-  const apiOrigin = apiBase.replace(/\/api\/?$/, "");
+  const apiOrigin = getApiOrigin();
   return rawImg.startsWith("/") ? `${apiOrigin}${rawImg}` : rawImg;
 }
 
@@ -1120,7 +1147,7 @@ export async function getInvoiceImageUrl(invoiceId: string): Promise<string> {
   );
   const raw = res.data.url;
   if (raw.startsWith("http")) return raw;
-  const apiOrigin = API_BASE.replace(/\/api\/?$/, "");
+  const apiOrigin = getApiOrigin();
   return `${apiOrigin}${raw}`;
 }
 

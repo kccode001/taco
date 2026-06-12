@@ -8,7 +8,7 @@
  *  (`backend/src/database/entities/v2/*`). Responses are normalized defensively
  *  (`T` | `{data:T}` | `{images:[]}`) since the BE DTOs may still be settling. */
 
-import { api } from "@/lib/api";
+import { api, getApiOrigin } from "@/lib/api";
 import { unwrapList, unwrapOne } from "./api";
 import type { AreaV2, StoreV2 } from "./types";
 
@@ -284,10 +284,9 @@ export async function getV2ImageUrl(imageId: string): Promise<string | null> {
     // The BE returns a server-relative URL ("/api/v2/..."). The API lives on a
     // different origin than the FE (axios baseURL is absolute), so an <img src>
     // would otherwise resolve "/api/..." against the FE origin and 404. Resolve
-    // it against the API origin, mirroring v1's getInvoiceImageUrl.
-    const apiBase =
-      process.env.NEXT_PUBLIC_API_URL || "http://localhost:5013/api";
-    const apiOrigin = apiBase.replace(/\/api\/?$/, "");
+    // it against the API origin (runtime-derived, follows the serving host),
+    // mirroring v1's getInvoiceImageUrl.
+    const apiOrigin = getApiOrigin();
     return `${apiOrigin}${raw}`;
   } catch {
     return null;
