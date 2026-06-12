@@ -146,6 +146,36 @@ function SectionCard({
   );
 }
 
+// ── Share chart tooltip ──────────────────────────────────────────────────────
+// Recharts colors each row's text by its series fill, which renders the
+// "Non-TACO" entry in the light grey bar fill (unreadable). Force the Non-TACO
+// row to black; TACO keeps its orange. Preserves the area label + % formatting.
+function ShareTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ name?: string; value?: number; color?: string }>;
+  label?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-white border border-taco-border rounded-lg shadow-md px-3 py-2">
+      <div className="text-[12px] font-semibold text-taco-text mb-1">{label}</div>
+      {payload.map((entry) => (
+        <div
+          key={entry.name}
+          className="text-[12px] leading-snug"
+          style={{ color: entry.name === "Non-TACO" ? BLACK : entry.color }}
+        >
+          {entry.name} : {Number(entry.value).toFixed(1)}%
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Drill-down drawer ────────────────────────────────────────────────────────
 
 function DrillDrawer({
@@ -601,12 +631,7 @@ export default function AnalyticsPage() {
                     width={120}
                     tick={{ fontSize: 12, fill: "#1A1A1A" }}
                   />
-                  <Tooltip
-                    formatter={(v: unknown, name: unknown) => [
-                      `${Number(v).toFixed(1)}%`,
-                      String(name),
-                    ]}
-                  />
+                  <Tooltip content={<ShareTooltip />} />
                   <Legend
                     wrapperStyle={{ fontSize: 12 }}
                     formatter={(value) => (

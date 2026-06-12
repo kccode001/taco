@@ -126,7 +126,7 @@ export function V2DashboardLayout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="min-h-screen bg-taco-page flex">
+    <div className="h-screen bg-taco-page flex">
       <aside className="w-[240px] bg-white border-r border-taco-border flex flex-col flex-shrink-0 sticky top-0 h-screen">
         <div className="px-5 py-4 border-b border-taco-divider">
           {/* eslint-disable-next-line @next/next/no-img-element */}
