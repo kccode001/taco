@@ -37,7 +37,8 @@ export class InvoiceOcrProcessor {
   private readonly anthropic: Anthropic;
 
   constructor(
-    @InjectRepository(Invoice) private readonly invoicesRepo: Repository<Invoice>,
+    @InjectRepository(Invoice)
+    private readonly invoicesRepo: Repository<Invoice>,
     @InjectRepository(InvoiceLineItem)
     private readonly lineItemsRepo: Repository<InvoiceLineItem>,
     @InjectRepository(CompetitorSku)
@@ -50,9 +51,13 @@ export class InvoiceOcrProcessor {
   }
 
   @Process('process-invoice')
-  async handle(job: Job<{ invoiceId: string; imagePath: string }>): Promise<void> {
+  async handle(
+    job: Job<{ invoiceId: string; imagePath: string }>,
+  ): Promise<void> {
     const { invoiceId, imagePath } = job.data;
-    const invoice = await this.invoicesRepo.findOne({ where: { id: invoiceId } });
+    const invoice = await this.invoicesRepo.findOne({
+      where: { id: invoiceId },
+    });
     if (!invoice) {
       this.logger.warn(`Invoice ${invoiceId} not found — skip OCR.`);
       return;
@@ -168,7 +173,7 @@ export class InvoiceOcrProcessor {
       system: [
         'You are an invoice OCR system for an Indonesian building-materials distributor.',
         'The invoice may contain MULTIPLE competitor brands per page (Krono, Pergo, Egger,',
-        'Wilsonart, Arborite, Formica, Greenlam, Hibrew, IPEX, Saint-Gobain or any other).',
+        'Wilsonart, Javaco, Formica, Greenlam, Hibrew, IPEX, Saint-Gobain or any other).',
         'For EACH line item, return: raw_text (verbatim row), product_name (cleaned),',
         'brand (best guess from row text — null if unclear), qty (number), unit (string),',
         'unit_price (IDR per unit, number), confidence (0-1).',
@@ -178,7 +183,10 @@ export class InvoiceOcrProcessor {
         {
           role: 'user',
           content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: base64 },
+            },
             { type: 'text', text: 'Extract every line item.' },
           ],
         },
@@ -193,7 +201,7 @@ export class InvoiceOcrProcessor {
       .trim();
     try {
       return JSON.parse(cleaned) as OcrLineItem[];
-    } catch (e) {
+    } catch {
       throw new Error(`Failed to parse OCR response: ${cleaned.slice(0, 200)}`);
     }
   }

@@ -117,3 +117,49 @@ the identical `REAL_COMPETITORS` change ~same minute; my working copy matched it
 byte-for-byte → no separate code commit). My contribution this turn = running the
 seed against the live DB, the live verification (all 9 active, idempotent, no
 dupes), and the 18-active landmine flag above.
+
+---
+
+## 2026-06-12 — Arborite → Javaco swap + AI-insight go-live (BE)
+
+Task: `2026-06-12-taco-v2-arborite-to-javaco + ai-insight-key`. Two parts done
+as one rebuild.
+
+**Task 1 — rename competitor Arborite → Javaco (live code):**
+- `seed-v2-competitors.ts`: `REAL_COMPETITORS` entry + header doc list.
+- `invoices/invoice-ocr.processor.ts:176`: brand list in the OCR system prompt.
+- Repo grep: zero other live-code hits (remaining "Arborite" strings are only the
+  rename **source** + comment).
+- Added an idempotent `RENAMES` step to the seed (`Arborite`→`Javaco`). A plain
+  upsert of the edited list would CREATE Javaco but leave the old Arborite row
+  active → "no Arborite" check fails. The rename updates the existing row in place
+  (preserves id `7bf9f9e4…` + any FK tags; the row had 0 line-item refs), then the
+  upsert no-ops. Fires only when `from` exists and `to` doesn't → idempotent.
+- ⚠️ **Country left `Kanada`** per task ("leave if unsure") — but Javaco is almost
+  certainly an Indonesian HPL brand; `Kanada` is carried over from Arborite.
+  Flagged to KC; one-line fix when confirmed.
+- Also fixed a pre-existing unused-`catch`-binding lint error in the OCR processor
+  so the touched file commits clean.
+
+**Task 2 — AI-insight key go-live:** `ANTHROPIC_API_KEY` in `backend/.env` was the
+placeholder. Recovered the real key from TACO's OWN history
+(`bc13bd36…:backend/.env`, valid `sk-ant-api03-…` 108 chars) and wrote ONLY that
+line into `backend/.env` (gitignored-but-tracked → NEVER committed; left OPENAI +
+all other lines untouched).
+
+**Single rebuild sequence:** `nest build` → killed :5013 pid 46506 (KC's 17:09
+keyless restart, the source of the insight 401s) → restarted `node dist/main` →
+reseeded competitors.
+
+**Verified live :5013** (admin JWT):
+- `GET /api/competitor-brands` → **Javaco active, Arborite absent** (rename in
+  place, same id).
+- `GET /api/v2/dashboard/ai-insight?period=all` → HTTP 200, `model:
+  claude-sonnet-4-6`, real Bahasa insight (NOT the model:null fallback). Recovered
+  key is valid — not rotated.
+- New :5013: **pid 49682, started 2026-06-12 17:22:10 WIB.** tsc + eslint clean.
+
+**Gotcha:** `backend/.env` is in `.gitignore` BUT already tracked (committed before
+it was ignored) — `.gitignore` does NOT protect it. Never `git add` it. Secrets
+have lived in this repo's history (that's how the key was recoverable); worth a
+history scrub + key rotation eventually (flagged, out of scope here).

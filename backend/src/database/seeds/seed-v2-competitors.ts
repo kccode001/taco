@@ -6,7 +6,7 @@
  * competitors in that category are other HPL / decorative-laminate brands.
  * This seed:
  *   1. Upserts the real competitor set (active): Grasmerino, Violam, Aica,
- *      Greenlam, Arborite, Formica, Lamitak, Skylam, Artform (9 total).
+ *      Greenlam, Javaco, Formica, Lamitak, Skylam, Artform (9 total).
  *   2. Deactivates obvious placeholder/test rows (a country name + the two
  *      curl/test brands) so they drop off the active Kompetitor list.
  *   3. Re-tags the handful of v2 competitor invoice lines onto real brands so
@@ -31,7 +31,10 @@ const REAL_COMPETITORS: { name: string; country: string }[] = [
   { name: 'Violam', country: 'Indonesia' },
   { name: 'Aica', country: 'Indonesia' },
   { name: 'Greenlam', country: 'India' },
-  { name: 'Arborite', country: 'Kanada' },
+  // NOTE: country carried over from the former 'Arborite' row per task ("leave
+  // 'Kanada' if unsure"). Javaco is likely an Indonesian HPL brand — flagged to
+  // KC for correction.
+  { name: 'Javaco', country: 'Kanada' },
   { name: 'Formica', country: 'Amerika Serikat' },
   { name: 'Lamitak', country: 'Singapura' },
   { name: 'Skylam', country: 'Indonesia' },
@@ -43,6 +46,17 @@ const PLACEHOLDER_NAMES = [
   'Malaysia',
   'TestBrand_CurlTest_EDITED',
   'NewInlineTestBrand',
+];
+
+/**
+ * In-place brand renames. Renaming the existing row (vs. just dropping the old
+ * name from REAL_COMPETITORS) keeps the brand's id and any invoice-line FK tags
+ * intact, and guarantees the old name disappears from the active list — a plain
+ * upsert would leave the old row orphaned-but-active. Idempotent: only fires
+ * when `from` still exists and `to` does not yet.
+ */
+const RENAMES: { from: string; to: string }[] = [
+  { from: 'Arborite', to: 'Javaco' },
 ];
 
 /**
@@ -68,6 +82,18 @@ async function main() {
 
   const brandRepo = ds.getRepository(CompetitorBrand);
 
+  // 0. Apply in-place renames before the upsert (preserves id + FK tags).
+  let renamed = 0;
+  for (const r of RENAMES) {
+    const oldRow = await brandRepo.findOne({ where: { name: r.from } });
+    const newRow = await brandRepo.findOne({ where: { name: r.to } });
+    if (oldRow && !newRow) {
+      oldRow.name = r.to;
+      await brandRepo.save(oldRow);
+      renamed++;
+    }
+  }
+
   // 1. Upsert real competitors (active).
   let created = 0;
   let reactivated = 0;
@@ -75,7 +101,11 @@ async function main() {
   for (const c of REAL_COMPETITORS) {
     let row = await brandRepo.findOne({ where: { name: c.name } });
     if (!row) {
-      row = brandRepo.create({ name: c.name, country: c.country, is_active: true });
+      row = brandRepo.create({
+        name: c.name,
+        country: c.country,
+        is_active: true,
+      });
       row = await brandRepo.save(row);
       created++;
     } else if (!row.is_active || !row.country) {
@@ -117,7 +147,7 @@ async function main() {
   const retagged = taggedRows[0]?.cnt ?? '0';
 
   console.log(
-    `Done. Real brands: ${created} created, ${reactivated} reactivated. ` +
+    `Done. Renamed: ${renamed}. Real brands: ${created} created, ${reactivated} reactivated. ` +
       `Placeholders deactivated: ${deactivated}. Named competitor lines now: ${retagged}.`,
   );
   await ds.destroy();
