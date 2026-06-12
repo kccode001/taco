@@ -199,7 +199,7 @@ export default function StoresV2Page() {
                     {s.area_name ?? areaName(s.area_id)}
                   </td>
                   <td className="px-4 py-3 text-[13px] text-taco-sub">
-                    {s.created_by ?? "—"}
+                    {s.created_by_name ?? "—"}
                   </td>
                   <td className="px-4 py-3 text-[13px] text-taco-muted">
                     {s.created_at?.slice(0, 10) ?? "—"}

@@ -50,6 +50,7 @@ interface RawTrend {
 interface RawSkuRow {
   sku_id: string;
   sku_name: string;
+  sku_code: string | null;
   catalog_category: string | null;
   total_value: string;
   total_qty: string;
@@ -546,6 +547,7 @@ export class V2AnalyticsService {
         .leftJoin('li.matched_sku', 'sku')
         .select('li.matched_sku_id', 'sku_id')
         .addSelect('MAX(sku.name)', 'sku_name')
+        .addSelect('MAX(sku.code)', 'sku_code')
         .addSelect('MAX(sku.catalog_category)', 'catalog_category')
         .addSelect(
           'COALESCE(SUM(CAST(li.total_price AS numeric)), 0)',
@@ -601,6 +603,7 @@ export class V2AnalyticsService {
         return {
           sku_id: r.sku_id,
           sku_name: r.sku_name ?? 'SKU Tidak Diketahui',
+          sku_code: r.sku_code ?? null,
           catalog_category: r.catalog_category ?? null,
           total_value: Math.round(this.num(r.total_value)),
           total_qty: qty,

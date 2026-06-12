@@ -75,6 +75,17 @@ interface RawPriorArea {
   area_id: string | null;
   total_qty: string;
 }
+interface RawCompetitorBrandRollup {
+  brand_name: string;
+  total_qty: string;
+  total_value: string;
+  area_count: string;
+}
+interface RawBasketPair {
+  a: string;
+  b: string;
+  co_invoices: string;
+}
 
 /**
  * v2 MANAGEMENT — Dashboard aggregation + AI insight (market-demand surface).
@@ -364,12 +375,106 @@ export class V2DashboardService {
     };
   }
 
+  // ---- competitor + market-basket rollups (insight inputs) -----------------
+
+  /**
+   * Competitor picture for the insight: the named competitor brands admins
+   * resolved on invoice lines (`is_competitor=true` with a `brand_name`),
+   * aggregated by brand with qty, value and how many areas they show up in.
+   * Also returns the count of competitor lines still without a brand tag.
+   */
+  private async competitorRollup(range: DateRange, area?: string) {
+    const branded = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .select('li.brand_name', 'brand_name')
+        .addSelect('COALESCE(SUM(li.quantity), 0)', 'total_qty')
+        .addSelect(
+          'COALESCE(SUM(CAST(li.total_price AS numeric)), 0)',
+          'total_value',
+        )
+        .addSelect('COUNT(DISTINCT inv.area_id)', 'area_count')
+        .where('li.is_competitor = true')
+        .andWhere("COALESCE(NULLIF(btrim(li.brand_name), ''), NULL) IS NOT NULL"),
+      range,
+      area,
+    )
+      .groupBy('li.brand_name')
+      .orderBy('total_value', 'DESC')
+      .limit(8)
+      .getRawMany<RawCompetitorBrandRollup>();
+
+    const untaggedRaw = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .select('COUNT(li.id)', 'cnt')
+        .where('li.is_competitor = true')
+        .andWhere("COALESCE(NULLIF(btrim(li.brand_name), ''), NULL) IS NULL"),
+      range,
+      area,
+    ).getRawOne<{ cnt: string }>();
+
+    return {
+      brands: branded.map((r) => ({
+        brand_name: r.brand_name,
+        total_qty: this.num(r.total_qty),
+        total_value: Math.round(this.num(r.total_value)),
+        area_count: this.num(r.area_count),
+      })),
+      untagged_competitor_lines: this.num(untaggedRaw?.cnt),
+    };
+  }
+
+  /**
+   * Market-basket: pairs of confirmed TACO SKUs that appear together in the
+   * same invoice ("ketika orang beli A, banyak juga beli B"). Self-join on
+   * invoice_id with an ordered id pair to avoid mirrored duplicates.
+   */
+  private async marketBasket(range: DateRange, area?: string) {
+    const rows = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .innerJoin(
+          'taro_v2_invoice_line_items',
+          'li2',
+          'li2.invoice_id = li.invoice_id AND li.matched_sku_id < li2.matched_sku_id',
+        )
+        .innerJoin('taco_skus', 's1', 's1.id = li.matched_sku_id')
+        .innerJoin('taco_skus', 's2', 's2.id = li2.matched_sku_id')
+        .select('s1.name', 'a')
+        .addSelect('s2.name', 'b')
+        .addSelect('COUNT(DISTINCT li.invoice_id)', 'co_invoices')
+        .where('li.matched_sku_id IS NOT NULL')
+        .andWhere('li2.matched_sku_id IS NOT NULL'),
+      range,
+      area,
+    )
+      .groupBy('s1.name')
+      .addGroupBy('s2.name')
+      .orderBy('co_invoices', 'DESC')
+      .limit(8)
+      .getRawMany<RawBasketPair>();
+
+    return rows
+      .filter((r) => this.num(r.co_invoices) > 0)
+      .map((r) => ({
+        sku_a: r.a,
+        sku_b: r.b,
+        co_invoices: this.num(r.co_invoices),
+      }));
+  }
+
   // ---- AI insight ----------------------------------------------------------
 
   /**
    * LLM (Sonnet) over the pre-aggregated period rollups → market-demand brief.
    * Compares the selected window against the immediately-preceding window of
-   * equal length to surface rising / declining areas.
+   * equal length to surface rising / declining areas, and feeds the model the
+   * competitor picture + market-basket co-occurrences so it can recommend
+   * bundles, price checks vs competitors, and weak-area pushes.
    */
   async aiInsight(query: AiInsightQueryDto) {
     const range = this.resolveRange(query.period);
@@ -379,6 +484,8 @@ export class V2DashboardService {
       area: query.area,
       limit: '5',
     });
+    const competitor = await this.competitorRollup(range, query.area);
+    const market_basket = await this.marketBasket(range, query.area);
 
     // Prior window of equal length for trend direction (skip for 'all').
     let priorByArea = new Map<string | null, number>();
@@ -433,6 +540,8 @@ export class V2DashboardService {
       qty_over_time: recap.qty_over_time,
       area_trends,
       trending: trending.per_area,
+      competitor,
+      market_basket,
     };
 
     if (recap.totals.line_item_count === 0) {
@@ -463,20 +572,24 @@ export class V2DashboardService {
     try {
       const response = await this.anthropic.messages.create({
         model: INSIGHT_MODEL,
-        max_tokens: 900,
+        max_tokens: 1500,
         system:
           'Anda analis permintaan pasar untuk tim manajemen TACO (produk bahan bangunan/furnitur seperti HPL, laminate, edging). ' +
-          'Anda menerima ringkasan data invoice yang SUDAH diagregasi per area dan per item untuk satu periode, plus perbandingan dengan periode sebelumnya. ' +
-          'Tugas: berikan insight permintaan pasar yang ringkas, konkret, dan dapat ditindaklanjuti dalam Bahasa Indonesia. ' +
-          'Fokus pada: apa yang laku di tiap area, area mana yang permintaannya naik/turun, area mana yang tim Taro kurang mengunggah (cakupan rendah), dan rekomendasi fokus untuk manajemen. ' +
-          'Jangan mengarang angka di luar data. Jika data tipis, katakan apa adanya. Maksimal sekitar 6 poin.',
+          'Anda menerima ringkasan data invoice yang SUDAH diagregasi untuk satu periode: total & per-area (qty TACO vs kompetitor), tren naik/turun vs periode sebelumnya, item terlaris per area, ' +
+          'rincian merek kompetitor yang ditandai admin (field "competitor"), dan pasangan SKU yang sering dibeli bersamaan dalam satu invoice (field "market_basket"). ' +
+          'Tugas: tulis ringkasan manajemen dalam Bahasa Indonesia, format MARKDOWN, dengan struktur section berikut (gunakan heading "##"):\n' +
+          '## Permintaan TACO — kondisi umum + area terkuat/terlemah, dan tren naik/turun.\n' +
+          '## Gambaran Kompetitor — merek kompetitor mana yang muncul, di area mana, seberapa kuat. Jika tidak ada merek kompetitor yang ditandai, katakan demikian.\n' +
+          '## Pola Beli Bersama — dari market_basket, tulis observasi gaya "ketika orang beli A, banyak juga beli B". Jika data co-occurrence kosong, katakan belum cukup data.\n' +
+          '## Rekomendasi — 3–5 langkah konkret dan dapat ditindaklanjuti (mis. buat bundle dari pasangan yang sering dibeli bersama, cek ulang harga vs kompetitor di area tertentu, dorong area dengan cakupan/permintaan lemah). Gunakan bullet list.\n' +
+          'Aturan: JANGAN mengarang angka di luar data yang diberikan. Jika sebuah bagian datanya tipis/kosong, katakan apa adanya — jangan dipaksakan. Ringkas dan padat.',
         messages: [
           {
             role: 'user',
             content:
               'Ringkasan teragregasi (JSON) untuk periode terpilih:\n\n' +
               JSON.stringify(rollups) +
-              '\n\nTulis insight permintaan pasar untuk manajemen TACO berdasarkan data ini.',
+              '\n\nTulis ringkasan manajemen pasar TACO (markdown) berdasarkan data ini.',
           },
         ],
       });

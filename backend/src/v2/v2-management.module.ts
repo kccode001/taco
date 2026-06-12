@@ -11,6 +11,7 @@ import { MarketInsightV2 } from '../database/entities/v2/market-insight-v2.entit
 import { TacoSku } from '../database/entities/taco-sku.entity';
 import { Region } from '../database/entities/region.entity';
 import { TaroAgentRegion } from '../database/entities/taro-agent-region.entity';
+import { User } from '../database/entities/user.entity';
 
 import { AreasController } from './areas/areas.controller';
 import { AreasService } from './areas/areas.service';
@@ -54,6 +55,7 @@ import { RecommendationsService } from './recommendations/recommendations.servic
       TacoSku,
       Region,
       TaroAgentRegion,
+      User,
     ]),
   ],
   controllers: [

@@ -12,7 +12,6 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
-  Cell,
 } from "recharts";
 import {
   getAnalyticsSummary,
@@ -21,6 +20,10 @@ import {
   getAnalyticsTopSkus,
   getAnalyticsCompetitorBrands,
   getAnalyticsAreaStores,
+  getDashboardAiInsight,
+  getDashboardLatestInsight,
+  adaptAiInsight,
+  adaptLatestInsight,
 } from "@/lib/v2/api";
 import type {
   AnalyticsSummaryV2,
@@ -30,16 +33,22 @@ import type {
   TopSkusV2,
   CompetitorBrandsV2,
   AreaStoresDrillV2,
+  AiInsightV2,
 } from "@/lib/v2/types";
 import { V2PageHeader } from "../_components/V2Tabs";
+import { AiInsightModal } from "../_components/AiInsightModal";
+import { SparkleIcon } from "../../../admin/_components/icons";
 
 // ── Palette ──────────────────────────────────────────────────────────────────
 const AREA_COLORS = [
   "#1D9E75", "#2563EB", "#0E7490", "#7C3AED", "#64748B", "#0891B2",
 ];
 const TACO_GREEN = "#1D9E75";
+// TACO bars on the share chart use the primary brand orange (KC round-2 spec).
+const TACO_ORANGE = "#F04E23";
 const NON_TACO_GREY = "#E5E7EB";
 const COMP_RED = "#EF4444";
+const BLACK = "#1A1A1A";
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 const idID = new Intl.NumberFormat("id-ID");
@@ -293,6 +302,12 @@ export default function AnalyticsPage() {
   const [drillData, setDrillData] = useState<AreaStoresDrillV2 | null>(null);
   const [drillLoading, setDrillLoading] = useState(false);
 
+  // AI insight (single Generate button → modal). Reuses the persisted
+  // taro_v2_market_insights row + markdown modal infra.
+  const [insight, setInsight] = useState<AiInsightV2 | null>(null);
+  const [insightModalOpen, setInsightModalOpen] = useState(false);
+  const [insightGenerating, setInsightGenerating] = useState(false);
+
   const fetchAll = useCallback(async () => {
     setLoading(true);
     setLoadError(false);
@@ -334,6 +349,27 @@ export default function AnalyticsPage() {
     }
   }, [period, skuAreaFilter]);
 
+  // Load the latest SAVED insight for the period (no LLM call) on mount/period change.
+  const fetchSavedInsight = useCallback(async () => {
+    try {
+      const res = await getDashboardLatestInsight({ period });
+      setInsight(adaptLatestInsight(res.data));
+    } catch {
+      setInsight(null);
+    }
+  }, [period]);
+
+  // Generate a fresh insight (Sonnet) — triggered from the modal.
+  const generateInsight = useCallback(async () => {
+    setInsightGenerating(true);
+    try {
+      const res = await getDashboardAiInsight({ period });
+      setInsight(adaptAiInsight(res.data));
+    } finally {
+      setInsightGenerating(false);
+    }
+  }, [period]);
+
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
@@ -341,6 +377,10 @@ export default function AnalyticsPage() {
   useEffect(() => {
     fetchTopSkus();
   }, [fetchTopSkus]);
+
+  useEffect(() => {
+    fetchSavedInsight();
+  }, [fetchSavedInsight]);
 
   const openDrill = useCallback(
     async (areaId: string | null, areaName: string) => {
@@ -373,6 +413,13 @@ export default function AnalyticsPage() {
     if (byArea.length === 0) return null;
     return byArea.reduce((w, a) =>
       a.taco_share_value_pct < w.taco_share_value_pct ? a : w
+    );
+  }, [byArea]);
+  // Area with the highest TACO share (name + %) — replaces the old value card.
+  const topArea = useMemo(() => {
+    if (byArea.length === 0) return null;
+    return byArea.reduce((t, a) =>
+      a.taco_share_value_pct > t.taco_share_value_pct ? a : t
     );
   }, [byArea]);
 
@@ -411,41 +458,50 @@ export default function AnalyticsPage() {
   return (
     <>
       <div className="space-y-5">
-        {/* ── Header ─────────────────────────────────────────────────── */}
-        <V2PageHeader
-          title="Dashboard"
-          actions={
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1 bg-white border border-taco-border rounded-lg p-0.5">
-                {PERIODS.map((p) => (
-                  <button
-                    key={p.value}
-                    onClick={() => setPeriod(p.value)}
-                    className={`h-[30px] px-2.5 rounded-md text-[12px] font-semibold transition-colors ${
-                      period === p.value
-                        ? "bg-taco-text text-white"
-                        : "text-taco-sub hover:text-taco-text"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
+        {/* ── Header (sticky on scroll) ──────────────────────────────── */}
+        <div className="sticky top-0 z-20 -mx-6 -mt-6 px-6 pt-6 pb-3 bg-taco-page/95 backdrop-blur-sm border-b border-taco-border">
+          <V2PageHeader
+            title="Dashboard"
+            actions={
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => setInsightModalOpen(true)}
+                  className="h-[32px] px-3 inline-flex items-center gap-1.5 bg-taco-accent text-white rounded-lg text-[12px] font-semibold hover:opacity-90 transition-opacity"
+                >
+                  <SparkleIcon size={13} />
+                  Generate Insight
+                </button>
+                <div className="flex items-center gap-1 bg-white border border-taco-border rounded-lg p-0.5">
+                  {PERIODS.map((p) => (
+                    <button
+                      key={p.value}
+                      onClick={() => setPeriod(p.value)}
+                      className={`h-[30px] px-2.5 rounded-md text-[12px] font-semibold transition-colors ${
+                        period === p.value
+                          ? "bg-taco-text text-white"
+                          : "text-taco-sub hover:text-taco-text"
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <select
+                  value={areaFilter}
+                  onChange={(e) => setAreaFilter(e.target.value)}
+                  className="h-[32px] text-[13px] border border-taco-border rounded-lg px-2.5 text-taco-text bg-white outline-none"
+                >
+                  <option value="">Semua Area</option>
+                  {areaOptions.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <select
-                value={areaFilter}
-                onChange={(e) => setAreaFilter(e.target.value)}
-                className="h-[32px] text-[13px] border border-taco-border rounded-lg px-2.5 text-taco-text bg-white outline-none"
-              >
-                <option value="">Semua Area</option>
-                {areaOptions.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          }
-        />
+            }
+          />
+        </div>
 
         {/* ── Error state ─────────────────────────────────────────────── */}
         {loadError && (
@@ -464,10 +520,15 @@ export default function AnalyticsPage() {
             sub="vs. Non-TACO"
           />
           <KpiTile
-            label="Total Nilai TACO"
-            value={kpis ? idr(kpis.taco_value) : "—"}
-            delta={kpis?.taco_value_delta}
-            suffix="%"
+            label="Area Tertinggi"
+            value={
+              loading
+                ? "—"
+                : topArea
+                ? `${topArea.taco_share_value_pct.toFixed(1)}%`
+                : "—"
+            }
+            sub={topArea?.area_name ?? "share TACO tertinggi"}
           />
           <KpiTile
             label="Area Terjangkau"
@@ -546,10 +607,15 @@ export default function AnalyticsPage() {
                       String(name),
                     ]}
                   />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Legend
+                    wrapperStyle={{ fontSize: 12 }}
+                    formatter={(value) => (
+                      <span style={{ color: BLACK }}>{value}</span>
+                    )}
+                  />
                   <Bar
                     dataKey="TACO"
-                    fill={TACO_GREEN}
+                    fill={TACO_ORANGE}
                     stackId="share"
                     radius={[0, 0, 0, 0]}
                   />
@@ -758,7 +824,6 @@ export default function AnalyticsPage() {
                       "Kategori",
                       "Penetrasi Invoice",
                       "Rata-rata Qty",
-                      "Nilai IDR",
                     ].map((h) => (
                       <th
                         key={h}
@@ -773,7 +838,7 @@ export default function AnalyticsPage() {
                   {topSkusLoading ? (
                     <tr>
                       <td
-                        colSpan={5}
+                        colSpan={4}
                         className="px-4 py-8 text-center text-[13px] text-taco-muted"
                       >
                         Memuat…
@@ -782,7 +847,7 @@ export default function AnalyticsPage() {
                   ) : !topSkus || topSkus.top_skus.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={5}
+                        colSpan={4}
                         className="px-4 py-8 text-center text-[13px] text-taco-muted"
                       >
                         Belum ada TACO SKU yang terverifikasi.
@@ -799,7 +864,14 @@ export default function AnalyticsPage() {
                             <span className="text-[11px] text-taco-muted font-mono w-5 text-right">
                               {i + 1}
                             </span>
-                            {s.sku_name}
+                            <span className="flex flex-col">
+                              <span>{s.sku_name}</span>
+                              {s.sku_code && (
+                                <span className="text-[11px] text-taco-muted font-mono">
+                                  {s.sku_code}
+                                </span>
+                              )}
+                            </span>
                           </span>
                         </td>
                         <td className="px-4 py-2.5">
@@ -827,9 +899,6 @@ export default function AnalyticsPage() {
                             /inv
                           </span>
                         </td>
-                        <td className="px-4 py-2.5 text-[12px] text-taco-muted">
-                          {idr(s.total_value)}
-                        </td>
                       </tr>
                     ))
                   )}
@@ -841,7 +910,7 @@ export default function AnalyticsPage() {
           {/* ── D. Sinyal Kompetitor ─────────────────────────────────── */}
           <SectionCard
             title="Sinyal Kompetitor"
-            sub="Merek teridentifikasi berdasarkan nilai IDR per wilayah."
+            sub="Merek kompetitor yang muncul berhadapan dengan TACO dan seberapa kuat, per wilayah. Terisi dari baris invoice yang ditandai admin sebagai merek kompetitor saat resolusi."
           >
             {loading ? (
               <div className="px-5 py-8 text-center text-[13px] text-taco-muted">
@@ -849,7 +918,8 @@ export default function AnalyticsPage() {
               </div>
             ) : namedCompetitorAreas.length === 0 ? (
               <div className="px-5 py-8 text-center text-[13px] text-taco-muted">
-                Belum ada merek kompetitor yang ditandai.
+                Belum ada merek kompetitor yang ditandai. Tandai baris invoice
+                sebagai merek kompetitor saat resolusi agar muncul di sini.
               </div>
             ) : (
               <div className="divide-y divide-taco-divider">
@@ -893,6 +963,17 @@ export default function AnalyticsPage() {
         data={drillData}
         loading={drillLoading}
         onClose={closeDrill}
+      />
+
+      {/* ── AI Insight Modal (single Generate button) ──────────────────── */}
+      <AiInsightModal
+        open={insightModalOpen}
+        onOpenChange={setInsightModalOpen}
+        insight={insight}
+        loading={false}
+        period={period}
+        onRegenerate={generateInsight}
+        regenerating={insightGenerating}
       />
     </>
   );

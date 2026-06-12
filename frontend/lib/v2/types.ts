@@ -32,6 +32,8 @@ export interface StoreV2 {
   name: string;
   created_at?: string;
   created_by?: string;
+  /** Display name of the user who introduced the store (BE-resolved). */
+  created_by_name?: string | null;
 }
 
 export interface SalesAgentV2 {
@@ -183,6 +185,8 @@ export interface AnalyticsTrendV2 {
 export interface TopSkuRow {
   sku_id: string;
   sku_name: string;
+  /** Catalog SKU code, e.g. "TH 009 AA". */
+  sku_code: string | null;
   catalog_category: string | null;
   total_value: number;
   total_qty: number;
