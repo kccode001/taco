@@ -6,7 +6,7 @@
  * competitors in that category are other HPL / decorative-laminate brands.
  * This seed:
  *   1. Upserts the real competitor set (active): Grasmerino, Violam, Aica,
- *      Greenlam, Arborite.
+ *      Greenlam, Arborite, Formica, Lamitak, Skylam, Artform (9 total).
  *   2. Deactivates obvious placeholder/test rows (a country name + the two
  *      curl/test brands) so they drop off the active Kompetitor list.
  *   3. Re-tags the handful of v2 competitor invoice lines onto real brands so
@@ -32,6 +32,10 @@ const REAL_COMPETITORS: { name: string; country: string }[] = [
   { name: 'Aica', country: 'Indonesia' },
   { name: 'Greenlam', country: 'India' },
   { name: 'Arborite', country: 'Kanada' },
+  { name: 'Formica', country: 'Amerika Serikat' },
+  { name: 'Lamitak', country: 'Singapura' },
+  { name: 'Skylam', country: 'Indonesia' },
+  { name: 'Artform', country: 'Indonesia' },
 ];
 
 /** Placeholder / test rows to deactivate (not real brands). */
