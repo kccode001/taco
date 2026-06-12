@@ -79,3 +79,41 @@ sides to the same tz). Counts will look "mysteriously empty," not error.
 **Verified:** Playwright browser test confirmed modal opens with TH 056 AA pre-highlighted, save persisted to DB (needs_review=false, edited=true). Commit: 5f53e84f.
 
 **Gotcha:** OpenAI API key in `.env` is a placeholder — RAG embeddings don't work. The suffix matcher is the primary live strategy; RAG is the future fallback when keys are configured.
+
+---
+
+## 2026-06-11 — v2 competitors seed gap: 5 → 9 HPL brands (re-gate)
+
+Task: `2026-06-11-taco-v2-competitors-seed`. Round-2 QA flagged the v2
+competitors page: AC wants 9 real HPL/laminate brands, seed only carried 5.
+
+**Fix (`backend/src/database/seeds/seed-v2-competitors.ts`):** added 4 to
+`REAL_COMPETITORS` — Formica (Amerika Serikat), Lamitak (Singapura), Skylam
+(Indonesia), Artform (Indonesia) — and updated the header doc to list all 9.
+Re-ran `npm run seed:v2-competitors`: **4 created, 0 reactivated**; second run
+**0 created** (idempotent upsert by unique name); no duplicate brand names in DB.
+
+**Verified live :5013** via `GET /api/competitor-brands` (the exact endpoint the
+FE page consumes): all 9 — Grasmerino, Violam, Aica, Greenlam, Arborite, Formica,
+Lamitak, Skylam, Artform — return `is_active:true` with a country. The page
+renders the endpoint 1:1 on load (empty search ⇒ `filtered === brands`), so all 9
+render. (FE dev server was down → no browser snapshot; verified at the data +
+codepath the page reads.) No app restart needed — seed is data-only, app reads DB live.
+
+**LANDMINE flagged to KC/Yumi (NOT silently "fixed"):** the QA premise "only 5
+ever seeded" matches `seed-v2-competitors.ts`, but live `/competitor-brands`
+returns **18 active**, not 9. The v2 page (and BE `findAll`) read the SHARED
+`competitor_brands` table unfiltered, so 9 legacy/non-HPL v1 brands also show:
+Armstrong, Egger, Greenply, Krono, Kronospan, Meranti, Pergo, Teka, Unilin (all
+country=NULL, likely a v1 seed; some are flooring/panel/appliance brands, not HPL).
+The AC's "9" is satisfied (all 9 HPL brands present+active), but the page will not
+show *exactly* 9 until someone decides to either (a) scope the v2 page/endpoint to
+the curated HPL set (e.g. country-tagged), or (b) deactivate the legacy brands.
+Did NOT deactivate them — they may back v1 visit/competitor tracking; that's a
+spec + data-ownership call, not an additive seed fix.
+
+**Commit:** the seed edit landed as `6cbc8f14` (parallel/duplicate dispatch made
+the identical `REAL_COMPETITORS` change ~same minute; my working copy matched it
+byte-for-byte → no separate code commit). My contribution this turn = running the
+seed against the live DB, the live verification (all 9 active, idempotent, no
+dupes), and the 18-active landmine flag above.
