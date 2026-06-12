@@ -34,11 +34,11 @@ import type {
 import { V2PageHeader } from "../_components/V2Tabs";
 
 // ── Palette ──────────────────────────────────────────────────────────────────
-/** TACO green = confirmed match. Orange reserved for CTAs. Competitor = red. */
 const AREA_COLORS = [
   "#1D9E75", "#2563EB", "#0E7490", "#7C3AED", "#64748B", "#0891B2",
 ];
 const TACO_GREEN = "#1D9E75";
+const NON_TACO_GREY = "#E5E7EB";
 const COMP_RED = "#EF4444";
 
 // ── Formatters ───────────────────────────────────────────────────────────────
@@ -61,7 +61,13 @@ const PERIODS = [
 
 // ── Shared sub-components ────────────────────────────────────────────────────
 
-function DeltaChip({ delta, suffix = "%" }: { delta: number | null | undefined; suffix?: string }) {
+function DeltaChip({
+  delta,
+  suffix = "%",
+}: {
+  delta: number | null | undefined;
+  suffix?: string;
+}) {
   if (delta === null || delta === undefined)
     return <span className="text-[11px] text-taco-muted">—</span>;
   const up = delta >= 0;
@@ -71,7 +77,8 @@ function DeltaChip({ delta, suffix = "%" }: { delta: number | null | undefined; 
         up ? "text-taco-success" : "text-taco-error"
       }`}
     >
-      {up ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}{suffix}
+      {up ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}
+      {suffix}
     </span>
   );
 }
@@ -168,7 +175,6 @@ function DrillDrawer({
           </button>
         </div>
 
-        {/* Area KPIs */}
         {data?.area_kpis && (
           <div className="px-5 py-3 border-b border-taco-divider grid grid-cols-3 gap-3">
             <div>
@@ -198,7 +204,6 @@ function DrillDrawer({
           </div>
         )}
 
-        {/* Store table */}
         <div className="flex-1">
           {loading ? (
             <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
@@ -268,6 +273,8 @@ function DrillDrawer({
 export default function AnalyticsPage() {
   const [period, setPeriod] = useState("30d");
   const [areaFilter, setAreaFilter] = useState<string>("");
+  // Per-section SKU area filter — independent of the global area filter
+  const [skuAreaFilter, setSkuAreaFilter] = useState<string>("");
 
   // Data
   const [summary, setSummary] = useState<AnalyticsSummaryV2 | null>(null);
@@ -278,6 +285,7 @@ export default function AnalyticsPage() {
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [topSkusLoading, setTopSkusLoading] = useState(true);
 
   // Drill-down
   const [drillAreaId, setDrillAreaId] = useState<string | null>(null);
@@ -293,17 +301,15 @@ export default function AnalyticsPage() {
         period,
         ...(areaFilter ? { area: areaFilter } : {}),
       };
-      const [sumRes, shareRes, trendRes, skuRes, compRes] = await Promise.all([
+      const [sumRes, shareRes, trendRes, compRes] = await Promise.all([
         getAnalyticsSummary(params),
         getAnalyticsShareByArea(params),
         getAnalyticsTrend(params),
-        getAnalyticsTopSkus(params),
         getAnalyticsCompetitorBrands(params),
       ]);
       setSummary(sumRes.data);
       setShareByArea(shareRes.data);
       setTrend(trendRes.data);
-      setTopSkus(skuRes.data);
       setCompetitor(compRes.data);
     } catch {
       setLoadError(true);
@@ -312,9 +318,29 @@ export default function AnalyticsPage() {
     }
   }, [period, areaFilter]);
 
+  const fetchTopSkus = useCallback(async () => {
+    setTopSkusLoading(true);
+    try {
+      const params = {
+        period,
+        ...(skuAreaFilter ? { area: skuAreaFilter } : {}),
+      };
+      const res = await getAnalyticsTopSkus(params);
+      setTopSkus(res.data);
+    } catch {
+      setTopSkus(null);
+    } finally {
+      setTopSkusLoading(false);
+    }
+  }, [period, skuAreaFilter]);
+
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  useEffect(() => {
+    fetchTopSkus();
+  }, [fetchTopSkus]);
 
   const openDrill = useCallback(
     async (areaId: string | null, areaName: string) => {
@@ -341,10 +367,18 @@ export default function AnalyticsPage() {
   const byArea = shareByArea?.by_area ?? [];
   const kpis = summary?.kpis;
 
-  // Area options for filter
+  // 4 management KPI cards derived from fetched data
+  const areasCovered = byArea.filter((a) => a.invoice_count > 0).length;
+  const weakestArea = useMemo(() => {
+    if (byArea.length === 0) return null;
+    return byArea.reduce((w, a) =>
+      a.taco_share_value_pct < w.taco_share_value_pct ? a : w
+    );
+  }, [byArea]);
+
+  // Area options for the global filter and SKU section filter
   const areaOptions = useMemo(
-    () =>
-      byArea.map((a) => ({ id: a.area_id ?? "", name: a.area_name })),
+    () => byArea.map((a) => ({ id: a.area_id ?? "", name: a.area_name })),
     [byArea]
   );
 
@@ -354,7 +388,10 @@ export default function AnalyticsPage() {
     const buckets = new Map<string, Record<string, number>>();
     for (const area of perArea) {
       for (const pt of area.series) {
-        if (!buckets.has(pt.bucket)) buckets.set(pt.bucket, { bucket: pt.bucket as unknown as number });
+        if (!buckets.has(pt.bucket))
+          buckets.set(pt.bucket, {
+            bucket: pt.bucket as unknown as number,
+          });
         buckets.get(pt.bucket)![area.area_name] = pt.taco_share_value_pct;
       }
     }
@@ -365,16 +402,20 @@ export default function AnalyticsPage() {
 
   const trendAreas = trend?.per_area ?? [];
 
+  // Competitor: only show areas with at least one named brand
+  const namedCompetitorAreas = useMemo(
+    () => (competitor?.by_area ?? []).filter((a) => a.top_brands.length > 0),
+    [competitor]
+  );
+
   return (
     <>
       <div className="space-y-5">
         {/* ── Header ─────────────────────────────────────────────────── */}
         <V2PageHeader
-          title="Analytics Manajemen"
-          description="TACO share per area, trend waktu, SKU teratas, dan sinyal kompetitor."
+          title="Dashboard"
           actions={
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Period selector */}
               <div className="flex items-center gap-1 bg-white border border-taco-border rounded-lg p-0.5">
                 {PERIODS.map((p) => (
                   <button
@@ -390,7 +431,6 @@ export default function AnalyticsPage() {
                   </button>
                 ))}
               </div>
-              {/* Area filter */}
               <select
                 value={areaFilter}
                 onChange={(e) => setAreaFilter(e.target.value)}
@@ -410,47 +450,47 @@ export default function AnalyticsPage() {
         {/* ── Error state ─────────────────────────────────────────────── */}
         {loadError && (
           <div className="text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-4 py-3">
-            Gagal memuat data analytics. Periksa koneksi lalu coba lagi.
+            Gagal memuat data. Periksa koneksi lalu coba lagi.
           </div>
         )}
 
-        {/* ── KPI header strip ────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+        {/* ── A. 4 KPI cards ──────────────────────────────────────────── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <KpiTile
-            label="Total Invoice"
-            value={kpis ? idID.format(kpis.invoice_count) : "—"}
-            delta={kpis?.invoice_count_delta}
-            suffix="%"
-          />
-          <KpiTile
-            label="TACO Share (nilai)"
+            label="TACO Share (%)"
             value={kpis ? `${kpis.taco_share_pct.toFixed(1)}%` : "—"}
             delta={kpis?.taco_share_delta_pp}
             suffix=" pp"
+            sub="vs. Non-TACO"
           />
           <KpiTile
-            label="Nilai TACO Confirmed"
+            label="Total Nilai TACO"
             value={kpis ? idr(kpis.taco_value) : "—"}
             delta={kpis?.taco_value_delta}
             suffix="%"
           />
           <KpiTile
-            label="Sinyal Kompetitor"
-            value={kpis ? `${kpis.competitor_signal_pct.toFixed(1)}%` : "—"}
-            delta={kpis?.competitor_signal_delta_pp}
-            suffix=" pp"
+            label="Area Terjangkau"
+            value={loading ? "—" : String(areasCovered)}
+            sub="area dengan invoice"
           />
           <KpiTile
-            label="Baris Unresolved"
-            value={kpis ? idID.format(kpis.unresolved_count) : "—"}
-            sub="perlu review admin"
+            label="Area Terlemah"
+            value={
+              loading
+                ? "—"
+                : weakestArea
+                ? `${weakestArea.taco_share_value_pct.toFixed(1)}%`
+                : "—"
+            }
+            sub={weakestArea?.area_name ?? undefined}
           />
         </div>
 
-        {/* ── Chart 1: Share by Area (3 dimensions) ───────────────────── */}
+        {/* ── B. TACO vs Non-TACO per Area ────────────────────────────── */}
         <SectionCard
-          title="TACO Share per Area"
-          sub="Dua dimensi: nilai IDR dan kuantitas unit. Klik area untuk drill-down toko."
+          title="TACO vs Non-TACO per Area"
+          sub="Proporsi nilai IDR yang dikuasai TACO dibanding merek lain, per wilayah."
         >
           {loading ? (
             <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
@@ -461,28 +501,26 @@ export default function AnalyticsPage() {
               Tidak ada data untuk periode ini.
             </div>
           ) : (
-            <div className="p-5 space-y-4">
-              {/* Note about qty caveat */}
-              <p className="text-[11px] text-taco-muted bg-amber-50 border border-amber-100 rounded px-3 py-1.5">
-                <span className="font-semibold">Catatan kuantitas:</span> Unit
-                tidak dinormalisasi (lembar, karton, pcs bercampur) — gunakan
-                kolom nilai IDR untuk perbandingan yang lebih akurat.
-              </p>
-
-              {/* Grouped bar chart: 3 bars per area */}
-              <ResponsiveContainer width="100%" height={Math.max(200, byArea.length * 60)}>
+            <div className="p-5">
+              <ResponsiveContainer
+                width="100%"
+                height={Math.max(200, byArea.length * 60)}
+              >
                 <BarChart
                   data={byArea.map((a) => ({
                     area_name: a.area_name,
-                    "Nilai IDR": a.taco_share_value_pct,
-                    "Kuantitas": a.taco_share_qty_pct,
+                    TACO: Number(a.taco_share_value_pct.toFixed(1)),
+                    "Non-TACO": Number(
+                      (100 - a.taco_share_value_pct).toFixed(1)
+                    ),
                     _areaId: a.area_id,
                   }))}
                   layout="vertical"
                   margin={{ left: 8, right: 24 }}
                   onClick={(e) => {
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const payload = (e as any)?.activePayload?.[0]?.payload as AreaShareRow & { _areaId: string };
+                    const payload = (e as any)?.activePayload?.[0]
+                      ?.payload as AreaShareRow & { _areaId: string };
                     if (payload?._areaId) {
                       openDrill(payload._areaId, payload.area_name);
                     }
@@ -503,18 +541,31 @@ export default function AnalyticsPage() {
                     tick={{ fontSize: 12, fill: "#1A1A1A" }}
                   />
                   <Tooltip
-                    formatter={(v: unknown, name: unknown) => [`${Number(v).toFixed(1)}%`, String(name)]}
+                    formatter={(v: unknown, name: unknown) => [
+                      `${Number(v).toFixed(1)}%`,
+                      String(name),
+                    ]}
                   />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="Nilai IDR" fill={TACO_GREEN} radius={[0, 3, 3, 0]} />
-                  <Bar dataKey="Kuantitas" fill="#2563EB" radius={[0, 3, 3, 0]} />
+                  <Bar
+                    dataKey="TACO"
+                    fill={TACO_GREEN}
+                    stackId="share"
+                    radius={[0, 0, 0, 0]}
+                  />
+                  <Bar
+                    dataKey="Non-TACO"
+                    fill={NON_TACO_GREY}
+                    stackId="share"
+                    radius={[0, 3, 3, 0]}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           )}
         </SectionCard>
 
-        {/* ── Chart 2: Share Trend Over Time ──────────────────────────── */}
+        {/* ── Trend Over Time ─────────────────────────────────────────── */}
         <SectionCard
           title="Trend TACO Share dari Waktu ke Waktu"
           sub={`Per area, dikelompokkan berdasarkan tanggal upload (${
@@ -567,8 +618,11 @@ export default function AnalyticsPage() {
           )}
         </SectionCard>
 
-        {/* ── Area breakdown table ────────────────────────────────────── */}
-        <SectionCard title="Ringkasan per Area" sub="Klik baris untuk drill-down toko dalam area tersebut.">
+        {/* ── Ringkasan per Area (table) ───────────────────────────────── */}
+        <SectionCard
+          title="Ringkasan per Area"
+          sub="Rincian share nilai IDR, kuantitas, dan frekuensi invoice per wilayah."
+        >
           <div className="overflow-x-auto">
             <table className="w-full min-w-[700px]">
               <thead>
@@ -651,9 +705,7 @@ export default function AnalyticsPage() {
                           className="text-[13px] font-semibold"
                           style={{
                             color:
-                              a.competitor_share_pct > 20
-                                ? COMP_RED
-                                : "#717171",
+                              a.competitor_share_pct > 20 ? COMP_RED : "#717171",
                           }}
                         >
                           {a.competitor_share_pct.toFixed(1)}%
@@ -674,7 +726,7 @@ export default function AnalyticsPage() {
         </SectionCard>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {/* ── Top TACO SKUs ────────────────────────────────────────── */}
+          {/* ── C. Top TACO SKU ──────────────────────────────────────── */}
           <SectionCard
             title="Top TACO SKU"
             sub={
@@ -682,25 +734,43 @@ export default function AnalyticsPage() {
                 ? `${topSkus.unmatched_count} item belum tercocokkan ke katalog`
                 : undefined
             }
+            headerRight={
+              <select
+                value={skuAreaFilter}
+                onChange={(e) => setSkuAreaFilter(e.target.value)}
+                className="h-[28px] text-[12px] border border-taco-border rounded-lg px-2 text-taco-text bg-white outline-none"
+              >
+                <option value="">Semua Area</option>
+                {areaOptions.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            }
           >
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="bg-taco-page border-b border-taco-border">
-                    {["SKU", "Kategori", "Nilai IDR", "Qty", "Toko"].map(
-                      (h) => (
-                        <th
-                          key={h}
-                          className="text-left px-4 py-2.5 text-[10px] font-semibold text-taco-muted uppercase tracking-wider"
-                        >
-                          {h}
-                        </th>
-                      )
-                    )}
+                    {[
+                      "SKU",
+                      "Kategori",
+                      "Penetrasi Invoice",
+                      "Rata-rata Qty",
+                      "Nilai IDR",
+                    ].map((h) => (
+                      <th
+                        key={h}
+                        className="text-left px-4 py-2.5 text-[10px] font-semibold text-taco-muted uppercase tracking-wider"
+                      >
+                        {h}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {loading ? (
+                  {topSkusLoading ? (
                     <tr>
                       <td
                         colSpan={5}
@@ -738,17 +808,27 @@ export default function AnalyticsPage() {
                               {s.catalog_category}
                             </span>
                           ) : (
-                            <span className="text-[11px] text-taco-muted">—</span>
+                            <span className="text-[11px] text-taco-muted">
+                              —
+                            </span>
                           )}
                         </td>
+                        <td className="px-4 py-2.5">
+                          <span className="text-[13px] font-semibold text-taco-text">
+                            {s.invoice_count}
+                          </span>
+                          <span className="text-[11px] text-taco-muted ml-1">
+                            dari {topSkus.total_invoices} invoice
+                          </span>
+                        </td>
                         <td className="px-4 py-2.5 text-[13px] text-taco-sub">
+                          {s.avg_qty_per_invoice.toFixed(1)}
+                          <span className="text-[11px] text-taco-muted ml-0.5">
+                            /inv
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 text-[12px] text-taco-muted">
                           {idr(s.total_value)}
-                        </td>
-                        <td className="px-4 py-2.5 text-[13px] text-taco-sub">
-                          {idID.format(Math.round(s.total_qty))}
-                        </td>
-                        <td className="px-4 py-2.5 text-[13px] text-taco-sub">
-                          {s.store_count}
                         </td>
                       </tr>
                     ))
@@ -758,19 +838,22 @@ export default function AnalyticsPage() {
             </div>
           </SectionCard>
 
-          {/* ── Competitor Signals ───────────────────────────────────── */}
-          <SectionCard title="Sinyal Kompetitor" sub="Berdasarkan nilai IDR.">
+          {/* ── D. Sinyal Kompetitor ─────────────────────────────────── */}
+          <SectionCard
+            title="Sinyal Kompetitor"
+            sub="Merek teridentifikasi berdasarkan nilai IDR per wilayah."
+          >
             {loading ? (
               <div className="px-5 py-8 text-center text-[13px] text-taco-muted">
                 Memuat…
               </div>
-            ) : !competitor || competitor.by_area.length === 0 ? (
+            ) : namedCompetitorAreas.length === 0 ? (
               <div className="px-5 py-8 text-center text-[13px] text-taco-muted">
-                Tidak ada sinyal kompetitor untuk periode ini.
+                Belum ada merek kompetitor yang ditandai.
               </div>
             ) : (
               <div className="divide-y divide-taco-divider">
-                {competitor.by_area.map((a, i) => (
+                {namedCompetitorAreas.map((a, i) => (
                   <div key={a.area_id ?? i} className="px-5 py-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[13px] font-semibold text-taco-text">
@@ -785,28 +868,16 @@ export default function AnalyticsPage() {
                         {a.competitor_pct.toFixed(1)}% kompetitor
                       </span>
                     </div>
-                    {a.top_brands.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {a.top_brands.map((b) => (
-                          <span
-                            key={b.brand_name}
-                            className="text-[11px] bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full"
-                          >
-                            {b.brand_name} · {idr(b.value)}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-[12px] text-taco-muted">
-                        Brand kompetitor belum diidentifikasi (brand_name belum
-                        diisi admin).
-                      </p>
-                    )}
-                    {a.unnamed_competitor_value > 0 && (
-                      <p className="text-[11px] text-taco-muted mt-1">
-                        + {idr(a.unnamed_competitor_value)} tanpa nama brand
-                      </p>
-                    )}
+                    <div className="flex flex-wrap gap-2">
+                      {a.top_brands.map((b) => (
+                        <span
+                          key={b.brand_name}
+                          className="text-[11px] bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full"
+                        >
+                          {b.brand_name} · {idr(b.value)}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>

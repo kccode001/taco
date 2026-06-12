@@ -187,6 +187,10 @@ export interface TopSkuRow {
   total_value: number;
   total_qty: number;
   store_count: number;
+  /** How many invoices in scope contain this SKU. */
+  invoice_count: number;
+  /** Average quantity per invoice when this SKU appears. */
+  avg_qty_per_invoice: number;
 }
 
 /** /analytics/top-skus response. */
@@ -194,6 +198,8 @@ export interface TopSkusV2 {
   period: string;
   range: { from: string | null; to: string };
   unmatched_count: number;
+  /** Total invoices in scope — denominator for penetration display. */
+  total_invoices: number;
   top_skus: TopSkuRow[];
 }
 

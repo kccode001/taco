@@ -54,6 +54,7 @@ interface RawSkuRow {
   total_value: string;
   total_qty: string;
   store_count: string;
+  invoice_count: string;
 }
 
 interface RawCompetitorBrand {
@@ -555,6 +556,7 @@ export class V2AnalyticsService {
           'total_qty',
         )
         .addSelect('COUNT(DISTINCT inv.store_id)', 'store_count')
+        .addSelect('COUNT(DISTINCT inv.id)', 'invoice_count')
         .where('li.matched_sku_id IS NOT NULL'),
       range,
       query.area,
@@ -575,6 +577,16 @@ export class V2AnalyticsService {
       query.area,
     ).getRawOne<{ cnt: string }>();
 
+    // Total invoices in scope — denominator for penetration display
+    const totalInvRaw = await this.applyScope(
+      this.invoices
+        .createQueryBuilder('inv')
+        .select('COUNT(DISTINCT inv.id)', 'cnt'),
+      range,
+      query.area,
+    ).getRawOne<{ cnt: string }>();
+    const totalInvoices = this.num(totalInvRaw?.cnt);
+
     return {
       period: range.label,
       range: {
@@ -582,14 +594,22 @@ export class V2AnalyticsService {
         to: range.to.toISOString(),
       },
       unmatched_count: this.num(unmatchedRaw?.cnt),
-      top_skus: raw.map((r) => ({
-        sku_id: r.sku_id,
-        sku_name: r.sku_name ?? 'SKU Tidak Diketahui',
-        catalog_category: r.catalog_category ?? null,
-        total_value: Math.round(this.num(r.total_value)),
-        total_qty: this.num(r.total_qty),
-        store_count: this.num(r.store_count),
-      })),
+      total_invoices: totalInvoices,
+      top_skus: raw.map((r) => {
+        const invCount = this.num(r.invoice_count);
+        const qty = this.num(r.total_qty);
+        return {
+          sku_id: r.sku_id,
+          sku_name: r.sku_name ?? 'SKU Tidak Diketahui',
+          catalog_category: r.catalog_category ?? null,
+          total_value: Math.round(this.num(r.total_value)),
+          total_qty: qty,
+          store_count: this.num(r.store_count),
+          invoice_count: invCount,
+          avg_qty_per_invoice:
+            invCount > 0 ? Math.round((qty / invCount) * 10) / 10 : 0,
+        };
+      }),
     };
   }
 
@@ -612,7 +632,8 @@ export class V2AnalyticsService {
           'COALESCE((SELECT SUM(CAST(li2.total_price AS numeric)) FROM taro_v2_invoice_line_items li2 INNER JOIN taro_v2_invoices inv2 ON li2.invoice_id=inv2.id WHERE inv2.area_id=inv.area_id AND li2.total_price IS NOT NULL AND CAST(li2.total_price AS numeric) > 0), 0)',
           'total_value',
         )
-        .where('li.is_competitor = true'),
+        .where('li.is_competitor = true')
+        .andWhere('li.brand_name IS NOT NULL'),
       range,
       query.area,
     )
@@ -622,7 +643,7 @@ export class V2AnalyticsService {
       .addOrderBy('brand_value', 'DESC')
       .getRawMany<RawCompetitorBrand>();
 
-    // Group by area, limit to top 5 named brands + track unnamed separately
+    // Group by area — only named brands (brand_name IS NOT NULL enforced by WHERE)
     const areaMap = new Map<
       string,
       {
@@ -630,7 +651,6 @@ export class V2AnalyticsService {
         area_name: string;
         total_value: number;
         top_brands: { brand_name: string; value: number }[];
-        unnamed_value: number;
       }
     >();
 
@@ -642,17 +662,12 @@ export class V2AnalyticsService {
           area_name: r.area_name ?? 'Tanpa Area',
           total_value: this.num(r.total_value),
           top_brands: [],
-          unnamed_value: 0,
         });
       }
       const bucket = areaMap.get(key)!;
       const val = this.num(r.brand_value);
-      if (r.brand_name) {
-        if (bucket.top_brands.length < 5) {
-          bucket.top_brands.push({ brand_name: r.brand_name, value: Math.round(val) });
-        }
-      } else {
-        bucket.unnamed_value += val;
+      if (bucket.top_brands.length < 5) {
+        bucket.top_brands.push({ brand_name: r.brand_name!, value: Math.round(val) });
       }
     }
 
@@ -663,20 +678,18 @@ export class V2AnalyticsService {
         from: range.from?.toISOString() ?? null,
         to: range.to.toISOString(),
       },
-      by_area: areas.map((a) => ({
-        area_id: a.area_id,
-        area_name: a.area_name,
-        competitor_total_value: Math.round(
-          a.top_brands.reduce((s, b) => s + b.value, 0) + a.unnamed_value,
-        ),
-        total_value: Math.round(a.total_value),
-        competitor_pct: this.pct(
-          a.top_brands.reduce((s, b) => s + b.value, 0) + a.unnamed_value,
-          a.total_value,
-        ),
-        top_brands: a.top_brands,
-        unnamed_competitor_value: Math.round(a.unnamed_value),
-      })),
+      by_area: areas.map((a) => {
+        const namedTotal = a.top_brands.reduce((s, b) => s + b.value, 0);
+        return {
+          area_id: a.area_id,
+          area_name: a.area_name,
+          competitor_total_value: Math.round(namedTotal),
+          total_value: Math.round(a.total_value),
+          competitor_pct: this.pct(namedTotal, a.total_value),
+          top_brands: a.top_brands,
+          unnamed_competitor_value: 0,
+        };
+      }),
     };
   }
 
