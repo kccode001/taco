@@ -8,9 +8,11 @@ import {
   getV2ImageUrl,
   v2StatusLabel,
   v2IsProcessing,
+  confidenceView,
   type InvoiceV2,
   type InvoiceLineItemV2,
   type InvoiceImageV2,
+  type ConfidenceTone,
 } from "@/lib/v2/invoices";
 import { TopBar } from "../../../_components/TopBar";
 import { useTaroGuard } from "../../../_components/useTaroGuard";
@@ -118,6 +120,14 @@ function lineView(li: InvoiceLineItemV2): LineView {
     dot: "#1D9E75",
     title: li.raw_text || "Produk TACO",
   };
+}
+
+/** Tailwind classes for the per-row confidence chip (band + numeric score). */
+function confChipCls(tone: ConfidenceTone): string {
+  if (tone === "ok") return "bg-emerald-50 text-taco-success border border-emerald-100";
+  if (tone === "warn") return "bg-amber-50 text-taco-warning border border-amber-100";
+  if (tone === "err") return "bg-red-50 text-taco-error border border-red-100";
+  return "bg-taco-page text-taco-sub border border-taco-border";
 }
 
 function ImageThumb({
@@ -465,6 +475,20 @@ export default function TaroV2InvoiceDetailPage() {
                         </span>
                       )}
                     </div>
+                    {/* Confidence indicator (band + numeric score) — on EVERY
+                        row (KC: was missing on every OCR row). */}
+                    {(() => {
+                      const c = confidenceView(li);
+                      return (
+                        <div className="mt-2">
+                          <span
+                            className={`inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full ${confChipCls(c.tone)}`}
+                          >
+                            Keyakinan: {c.text}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}

@@ -21,10 +21,12 @@ import {
   getV2ImageUrl,
   patchV2LineItem,
   readInvoiceStatus,
+  confidenceView,
   type InvoiceV2,
   type InvoiceLineItemV2,
   type InvoiceV2Status,
   type LineClassificationV2,
+  type ConfidenceTone,
 } from "@/lib/v2/invoices";
 import { Badge, TableHeader, EmptyRow } from "@/app/admin/_components/CrudShell";
 import { ZoomInIcon } from "@/app/admin/_components/icons";
@@ -107,6 +109,14 @@ function recomputeStatus(lines: InvoiceLineItemV2[], current: InvoiceV2Status): 
 function toneChipCls(tone: Tone): string {
   if (tone === "ok") return "bg-emerald-50 text-taco-success border-emerald-100";
   if (tone === "warn") return "bg-amber-50 text-taco-warning border-amber-100";
+  return "bg-taco-page text-taco-sub border-taco-border";
+}
+
+/** Color classes for the per-row confidence chip (band + score). */
+function confidenceChipCls(tone: ConfidenceTone): string {
+  if (tone === "ok") return "bg-emerald-50 text-taco-success border-emerald-100";
+  if (tone === "warn") return "bg-amber-50 text-taco-warning border-amber-100";
+  if (tone === "err") return "bg-red-50 text-taco-error border-red-100";
   return "bg-taco-page text-taco-sub border-taco-border";
 }
 
@@ -414,6 +424,19 @@ export default function AdminV2InvoiceDetailPage() {
                               >
                                 {d.badge}
                               </span>
+                              {/* Confidence indicator (band + numeric score) —
+                                  shown on EVERY row (KC: was missing). */}
+                              {(() => {
+                                const c = confidenceView(li);
+                                return (
+                                  <span
+                                    className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${confidenceChipCls(c.tone)}`}
+                                    title={`Keyakinan OCR: ${c.text}`}
+                                  >
+                                    {c.text}
+                                  </span>
+                                );
+                              })()}
                             </div>
                             <div className="text-[11px] text-taco-sub mt-0.5 truncate" title={d.title}>
                               {d.title}

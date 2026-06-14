@@ -34,7 +34,17 @@ export type LineClassificationV2 =
   | "not_taco_unreadable_guess"
   | "unknown_needs_human";
 
-export type ConfidenceBandV2 = "very_high" | "high" | "low" | "unreadable";
+/** Confidence band — mirrors the BE `LineItemV2ConfidenceBand` enum
+ *  (`backend/src/database/entities/v2/invoice-v2.enums.ts`). The earlier
+ *  `"low" | "unreadable"` values never matched what the BE emits
+ *  (`low_verify` / `unreadable_guess` / `unknown`) — a band keyed off the wrong
+ *  union silently dropped the indicator on those rows. */
+export type ConfidenceBandV2 =
+  | "very_high"
+  | "high"
+  | "low_verify"
+  | "unreadable_guess"
+  | "unknown";
 
 // ── Entity-shaped DTOs ─────────────────────────────────────────────────────
 export interface InvoiceImageV2 {
@@ -336,4 +346,79 @@ export function readInvoiceStatus(
   r: PatchLineItemV2Response
 ): InvoiceV2Status | undefined {
   return r.invoice_status ?? r.status ?? r.invoice?.status;
+}
+
+// ── Per-row confidence indicator (band + numeric score) ────────────────────
+// KC: the confidence score was missing on every OCR row. The BE emits both
+// `confidence_band` (enum) and `confidence_score` (string ".toFixed(3)" 0..1) on
+// every line; these helpers turn them into a row badge so the data renders.
+
+export type ConfidenceTone = "ok" | "warn" | "err" | "muted";
+
+/** Indonesian label for a confidence band. Defensive `string` input + fallback
+ *  so an unexpected/new BE band value still renders something, never blank. */
+export function confidenceBandLabel(
+  band: ConfidenceBandV2 | string | null | undefined
+): string {
+  switch (band) {
+    case "very_high":
+      return "Sangat Yakin";
+    case "high":
+      return "Yakin";
+    case "low_verify":
+      return "Perlu Cek";
+    case "unreadable_guess":
+      return "Tidak Terbaca";
+    case "unknown":
+      return "Tidak Diketahui";
+    default:
+      return "Tidak Diketahui";
+  }
+}
+
+export function confidenceBandTone(
+  band: ConfidenceBandV2 | string | null | undefined
+): ConfidenceTone {
+  switch (band) {
+    case "very_high":
+    case "high":
+      return "ok";
+    case "low_verify":
+      return "warn";
+    case "unreadable_guess":
+    case "unknown":
+      return "err";
+    default:
+      return "muted";
+  }
+}
+
+/** Normalize confidence_score (string|number, 0..1) to an integer percent.
+ *  Returns null when genuinely absent/unparseable so the caller can decide. */
+export function confidenceScorePct(
+  score: string | number | null | undefined
+): number | null {
+  if (score == null) return null;
+  const n = typeof score === "number" ? score : parseFloat(score);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
+}
+
+export interface ConfidenceView {
+  tone: ConfidenceTone;
+  label: string;
+  /** Integer percent (e.g. 80) or null when no score is present. */
+  pct: number | null;
+  /** "Yakin · 80%" — band label plus percent when both exist. */
+  text: string;
+}
+
+/** Build the row-level confidence indicator from a line item. Always returns a
+ *  renderable view (band label at minimum) so no row shows blank — AC-1. */
+export function confidenceView(li: InvoiceLineItemV2): ConfidenceView {
+  const label = confidenceBandLabel(li.confidence_band);
+  const tone = confidenceBandTone(li.confidence_band);
+  const pct = confidenceScorePct(li.confidence_score);
+  const text = pct != null ? `${label} · ${pct}%` : label;
+  return { tone, label, pct, text };
 }
