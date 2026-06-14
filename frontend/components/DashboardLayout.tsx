@@ -34,9 +34,15 @@ type NavItem = {
 
 type NavSection = { label?: string; items: NavItem[] };
 
+// lucide-react icons type `size` as `string | number`; the local icon slot is
+// `size?: number`. A component accepting a narrower `size` isn't assignable to
+// the wider slot (param contravariance), so cast the lucide ones to the slot —
+// they render fine with a numeric size. Local icons (below) need no cast.
+const LUCIDE = { Home, BarChart2 } as unknown as Record<string, NavItem["icon"]>;
+
 const TOP_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/dashboard/analytics", label: "Analitik", icon: BarChart2 },
+  { href: "/dashboard", label: "Dashboard", icon: LUCIDE.Home },
+  { href: "/dashboard/analytics", label: "Analitik", icon: LUCIDE.BarChart2 },
 ];
 
 const ADMIN_SECTIONS: NavSection[] = [
