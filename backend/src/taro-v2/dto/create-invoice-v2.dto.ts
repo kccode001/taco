@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -32,4 +33,14 @@ export class CreateInvoiceV2Dto {
   @IsString()
   @MaxLength(2000)
   notes?: string;
+
+  /**
+   * Photo-first flow: ids returned by `POST /api/v2/invoices/detect`. The already
+   * uploaded + validated photo(s) are adopted onto this invoice (no re-upload, no
+   * re-validation). Omit for the classic pick-area-then-upload flow.
+   */
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  staged_image_ids?: string[];
 }

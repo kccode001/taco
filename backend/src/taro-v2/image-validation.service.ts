@@ -17,6 +17,19 @@ export interface ImageValidationResult {
   invalid_reason: string | null;
 }
 
+/**
+ * Validation result + the store name / location read off the invoice in the SAME
+ * vision call (photo-first upload). Both raw fields are null when the invoice
+ * genuinely doesn't print a store/location — that is NOT an invalidation, it just
+ * falls through to manual input downstream.
+ */
+export interface ImageValidationDetectResult extends ImageValidationResult {
+  /** Shop/toko name printed on the invoice, verbatim — null if none is shown. */
+  store_name_raw: string | null;
+  /** City / location/area printed on the invoice, verbatim — null if none. */
+  location_raw: string | null;
+}
+
 /** Latest Claude model — KC: "use latest Claude model for OCR/classification". */
 const VALIDATION_MODEL = 'claude-opus-4-8';
 const VISION_MAX_EDGE_PX = 1600;
@@ -97,6 +110,88 @@ export class ImageValidationService {
     return { clarity_ok, is_invoice, valid, invalid_reason };
   }
 
+  /**
+   * Photo-first upload gate: validate the image AND, in the SAME vision call,
+   * read the store/toko name + location/city printed on the invoice. One call —
+   * no extra spend over plain `validate()`. The invalidate decision still rests
+   * purely on clarity_ok / is_invoice / invalid_reason (reused). store_name_raw /
+   * location_raw are returned for the caller to match against master data; both
+   * are null when the invoice simply doesn't print them (→ manual, not invalid).
+   */
+  async validateAndDetect(
+    imagePath: string,
+  ): Promise<ImageValidationDetectResult> {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error('ANTHROPIC_API_KEY not configured');
+    }
+    const { base64, mediaType } = await this.prepareImage(imagePath);
+
+    const system = [
+      'You are an image gatekeeper for TACO, an Indonesian building-materials brand.',
+      'Sales reps photograph supplier invoices/receipts (nota/faktur/kwitansi) of the building-materials SHOP (toko) they are visiting.',
+      'Invoices may be HANDWRITTEN or printed/digital. Both are valid.',
+      'Do THREE things for the given image:',
+      '  1. clarity_ok — is it sharp/legible enough that text could be OCR-read later? Reject only when genuinely unusable: heavy blur, too dark/bright, extreme glare, cropped so most text is cut off, or far too low-resolution.',
+      '  2. is_invoice — is it actually an invoice/receipt/nota/faktur/kwitansi (a list of items/quantities/prices)? Reject selfies, people, storefronts, random objects, blank paper, screenshots of unrelated apps, etc.',
+      '  3. Read the SHOP/TOKO identity printed on the nota: `store_name` = the building-materials shop/toko name (usually the letterhead/header of the nota, e.g. "Toko Sinar Jaya", "TB Maju Bersama", "UD Berkah"); `location` = the shop\'s city / area / kota printed near it (e.g. "Cirebon", "Jakarta", "Bandung").',
+      'Be lenient on clarity for handwriting that a human could still read; be strict on is_invoice.',
+      'CRITICAL: if the invoice is otherwise fine but simply does NOT print a shop name and/or location, that is STILL a valid invoice — set the missing field(s) to null. Do NOT mark it invalid for a missing store/location.',
+      'For store_name / location: transcribe EXACTLY what is printed (verbatim, original spelling). Use null when that field is genuinely not shown. Never guess or invent.',
+      'When NOT valid (bad clarity or not-an-invoice), write `invalid_reason` as ONE short sentence in BAHASA INDONESIA, friendly and actionable (tell the rep what to do). When valid, set invalid_reason to null.',
+      '  Examples: "Foto terlalu buram, mohon foto ulang dengan lebih fokus." / "Ini bukan foto nota/faktur. Mohon unggah foto nota pembelian." / "Bagian nota terpotong, mohon foto ulang seluruh nota."',
+      'Return STRICT JSON only, no prose, no markdown fences:',
+      '{ "clarity_ok": boolean, "is_invoice": boolean, "invalid_reason": string|null, "store_name": string|null, "location": string|null }',
+    ].join('\n');
+
+    const response = await this.anthropic.messages.create({
+      model: VALIDATION_MODEL,
+      max_tokens: 512,
+      system,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            { type: 'text', text: 'Validate this image and read the shop name + location.' },
+          ],
+        },
+      ],
+    });
+
+    const block = response.content[0];
+    const raw = block && block.type === 'text' ? block.text : '{}';
+    const parsed = this.parseJson(raw);
+
+    const clarity_ok = parsed.clarity_ok === true;
+    const is_invoice = parsed.is_invoice === true;
+    const valid = clarity_ok && is_invoice;
+    let invalid_reason: string | null = null;
+    if (!valid) {
+      invalid_reason =
+        typeof parsed.invalid_reason === 'string' && parsed.invalid_reason.trim()
+          ? parsed.invalid_reason.trim()
+          : this.fallbackReason(clarity_ok, is_invoice);
+    }
+
+    const store_name_raw =
+      typeof parsed.store_name === 'string' && parsed.store_name.trim()
+        ? parsed.store_name.trim()
+        : null;
+    const location_raw =
+      typeof parsed.location === 'string' && parsed.location.trim()
+        ? parsed.location.trim()
+        : null;
+
+    return {
+      clarity_ok,
+      is_invoice,
+      valid,
+      invalid_reason,
+      store_name_raw,
+      location_raw,
+    };
+  }
+
   /** Deterministic Indonesian fallback if Claude omits a reason on a fail. */
   private fallbackReason(clarityOk: boolean, isInvoice: boolean): string {
     if (!isInvoice) {
@@ -112,6 +207,8 @@ export class ImageValidationService {
     clarity_ok?: unknown;
     is_invoice?: unknown;
     invalid_reason?: unknown;
+    store_name?: unknown;
+    location?: unknown;
   } {
     const cleaned = raw
       .replace(/```json\n?/g, '')
@@ -124,6 +221,8 @@ export class ImageValidationService {
         clarity_ok?: unknown;
         is_invoice?: unknown;
         invalid_reason?: unknown;
+        store_name?: unknown;
+        location?: unknown;
       };
     } catch {
       this.logger.warn(`Validation parse failed: ${jsonStr.slice(0, 160)}`);

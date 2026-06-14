@@ -12,10 +12,11 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { InvoiceV2 } from '../database/entities/v2/invoice-v2.entity';
 import { InvoiceImageV2 } from '../database/entities/v2/invoice-image-v2.entity';
 import { InvoiceLineItemV2 } from '../database/entities/v2/invoice-line-item-v2.entity';
-import { Region } from '../database/entities/region.entity';
+import { Region, RegionType } from '../database/entities/region.entity';
 import { StoreV2 } from '../database/entities/v2/store-v2.entity';
 import { CompetitorBrand } from '../database/entities/competitor-brand.entity';
 import { TacoSku } from '../database/entities/taco-sku.entity';
@@ -25,7 +26,18 @@ import {
   isTacoClassification,
   classificationNeedsReview,
 } from '../database/entities/v2/invoice-v2.enums';
-import { ImageValidationService } from './image-validation.service';
+import {
+  ImageValidationService,
+  ImageValidationDetectResult,
+} from './image-validation.service';
+import {
+  matchArea,
+  matchStore,
+  bandForMatch,
+  DetectOutcome,
+  AreaCandidate,
+  StoreCandidate,
+} from './store-location-matcher';
 import { PatchLineItemV2Dto } from './dto/patch-line-item-v2.dto';
 import { CreateInvoiceV2Dto } from './dto/create-invoice-v2.dto';
 import {
@@ -45,6 +57,65 @@ interface AuthedUser {
   role: string;
 }
 
+/** One master-data match (store or area) the FE can auto-fill / preselect. */
+export interface DetectMatch {
+  id: string;
+  name: string;
+  /** Area code / store's area_id — present per match kind. */
+  code?: string;
+  display_path?: string;
+  area_id?: string;
+  score: number;
+}
+
+/**
+ * Result of the photo-first detect step. The FE branches on `outcome`:
+ *   - invalid    → show `validation.invalid_reason`, stop (do NOT proceed).
+ *   - auto       → store+area matched clearly; auto-fill and continue.
+ *   - best_guess → preselect store_match/area_match but keep editable.
+ *   - manual     → no confident match (incl. store/location absent); rep inputs.
+ * `staged_image_id` references the already-uploaded+validated photo so invoice
+ * creation can adopt it without a second upload or a second vision call.
+ */
+export interface DetectStoreResponse {
+  outcome: DetectOutcome;
+  staged_image_id: string | null;
+  validation: {
+    clarity_ok: boolean;
+    is_invoice: boolean;
+    valid: boolean;
+    invalid_reason: string | null;
+  };
+  detected: {
+    store_name_raw: string | null;
+    location_raw: string | null;
+  };
+  store_match: DetectMatch | null;
+  area_match: DetectMatch | null;
+  match_confidence: number;
+}
+
+/** On-disk record pairing a staged photo with its validation/detection result. */
+interface StagedSidecar {
+  file_name: string | null;
+  stored_file: string;
+  validation: {
+    clarity_ok: boolean;
+    is_invoice: boolean;
+    valid: boolean;
+    invalid_reason: string | null;
+  };
+  detected: {
+    store_name_raw: string | null;
+    location_raw: string | null;
+  };
+}
+
+/** Round a 0..1 score to 3dp for a stable, FE-friendly payload. */
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
 /** Indonesian-facing status labels for the FE. */
 export const INVOICE_V2_STATUS_LABELS: Record<InvoiceV2Status, string> = {
   [InvoiceV2Status.VALIDATING]: 'Memvalidasi',
@@ -62,6 +133,8 @@ export class InvoicesV2Service {
     process.env.UPLOAD_DIR ?? 'uploads',
     TARO_V2_UPLOAD_SUBDIR,
   );
+  /** Photo-first staging: a validated photo lives here until an invoice adopts it. */
+  private readonly stagingDir = path.join(this.uploadDir, 'staged');
 
   constructor(
     @InjectRepository(InvoiceV2)
@@ -86,6 +159,7 @@ export class InvoicesV2Service {
     private readonly skuCache: SkuEmbeddingCache,
   ) {
     fs.mkdirSync(this.uploadDir, { recursive: true });
+    fs.mkdirSync(this.stagingDir, { recursive: true });
   }
 
   // ---------------------------------------------------------------- create
@@ -122,6 +196,11 @@ export class InvoicesV2Service {
         progress_percent: 0,
       }),
     );
+    // Photo-first flow: adopt the already-uploaded+validated photo(s) so the rep
+    // doesn't re-upload and we don't re-run image validation.
+    if (dto.staged_image_ids && dto.staged_image_ids.length > 0) {
+      await this.adoptStagedImages(invoice.id, dto.staged_image_ids);
+    }
     return invoice;
   }
 
@@ -145,6 +224,244 @@ export class InvoicesV2Service {
       }),
     );
     return store.id;
+  }
+
+  // ---------------------------------------------------------- detect (photo-first)
+
+  /**
+   * Photo-first upload step. The rep uploads ONE invoice photo before picking a
+   * store/area. We:
+   *   1. stage the file (kept until an invoice adopts it — no re-upload later),
+   *   2. run the combined validate + store/location read (one vision call),
+   *   3. on a bad image → outcome `invalid` with the specific Indonesian reason,
+   *   4. else fuzzy-match the read store/location against StoreV2 / Region(area)
+   *      master data and band the result into auto / best_guess / manual.
+   * Store/location genuinely absent (valid image, nothing printed) → `manual`,
+   * never `invalid`.
+   */
+  async detectStoreLocation(
+    file: Express.Multer.File | undefined,
+  ): Promise<DetectStoreResponse> {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    // 1. Stage the photo so the eventual invoice can adopt it as-is.
+    const stagedId = crypto.randomUUID();
+    const ext = path.extname(file.originalname || '').toLowerCase() || '.bin';
+    const storedFile = `${stagedId}${ext}`;
+    const stagedPath = path.join(this.stagingDir, storedFile);
+    fs.writeFileSync(stagedPath, file.buffer);
+
+    // 2. One vision call: validation + store/location extraction.
+    let detection: ImageValidationDetectResult;
+    try {
+      detection = await this.validation.validateAndDetect(stagedPath);
+    } catch (e) {
+      this.logger.warn(
+        `detectStoreLocation vision failed for ${stagedId}: ${(e as Error).message}`,
+      );
+      // Fail-closed on the gate; keep the staged file so the rep can still proceed
+      // manually if they choose, but report it as not-yet-valid.
+      detection = {
+        clarity_ok: false,
+        is_invoice: false,
+        valid: false,
+        invalid_reason: 'Gagal memvalidasi gambar. Mohon coba unggah ulang.',
+        store_name_raw: null,
+        location_raw: null,
+      };
+    }
+
+    // Persist a sidecar so invoice creation can adopt the photo WITHOUT a second
+    // upload or a second (expensive) vision call.
+    this.writeStagedSidecar(stagedId, {
+      file_name: file.originalname ?? null,
+      stored_file: storedFile,
+      validation: {
+        clarity_ok: detection.clarity_ok,
+        is_invoice: detection.is_invoice,
+        valid: detection.valid,
+        invalid_reason: detection.invalid_reason,
+      },
+      detected: {
+        store_name_raw: detection.store_name_raw,
+        location_raw: detection.location_raw,
+      },
+    });
+
+    const base: DetectStoreResponse = {
+      outcome: 'manual',
+      staged_image_id: stagedId,
+      validation: {
+        clarity_ok: detection.clarity_ok,
+        is_invoice: detection.is_invoice,
+        valid: detection.valid,
+        invalid_reason: detection.invalid_reason,
+      },
+      detected: {
+        store_name_raw: detection.store_name_raw,
+        location_raw: detection.location_raw,
+      },
+      store_match: null,
+      area_match: null,
+      match_confidence: 0,
+    };
+
+    // 3. Bad image → invalidate (distinct from "store/location absent").
+    if (!detection.valid) {
+      return { ...base, outcome: 'invalid' };
+    }
+
+    // 4. Match the read store/location against master data (no API cost).
+    const [areaRows, storeRows] = await Promise.all([
+      this.areasRepo.find({
+        where: { type: RegionType.AREA, active: true },
+      }),
+      this.storesRepo.find(),
+    ]);
+    const areaCandidates: AreaCandidate[] = areaRows.map((a) => ({
+      id: a.id,
+      name: a.name,
+      code: a.code,
+      display_path: a.display_path,
+    }));
+    const storeCandidates: StoreCandidate[] = storeRows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      area_id: s.area_id,
+    }));
+    const areaById = new Map(areaRows.map((a) => [a.id, a]));
+
+    const areaHit = matchArea(detection.location_raw, areaCandidates);
+    const storeHit = matchStore(
+      detection.store_name_raw,
+      storeCandidates,
+      areaHit?.item.id ?? null,
+    );
+
+    const storeScore = storeHit?.score ?? 0;
+    const areaScore = areaHit?.score ?? 0;
+
+    const store_match: DetectMatch | null = storeHit
+      ? {
+          id: storeHit.item.id,
+          name: storeHit.item.name,
+          area_id: storeHit.item.area_id,
+          score: round3(storeScore),
+        }
+      : null;
+
+    // The matched store's own area is authoritative — when a store matches, fill
+    // the area from it (overrides a weaker free-text location match).
+    let area_match: DetectMatch | null = areaHit
+      ? {
+          id: areaHit.item.id,
+          name: areaHit.item.name,
+          code: areaHit.item.code,
+          display_path: areaHit.item.display_path,
+          score: round3(areaScore),
+        }
+      : null;
+    if (storeHit) {
+      const storeArea = areaById.get(storeHit.item.area_id);
+      if (storeArea) {
+        const sameAsFreeText = areaHit?.item.id === storeArea.id;
+        area_match = {
+          id: storeArea.id,
+          name: storeArea.name,
+          code: storeArea.code,
+          display_path: storeArea.display_path,
+          score: round3(
+            sameAsFreeText ? Math.max(areaScore, storeScore) : storeScore,
+          ),
+        };
+      }
+    }
+
+    const outcome = bandForMatch(storeScore, areaScore);
+    const match_confidence = round3(storeHit ? storeScore : areaScore);
+
+    return { ...base, outcome, store_match, area_match, match_confidence };
+  }
+
+  // ---------- staging sidecar helpers ----------
+
+  private stagedSidecarPath(stagedId: string): string {
+    return path.join(this.stagingDir, `${stagedId}.json`);
+  }
+
+  private writeStagedSidecar(stagedId: string, payload: StagedSidecar): void {
+    fs.writeFileSync(
+      this.stagedSidecarPath(stagedId),
+      JSON.stringify(payload),
+      'utf8',
+    );
+  }
+
+  /**
+   * Adopt one or more staged (already validated) photos onto a freshly created
+   * invoice, carrying their validation result over so the OCR `process` step can
+   * run WITHOUT re-validating (no second vision call). Unknown / already-consumed
+   * staged ids are skipped (logged), not fatal.
+   */
+  private async adoptStagedImages(
+    invoiceId: string,
+    stagedIds: string[],
+  ): Promise<void> {
+    for (const stagedId of stagedIds) {
+      const sidecarPath = this.stagedSidecarPath(stagedId);
+      if (!fs.existsSync(sidecarPath)) {
+        this.logger.warn(
+          `adoptStagedImages: staged id ${stagedId} not found — skipping`,
+        );
+        continue;
+      }
+      let sidecar: StagedSidecar;
+      try {
+        sidecar = JSON.parse(
+          fs.readFileSync(sidecarPath, 'utf8'),
+        ) as StagedSidecar;
+      } catch (e) {
+        this.logger.warn(
+          `adoptStagedImages: bad sidecar ${stagedId}: ${(e as Error).message}`,
+        );
+        continue;
+      }
+      const srcPath = path.join(this.stagingDir, sidecar.stored_file);
+      if (!fs.existsSync(srcPath)) {
+        this.logger.warn(
+          `adoptStagedImages: staged file gone for ${stagedId} — skipping`,
+        );
+        continue;
+      }
+
+      const row = await this.imagesRepo.save(
+        this.imagesRepo.create({
+          invoice_id: invoiceId,
+          file_path: '',
+          file_name: sidecar.file_name,
+          validation_status: sidecar.validation.valid
+            ? InvoiceImageV2ValidationStatus.VALID
+            : InvoiceImageV2ValidationStatus.INVALID,
+          invalid_reason: sidecar.validation.invalid_reason,
+          clarity_ok: sidecar.validation.clarity_ok,
+          is_invoice: sidecar.validation.is_invoice,
+        }),
+      );
+      const ext = path.extname(sidecar.stored_file) || '.bin';
+      const dest = path.join(this.uploadDir, `${row.id}${ext}`);
+      fs.renameSync(srcPath, dest);
+      row.file_path = dest;
+      await this.imagesRepo.save(row);
+
+      // Staged file consumed — drop the sidecar.
+      try {
+        fs.unlinkSync(sidecarPath);
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
   }
 
   // ---------------------------------------------------------------- images

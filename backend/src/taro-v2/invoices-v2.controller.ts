@@ -83,6 +83,19 @@ export class InvoicesV2Controller {
     return this.invoices.create(body, { id: userId, role });
   }
 
+  /**
+   * Photo-first upload step 1: rep uploads ONE invoice photo (field `file`) BEFORE
+   * picking a store/area. Returns the validate-or-invalidate verdict plus the
+   * OCR-detected store/location matched against master data, banded into
+   * auto / best_guess / manual for the FE to branch on. The photo is staged; pass
+   * the returned `staged_image_id` to `POST /api/v2/invoices` as `staged_image_ids`.
+   */
+  @Post('invoices/detect')
+  @UseInterceptors(FilesInterceptor('file', 1))
+  detect(@UploadedFiles() files: Express.Multer.File[]) {
+    return this.invoices.detectStoreLocation(files?.[0]);
+  }
+
   @Post('invoices/:id/images')
   @UseInterceptors(FilesInterceptor('files', 20))
   addImages(
