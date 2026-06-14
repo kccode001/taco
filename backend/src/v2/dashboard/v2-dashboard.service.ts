@@ -5,6 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import { InvoiceLineItemV2 } from '../../database/entities/v2/invoice-line-item-v2.entity';
 import { MarketInsightV2 } from '../../database/entities/v2/market-insight-v2.entity';
+import { MarketIntelService } from '../market-intel/market-intel.service';
 import {
   AiInsightQueryDto,
   LatestInsightQueryDto,
@@ -71,21 +72,6 @@ interface RawTrending {
   total_qty: string;
   line_count: string;
 }
-interface RawPriorArea {
-  area_id: string | null;
-  total_qty: string;
-}
-interface RawCompetitorBrandRollup {
-  brand_name: string;
-  total_qty: string;
-  total_value: string;
-  area_count: string;
-}
-interface RawBasketPair {
-  a: string;
-  b: string;
-  co_invoices: string;
-}
 
 /**
  * v2 MANAGEMENT — Dashboard aggregation + AI insight (market-demand surface).
@@ -110,6 +96,7 @@ export class V2DashboardService {
     private readonly lineItems: Repository<InvoiceLineItemV2>,
     @InjectRepository(MarketInsightV2)
     private readonly insights: Repository<MarketInsightV2>,
+    private readonly marketIntel: MarketIntelService,
   ) {
     this.anthropic = process.env.ANTHROPIC_API_KEY
       ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -375,197 +362,173 @@ export class V2DashboardService {
     };
   }
 
-  // ---- competitor + market-basket rollups (insight inputs) -----------------
-
-  /**
-   * Competitor picture for the insight: the named competitor brands admins
-   * resolved on invoice lines (`is_competitor=true` with a `brand_name`),
-   * aggregated by brand with qty, value and how many areas they show up in.
-   * Also returns the count of competitor lines still without a brand tag.
-   */
-  private async competitorRollup(range: DateRange, area?: string) {
-    const branded = await this.applyScope(
-      this.lineItems
-        .createQueryBuilder('li')
-        .innerJoin('li.invoice', 'inv')
-        .select('li.brand_name', 'brand_name')
-        .addSelect('COALESCE(SUM(li.quantity), 0)', 'total_qty')
-        .addSelect(
-          'COALESCE(SUM(CAST(li.total_price AS numeric)), 0)',
-          'total_value',
-        )
-        .addSelect('COUNT(DISTINCT inv.area_id)', 'area_count')
-        .where('li.is_competitor = true')
-        .andWhere("COALESCE(NULLIF(btrim(li.brand_name), ''), NULL) IS NOT NULL"),
-      range,
-      area,
-    )
-      .groupBy('li.brand_name')
-      .orderBy('total_value', 'DESC')
-      .limit(8)
-      .getRawMany<RawCompetitorBrandRollup>();
-
-    const untaggedRaw = await this.applyScope(
-      this.lineItems
-        .createQueryBuilder('li')
-        .innerJoin('li.invoice', 'inv')
-        .select('COUNT(li.id)', 'cnt')
-        .where('li.is_competitor = true')
-        .andWhere("COALESCE(NULLIF(btrim(li.brand_name), ''), NULL) IS NULL"),
-      range,
-      area,
-    ).getRawOne<{ cnt: string }>();
-
-    return {
-      brands: branded.map((r) => ({
-        brand_name: r.brand_name,
-        total_qty: this.num(r.total_qty),
-        total_value: Math.round(this.num(r.total_value)),
-        area_count: this.num(r.area_count),
-      })),
-      untagged_competitor_lines: this.num(untaggedRaw?.cnt),
-    };
-  }
-
-  /**
-   * Market-basket: pairs of confirmed TACO SKUs that appear together in the
-   * same invoice ("ketika orang beli A, banyak juga beli B"). Self-join on
-   * invoice_id with an ordered id pair to avoid mirrored duplicates.
-   */
-  private async marketBasket(range: DateRange, area?: string) {
-    const rows = await this.applyScope(
-      this.lineItems
-        .createQueryBuilder('li')
-        .innerJoin('li.invoice', 'inv')
-        .innerJoin(
-          'taro_v2_invoice_line_items',
-          'li2',
-          'li2.invoice_id = li.invoice_id AND li.matched_sku_id < li2.matched_sku_id',
-        )
-        .innerJoin('taco_skus', 's1', 's1.id = li.matched_sku_id')
-        .innerJoin('taco_skus', 's2', 's2.id = li2.matched_sku_id')
-        .select('s1.name', 'a')
-        .addSelect('s2.name', 'b')
-        .addSelect('COUNT(DISTINCT li.invoice_id)', 'co_invoices')
-        .where('li.matched_sku_id IS NOT NULL')
-        .andWhere('li2.matched_sku_id IS NOT NULL'),
-      range,
-      area,
-    )
-      .groupBy('s1.name')
-      .addGroupBy('s2.name')
-      .orderBy('co_invoices', 'DESC')
-      .limit(8)
-      .getRawMany<RawBasketPair>();
-
-    return rows
-      .filter((r) => this.num(r.co_invoices) > 0)
-      .map((r) => ({
-        sku_a: r.a,
-        sku_b: r.b,
-        co_invoices: this.num(r.co_invoices),
-      }));
-  }
-
   // ---- AI insight ----------------------------------------------------------
 
   /**
-   * LLM (Sonnet) over the pre-aggregated period rollups → market-demand brief.
-   * Compares the selected window against the immediately-preceding window of
-   * equal length to surface rising / declining areas, and feeds the model the
-   * competitor picture + market-basket co-occurrences so it can recommend
-   * bundles, price checks vs competitors, and weak-area pushes.
+   * Build the honest market-intel signal pack the brief is written from. These
+   * are the SAME six `/api/v2/market-intel/*` endpoints the revamped analytics
+   * page renders — real transacted price bands, per-SKU invoice evidence (each
+   * carrying its invoice id), per-area demand frequency, TACO+competitor basket
+   * co-occurrence, and distributor sampling — NOT the legacy share/qty rollups
+   * (those reintroduce the market-share/volume framing the revamp exists to kill).
+   *
+   * Crucially it surfaces the real contributing invoice IDs (short 8-char form)
+   * so the brief can cite concrete evidence per bullet (AC-13).
+   */
+  private async buildMarketIntelSignals(query: AiInsightQueryDto) {
+    const scope = { period: query.period, area: query.area };
+    const cite = (id: string) => id.slice(0, 8);
+
+    const coverage = await this.marketIntel.coverage(scope);
+    const [priceBands, demandMix, competitorBasket, distributor] =
+      await Promise.all([
+        this.marketIntel.priceBands({ ...scope, limit: '6' }),
+        this.marketIntel.demandMix({ ...scope, top_n: '5' }),
+        this.marketIntel.competitorBasket(scope),
+        this.marketIntel.distributorPerformance(scope),
+      ]);
+
+    // Per-SKU invoice evidence for the top bands — the citable invoice IDs.
+    const price_evidence: Array<{
+      sku_name: string;
+      n_invoices: number;
+      p_min: number;
+      p_median: number;
+      p_max: number;
+      spread_pct: number;
+      outliers: Array<{
+        cite: string;
+        supplier_name: string | null;
+        region_name: string | null;
+        unit_price: number;
+        direction: string;
+      }>;
+      invoices: Array<{
+        cite: string;
+        store_name: string | null;
+        region_name: string | null;
+        supplier_name: string | null;
+        invoice_date: string | null;
+        unit_price: number;
+      }>;
+    }> = [];
+    for (const band of priceBands.price_bands.slice(0, 5)) {
+      const ev = await this.marketIntel.skuEvidence({
+        ...scope,
+        sku_id: band.sku_id,
+      });
+      price_evidence.push({
+        sku_name: band.sku_name,
+        n_invoices: band.n_invoices,
+        p_min: band.p_min,
+        p_median: band.p_median,
+        p_max: band.p_max,
+        spread_pct: band.spread_pct,
+        outliers: band.outliers.map((o) => ({
+          cite: cite(o.invoice_id),
+          supplier_name: o.supplier_name,
+          region_name: o.region_name,
+          unit_price: o.unit_price,
+          direction: o.direction,
+        })),
+        invoices: ev.evidence.slice(0, 6).map((e) => ({
+          cite: cite(e.invoice_id),
+          store_name: e.store_name,
+          region_name: e.region_name,
+          supplier_name: e.supplier_name,
+          invoice_date: e.invoice_date,
+          unit_price: e.unit_price,
+        })),
+      });
+    }
+
+    // The pool of invoice IDs the brief is permitted to cite.
+    const citable_invoice_ids = Array.from(
+      new Set(
+        price_evidence.flatMap((s) => [
+          ...s.invoices.map((i) => i.cite),
+          ...s.outliers.map((o) => o.cite),
+        ]),
+      ),
+    );
+
+    return {
+      period: query.period ?? '30d',
+      scope_area: query.area ?? null,
+      coverage,
+      price_evidence,
+      demand_mix: demandMix.regions,
+      competitor_basket: {
+        n_invoices: competitorBasket.n_invoices,
+        n_with_taco_and_competitor: competitorBasket.n_with_taco_and_competitor,
+        co_occurrence_pct: competitorBasket.co_occurrence_pct,
+        top_brands: competitorBasket.top_brands,
+      },
+      distributor_performance: distributor.distributors,
+      citable_invoice_ids,
+    };
+  }
+
+  /**
+   * LLM (Sonnet) over the honest market-intel signal pack → a 3-point weekly
+   * management brief that cites the real invoice IDs behind each point (AC-13)
+   * and never uses market-share / total-volume / best-worst-area framing
+   * (AC-6 / AC-15 / PRD §12). The model name is always Sonnet (AC-14).
    */
   async aiInsight(query: AiInsightQueryDto) {
     const range = this.resolveRange(query.period);
-    const recap = await this.recap({ period: range.label, area: query.area });
-    const trending = await this.trending({
-      period: range.label,
-      area: query.area,
-      limit: '5',
-    });
-    const competitor = await this.competitorRollup(range, query.area);
-    const market_basket = await this.marketBasket(range, query.area);
-
-    // Prior window of equal length for trend direction (skip for 'all').
-    let priorByArea = new Map<string | null, number>();
-    if (range.from) {
-      const span = range.to.getTime() - range.from.getTime();
-      const priorRange: DateRange = {
-        from: new Date(range.from.getTime() - span),
-        to: range.from,
-        label: range.label,
-      };
-      const priorRows = await this.applyScope(
-        this.lineItems
-          .createQueryBuilder('li')
-          .innerJoin('li.invoice', 'inv')
-          .select('inv.area_id', 'area_id')
-          .addSelect('COALESCE(SUM(li.quantity), 0)', 'total_qty'),
-        priorRange,
-        query.area,
-      )
-        .groupBy('inv.area_id')
-        .getRawMany<RawPriorArea>();
-      priorByArea = new Map<string | null, number>(
-        priorRows.map((r) => [r.area_id ?? null, this.num(r.total_qty)]),
-      );
-    }
-
-    const area_trends = recap.by_area.map((a) => {
-      const before = priorByArea.get(a.area_id) ?? 0;
-      const delta = a.total_qty - before;
-      const pct =
-        before > 0
-          ? Math.round((delta / before) * 100)
-          : a.total_qty > 0
-            ? 100
-            : 0;
-      return {
-        area_id: a.area_id,
-        area_name: a.area_name,
-        current_qty: a.total_qty,
-        prior_qty: before,
-        delta,
-        change_pct: pct,
-        direction: delta > 0 ? 'naik' : delta < 0 ? 'turun' : 'stabil',
-      };
-    });
-
-    const rollups = {
-      period: range.label,
-      range: recap.range,
-      totals: recap.totals,
-      by_area: recap.by_area,
-      qty_over_time: recap.qty_over_time,
-      area_trends,
-      trending: trending.per_area,
-      competitor,
-      market_basket,
+    const rangeOut = {
+      from: range.from?.toISOString() ?? null,
+      to: range.to.toISOString(),
     };
 
-    if (recap.totals.line_item_count === 0) {
+    const signals = await this.buildMarketIntelSignals(query);
+
+    if (signals.coverage.n_invoices === 0) {
       return {
         period: range.label,
-        range: recap.range,
+        range: rangeOut,
         model: null,
         generated_at: null,
         insight:
-          'Belum ada data invoice pada periode ini, sehingga belum ada insight permintaan pasar yang bisa ditampilkan. Pastikan tim Taro sudah mengunggah invoice untuk periode terpilih.',
-        rollups,
+          'Belum ada invoice yang tersampel pada periode ini, sehingga belum ada sinyal pasar yang bisa diringkas. Pastikan tim Taro sudah mengunggah invoice untuk periode terpilih.',
+        signals,
       };
     }
 
+    const systemPrompt =
+      'Anda analis intelijen pasar untuk manajemen TACO (HPL/laminate/edging). ' +
+      'PENTING: data Anda BUKAN total penjualan TACO — ini SAMPEL invoice distributor nyata yang kami kumpulkan. ' +
+      'Jangan pernah menyiratkan pangsa pasar, market share, persen pasar, total/volume penjualan, atau peringkat "area terkuat/terlemah". ' +
+      'Anda menerima sinyal jujur dari invoice tersampel:\n' +
+      '- price_evidence: band harga nyata per SKU (min/median/max + spread% + outlier) dengan bukti invoice (tiap baris punya kode invoice `cite`).\n' +
+      '- demand_mix: seberapa SERING SKU muncul di invoice per wilayah (occurrence, BUKAN volume terjual).\n' +
+      '- competitor_basket: berapa invoice memuat TACO + kompetitor bersamaan (ko-okurensi keranjang, bukan pangsa) + merek kompetitor yang sudah dikenali.\n' +
+      '- distributor_performance: per distributor — jumlah invoice yang KAMI sampel, rata-rata nilai invoice, terakhir terlihat.\n' +
+      '- citable_invoice_ids: daftar kode invoice yang BOLEH Anda kutip.\n' +
+      'Tugas: tulis ringkasan manajemen Bahasa Indonesia, format MARKDOWN, berupa TEPAT 3 poin bullet — masing-masing satu sinyal paling penting (mis. anomali/sebaran harga nyata, tekanan kompetitor di satu wilayah, atau distributor yang paling sering muncul).\n' +
+      'ATURAN WAJIB:\n' +
+      '1. SETIAP poin HARUS mengutip minimal satu kode invoice dari citable_invoice_ids, ditulis inline sebagai #kode (contoh: #1a2b3c4d). Jangan mengarang kode di luar daftar.\n' +
+      '2. DILARANG memakai kata/konsep: "pangsa", "market share", "share", "% pasar", "total penjualan", "total volume", "volume terjual", "total qty", "unit terjual", "area terkuat", "area terlemah", "area tertinggi", "area terendah".\n' +
+      '3. Bicara HANYA soal harga nyata, presensi/kemunculan, dan frekuensi sampel. Selalu bingkai sebagai "dari invoice yang kami sampel".\n' +
+      '4. Jangan mengarang angka di luar data. Jika sebuah sinyal tipis/kosong, katakan apa adanya.\n' +
+      'Mulai dengan satu kalimat pembuka memakai angka coverage (N invoice, M toko, K wilayah), lalu tepat 3 bullet.';
+
     if (!this.anthropic) {
-      const insightText = this.fallbackInsight(rollups);
-      const saved = await this.persistInsight(insightText, null, range.label, query.area ?? null);
+      const insightText = this.fallbackInsight(signals);
+      const saved = await this.persistInsight(
+        insightText,
+        null,
+        range.label,
+        query.area ?? null,
+      );
       return {
         period: range.label,
-        range: recap.range,
+        range: rangeOut,
         model: null,
         generated_at: saved.generated_at.toISOString(),
         insight: insightText,
-        rollups,
+        signals,
       };
     }
 
@@ -573,56 +536,56 @@ export class V2DashboardService {
       const response = await this.anthropic.messages.create({
         model: INSIGHT_MODEL,
         max_tokens: 1500,
-        system:
-          'Anda analis permintaan pasar untuk tim manajemen TACO (produk bahan bangunan/furnitur seperti HPL, laminate, edging). ' +
-          'Anda menerima ringkasan data invoice yang SUDAH diagregasi untuk satu periode: total & per-area (qty TACO vs kompetitor), tren naik/turun vs periode sebelumnya, item terlaris per area, ' +
-          'rincian merek kompetitor yang ditandai admin (field "competitor"), dan pasangan SKU yang sering dibeli bersamaan dalam satu invoice (field "market_basket"). ' +
-          'Tugas: tulis ringkasan manajemen dalam Bahasa Indonesia, format MARKDOWN, dengan struktur section berikut (gunakan heading "##"):\n' +
-          '## Permintaan TACO — kondisi umum + area terkuat/terlemah, dan tren naik/turun.\n' +
-          '## Gambaran Kompetitor — merek kompetitor mana yang muncul, di area mana, seberapa kuat. Jika tidak ada merek kompetitor yang ditandai, katakan demikian.\n' +
-          '## Pola Beli Bersama — dari market_basket, tulis observasi gaya "ketika orang beli A, banyak juga beli B". Jika data co-occurrence kosong, katakan belum cukup data.\n' +
-          '## Rekomendasi — 3–5 langkah konkret dan dapat ditindaklanjuti (mis. buat bundle dari pasangan yang sering dibeli bersama, cek ulang harga vs kompetitor di area tertentu, dorong area dengan cakupan/permintaan lemah). Gunakan bullet list.\n' +
-          'Aturan: JANGAN mengarang angka di luar data yang diberikan. Jika sebuah bagian datanya tipis/kosong, katakan apa adanya — jangan dipaksakan. Ringkas dan padat.',
+        system: systemPrompt,
         messages: [
           {
             role: 'user',
             content:
-              'Ringkasan teragregasi (JSON) untuk periode terpilih:\n\n' +
-              JSON.stringify(rollups) +
-              '\n\nTulis ringkasan manajemen pasar TACO (markdown) berdasarkan data ini.',
+              'Sinyal intelijen pasar (JSON) dari invoice tersampel untuk periode terpilih:\n\n' +
+              JSON.stringify(signals) +
+              '\n\nTulis ringkasan 3 poin (markdown), tiap poin mengutip minimal satu #kode invoice dari citable_invoice_ids.',
           },
         ],
       });
 
-      const insightText = (
+      const insightText =
         response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map((b) => b.text)
           .join('\n')
-          .trim() || this.fallbackInsight(rollups)
-      );
+          .trim() || this.fallbackInsight(signals);
 
-      const saved = await this.persistInsight(insightText, INSIGHT_MODEL, range.label, query.area ?? null);
+      const saved = await this.persistInsight(
+        insightText,
+        INSIGHT_MODEL,
+        range.label,
+        query.area ?? null,
+      );
 
       return {
         period: range.label,
-        range: recap.range,
+        range: rangeOut,
         model: INSIGHT_MODEL,
         generated_at: saved.generated_at.toISOString(),
         insight: insightText,
-        rollups,
+        signals,
       };
     } catch (err) {
       this.logger.error(`AI insight failed: ${String(err)}`);
-      const insightText = this.fallbackInsight(rollups);
-      const saved = await this.persistInsight(insightText, null, range.label, query.area ?? null);
+      const insightText = this.fallbackInsight(signals);
+      const saved = await this.persistInsight(
+        insightText,
+        null,
+        range.label,
+        query.area ?? null,
+      );
       return {
         period: range.label,
-        range: recap.range,
+        range: rangeOut,
         model: null,
         generated_at: saved.generated_at.toISOString(),
         insight: insightText,
-        rollups,
+        signals,
       };
     }
   }
@@ -673,47 +636,89 @@ export class V2DashboardService {
     return this.insights.save(row);
   }
 
-  /** Deterministic brief used when the LLM is unavailable / errors. */
-  private fallbackInsight(rollups: {
-    totals: { total_qty: number; invoice_count: number; area_count: number };
-    by_area: AreaRecapRow[];
-    area_trends: { area_name: string; direction: string; change_pct: number }[];
-    trending: { area_name: string; items: TrendingItem[] }[];
+  /**
+   * Deterministic honest brief used when the LLM is unavailable / errors.
+   * Mirrors the AI template: an opening coverage line + up to 3 bullets, each
+   * citing a real invoice ID (#cite) and framed in price / presence / sampling
+   * terms only — no market-share, volume, or best/worst-area language (so the
+   * persisted fallback row never reintroduces the framing AC-6/AC-15 outlaw).
+   */
+  private fallbackInsight(signals: {
+    coverage: {
+      n_invoices: number;
+      m_stores: number;
+      k_areas: number;
+      last_invoice_date: string | null;
+    };
+    price_evidence: Array<{
+      sku_name: string;
+      n_invoices: number;
+      p_min: number;
+      p_median: number;
+      p_max: number;
+      spread_pct: number;
+      outliers: Array<{
+        cite: string;
+        supplier_name: string | null;
+        region_name: string | null;
+        direction: string;
+      }>;
+      invoices: Array<{ cite: string }>;
+    }>;
+    competitor_basket: {
+      n_invoices: number;
+      n_with_taco_and_competitor: number;
+      top_brands: Array<{ brand_name: string }>;
+    };
+    distributor_performance: Array<{
+      supplier_name_normalized: string;
+      n_invoices: number;
+      avg_invoice_value: number;
+      last_invoice_date: string | null;
+    }>;
+    citable_invoice_ids: string[];
   }): string {
-    const t = rollups.totals;
-    const top = [...rollups.by_area].sort(
-      (a, b) => b.total_qty - a.total_qty,
-    )[0];
-    const rising = rollups.area_trends.filter((a) => a.direction === 'naik');
-    const falling = rollups.area_trends.filter((a) => a.direction === 'turun');
-    const lines = [
-      `Total ${t.invoice_count} invoice di ${t.area_count} area, ${t.total_qty} unit tercatat pada periode ini.`,
+    const cov = signals.coverage;
+    const anyCite = signals.citable_invoice_ids[0] ?? null;
+    const lines: string[] = [
+      `Sinyal dari ${cov.n_invoices} invoice tersampel di ${cov.m_stores} toko, ${cov.k_areas} wilayah` +
+        (cov.last_invoice_date ? ` (terakhir ${cov.last_invoice_date})` : '') +
+        ` — bukan keseluruhan penjualan TACO.`,
     ];
-    if (top) {
+
+    // Point 1 — real-price signal (prefer a flagged outlier, else widest band).
+    const banded = signals.price_evidence.filter((b) => b.invoices.length > 0);
+    const withOutlier = banded.find((b) => b.outliers.length > 0);
+    if (withOutlier) {
+      const o = withOutlier.outliers[0];
+      const arah = o.direction === 'above' ? 'di atas' : 'di bawah';
       lines.push(
-        `Area dengan permintaan tertinggi: ${top.area_name} (${top.total_qty} unit).`,
+        `- Harga ${withOutlier.sku_name}: rentang Rp${withOutlier.p_min}–Rp${withOutlier.p_max} (median Rp${withOutlier.p_median}) dari ${withOutlier.n_invoices} invoice; ada harga ${arah} kewajaran dari ${o.supplier_name ?? 'distributor'} di ${o.region_name ?? 'wilayah tsb'} — cek invoice #${o.cite}.`,
+      );
+    } else if (banded[0]) {
+      const b = banded[0];
+      lines.push(
+        `- Harga ${b.sku_name}: rentang Rp${b.p_min}–Rp${b.p_max} (median Rp${b.p_median}, spread ${b.spread_pct}%) dari ${b.n_invoices} invoice tersampel — contoh invoice #${b.invoices[0].cite}.`,
       );
     }
-    if (rising.length) {
+
+    // Point 2 — competitor co-occurrence in the sampled basket.
+    const cb = signals.competitor_basket;
+    if (cb.n_with_taco_and_competitor > 0 && anyCite) {
+      const brand = cb.top_brands[0];
       lines.push(
-        `Naik: ${rising.map((a) => `${a.area_name} (+${a.change_pct}%)`).join(', ')}.`,
+        `- ${cb.n_with_taco_and_competitor} dari ${cb.n_invoices} invoice tersampel memuat TACO bersama kompetitor${brand ? ` (mis. ${brand.brand_name})` : ''} — lihat invoice #${anyCite}.`,
       );
     }
-    if (falling.length) {
+
+    // Point 3 — most-frequently-sampled distributor.
+    const d = signals.distributor_performance[0];
+    if (d && anyCite) {
       lines.push(
-        `Turun: ${falling
-          .map((a) => `${a.area_name} (${a.change_pct}%)`)
-          .join(', ')} — perlu perhatian.`,
+        `- Distributor paling sering tersampel: ${d.supplier_name_normalized} (${d.n_invoices} invoice tersampel, rata-rata nilai Rp${d.avg_invoice_value}${d.last_invoice_date ? `, terakhir ${d.last_invoice_date}` : ''}) — mis. invoice #${anyCite}.`,
       );
     }
-    const topItems = rollups.trending[0]?.items?.slice(0, 3) ?? [];
-    if (topItems.length) {
-      lines.push(
-        `Item terlaris di ${rollups.trending[0].area_name}: ${topItems
-          .map((i) => i.name)
-          .join(', ')}.`,
-      );
-    }
-    return lines.join(' ');
+
+    return lines.join('\n');
   }
 }
