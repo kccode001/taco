@@ -45,8 +45,8 @@ interface V2OcrResponse {
   line_items: V2OcrLineItem[];
 }
 
-/** Latest Claude model — KC: "use latest Claude model for OCR/classification". */
-const OCR_MODEL = 'claude-opus-4-8';
+/** Vision model — KC (2026-06-14): TACO vision/OCR off Opus → Sonnet (cost). Sonnet 4.6 is vision-capable. */
+const OCR_MODEL = 'claude-sonnet-4-6';
 const RAG_TOP_K = 10;
 const VISION_MAX_EDGE_PX = 2048;
 export const TARO_V2_OCR_CONCURRENCY = 4;

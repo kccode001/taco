@@ -30,8 +30,8 @@ export interface ImageValidationDetectResult extends ImageValidationResult {
   location_raw: string | null;
 }
 
-/** Latest Claude model — KC: "use latest Claude model for OCR/classification". */
-const VALIDATION_MODEL = 'claude-opus-4-8';
+/** Vision model — KC (2026-06-14): TACO vision/OCR off Opus → Sonnet (cost). Sonnet 4.6 is vision-capable. */
+const VALIDATION_MODEL = 'claude-sonnet-4-6';
 const VISION_MAX_EDGE_PX = 1600;
 const ANTHROPIC_MAX_RETRIES = 3;
 
