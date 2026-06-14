@@ -1,63 +1,55 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from "recharts";
+  fetchCoverage,
+  fetchPriceBands,
+  fetchSkuEvidence,
+  fetchDemandMix,
+  fetchCompetitorBasket,
+  fetchDistributorPerformance,
+  type MarketScope,
+} from "@/lib/v2/marketIntel";
 import {
-  getAnalyticsSummary,
-  getAnalyticsShareByArea,
-  getAnalyticsTrend,
-  getAnalyticsTopSkus,
-  getAnalyticsCompetitorBrands,
-  getAnalyticsAreaStores,
   getDashboardAiInsight,
   getDashboardLatestInsight,
+  getRegionsV2,
   adaptAiInsight,
   adaptLatestInsight,
+  unwrapList,
 } from "@/lib/v2/api";
 import type {
-  AnalyticsSummaryV2,
-  ShareByAreaV2,
-  AreaShareRow,
-  AnalyticsTrendV2,
-  TopSkusV2,
-  CompetitorBrandsV2,
-  AreaStoresDrillV2,
+  CoverageV2,
+  PriceBandsV2,
+  PriceBandRow,
+  PriceBandOutlier,
+  SkuEvidenceV2,
+  DemandMixV2,
+  CompetitorBasketV2,
+  DistributorPerfV2,
+  RegionBU,
   AiInsightV2,
 } from "@/lib/v2/types";
 import { V2PageHeader } from "../_components/V2Tabs";
 import { AiInsightModal } from "../_components/AiInsightModal";
 import { SparkleIcon } from "../../../admin/_components/icons";
 
-// ── Palette ──────────────────────────────────────────────────────────────────
-const AREA_COLORS = [
-  "#1D9E75", "#2563EB", "#0E7490", "#7C3AED", "#64748B", "#0891B2",
-];
-const TACO_GREEN = "#1D9E75";
-// TACO bars on the share chart use the primary brand orange (KC round-2 spec).
-const TACO_ORANGE = "#F04E23";
-const NON_TACO_GREY = "#E5E7EB";
-const COMP_RED = "#EF4444";
-const BLACK = "#1A1A1A";
-
 // ── Formatters ───────────────────────────────────────────────────────────────
 const idID = new Intl.NumberFormat("id-ID");
-const idr = (v: number) =>
-  v >= 1_000_000
-    ? `Rp ${(v / 1_000_000).toFixed(1)} jt`
-    : `Rp ${idID.format(Math.round(v))}`;
+const rupiah = (v: number) => `Rp ${idID.format(Math.round(v))}`;
 
-// ── Period options ────────────────────────────────────────────────────────────
+/** DD-MM-YYYY from a "YYYY-MM-DD"(…) string or ISO datetime; "—" when null. */
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${String(d.getDate()).padStart(2, "0")}-${String(
+    d.getMonth() + 1
+  ).padStart(2, "0")}-${d.getFullYear()}`;
+}
+
 const PERIODS = [
   { value: "7d", label: "7 hari" },
   { value: "30d", label: "30 hari" },
@@ -68,238 +60,372 @@ const PERIODS = [
   { value: "all", label: "Semua" },
 ];
 
-// ── Shared sub-components ────────────────────────────────────────────────────
+// ── Async wrapper for per-panel independent loading/error/data ───────────────
+interface Async<T> {
+  loading: boolean;
+  error: boolean;
+  data: T | null;
+}
+const LOADING = { loading: true, error: false, data: null } as const;
+function settle<T>(r: PromiseSettledResult<T>): Async<T> {
+  return r.status === "fulfilled"
+    ? { loading: false, error: false, data: r.value }
+    : { loading: false, error: true, data: null };
+}
 
-function DeltaChip({
-  delta,
-  suffix = "%",
+// ── Shared bits ──────────────────────────────────────────────────────────────
+
+/** AC-2 coverage chip — always rendered (AC-2.1), shows "—" on error/missing. */
+function CoverageChip({
+  c,
+  error,
 }: {
-  delta: number | null | undefined;
-  suffix?: string;
+  c?: CoverageV2 | null;
+  error?: boolean;
 }) {
-  if (delta === null || delta === undefined)
-    return <span className="text-[11px] text-taco-muted">—</span>;
-  const up = delta >= 0;
+  const text =
+    error || !c
+      ? "— invoice · — toko · — wilayah"
+      : `${c.n_invoices} invoice · ${c.m_stores} toko · ${c.k_areas} wilayah · terakhir ${fmtDate(
+          c.last_invoice_date
+        )}`;
   return (
-    <span
-      className={`inline-flex items-center gap-0.5 text-[11px] font-semibold ${
-        up ? "text-taco-success" : "text-taco-error"
-      }`}
-    >
-      {up ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}
-      {suffix}
+    <span className="flex-shrink-0 inline-flex items-center text-[11px] text-taco-muted bg-taco-page border border-taco-border rounded-full px-2.5 py-1 tabular-nums">
+      {text}
     </span>
   );
 }
 
-function KpiTile({
-  label,
-  value,
-  delta,
-  suffix = "%",
-  sub,
-}: {
-  label: string;
-  value: string;
-  delta?: number | null;
-  suffix?: string;
-  sub?: string;
-}) {
-  return (
-    <div className="bg-white border border-taco-border rounded-xl p-4 flex flex-col gap-1">
-      <div className="text-[11px] font-semibold text-taco-muted uppercase tracking-wider">
-        {label}
-      </div>
-      <div className="text-[22px] font-bold text-taco-text leading-tight">
-        {value}
-      </div>
-      <div className="flex items-center gap-2">
-        <DeltaChip delta={delta} suffix={suffix} />
-        {sub && <span className="text-[11px] text-taco-muted">{sub}</span>}
-      </div>
-    </div>
-  );
-}
-
-function SectionCard({
+function Panel({
   title,
   sub,
+  legend,
+  coverage,
+  coverageError,
   children,
-  headerRight,
 }: {
   title: string;
   sub?: string;
+  legend?: React.ReactNode;
+  coverage?: CoverageV2 | null;
+  coverageError?: boolean;
   children: React.ReactNode;
-  headerRight?: React.ReactNode;
 }) {
   return (
-    <div className="bg-white border border-taco-border rounded-xl overflow-hidden">
-      <div className="px-5 py-3.5 border-b border-taco-divider flex items-center justify-between gap-3 flex-wrap">
+    <section className="bg-taco-card border border-taco-border rounded-2xl p-5">
+      <div className="flex items-start justify-between gap-3 mb-3">
         <div>
           <h2 className="text-[15px] font-semibold text-taco-text">{title}</h2>
-          {sub && <p className="text-[12px] text-taco-sub">{sub}</p>}
+          {sub && <p className="text-[12px] text-taco-sub mt-0.5">{sub}</p>}
+          {legend}
         </div>
-        {headerRight}
+        <CoverageChip c={coverage} error={coverageError} />
       </div>
       {children}
+    </section>
+  );
+}
+
+/** AC-3 thin-data — chart replaced, no numbers, single exact sentence. */
+function ThinData({ n }: { n: number }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-10">
+      <div className="text-[26px] mb-2 opacity-60">🔬</div>
+      <p className="text-[13px] text-taco-text font-medium">
+        Sampel terlalu kecil untuk filter ini (N={n}).{" "}
+        <span className="text-taco-sub font-normal">
+          Tambah periode atau pilih wilayah lain.
+        </span>
+      </p>
     </div>
   );
 }
 
-// ── Share chart tooltip ──────────────────────────────────────────────────────
-// Recharts colors each row's text by its series fill, which renders the
-// "Non-TACO" entry in the light grey bar fill (unreadable). Force the Non-TACO
-// row to black; TACO keeps its orange. Preserves the area label + % formatting.
-function ShareTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: Array<{ name?: string; value?: number; color?: string }>;
-  label?: string;
-}) {
-  if (!active || !payload?.length) return null;
+function PanelError({ onRetry }: { onRetry: () => void }) {
   return (
-    <div className="bg-white border border-taco-border rounded-lg shadow-md px-3 py-2">
-      <div className="text-[12px] font-semibold text-taco-text mb-1">{label}</div>
-      {payload.map((entry) => (
-        <div
-          key={entry.name}
-          className="text-[12px] leading-snug"
-          style={{ color: entry.name === "Non-TACO" ? BLACK : entry.color }}
-        >
-          {entry.name} : {Number(entry.value).toFixed(1)}%
+    <div className="flex flex-col items-center justify-center text-center py-10">
+      <div className="text-[24px] mb-2 text-taco-error">⚠️</div>
+      <p className="text-[13px] text-taco-text font-medium">
+        Gagal memuat panel ini.
+      </p>
+      <button
+        onClick={onRetry}
+        className="mt-3 h-8 px-4 rounded-lg bg-white border border-taco-border text-[12px] text-taco-text hover:bg-taco-page transition-colors"
+      >
+        Coba lagi
+      </button>
+    </div>
+  );
+}
+
+function SkeletonRails({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="space-y-4 mt-2">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i}>
+          <div className="h-3 w-40 bg-taco-divider rounded mb-2 animate-pulse" />
+          <div className="h-1.5 w-full bg-taco-divider rounded-full animate-pulse" />
         </div>
       ))}
     </div>
   );
 }
 
-// ── Drill-down drawer ────────────────────────────────────────────────────────
+// ── ③ Hero — band row (CSS/SVG rail, AC-4/5) ─────────────────────────────────
 
-function DrillDrawer({
-  open,
-  areaName,
+function pos(p: number, min: number, max: number): number {
+  if (max <= min) return 50;
+  return Math.min(98, Math.max(2, ((p - min) / (max - min)) * 100));
+}
+
+function BandRow({
+  row,
+  onOpen,
+  onOutlier,
+}: {
+  row: PriceBandRow;
+  onOpen: () => void;
+  onOutlier: (o: PriceBandOutlier) => void;
+}) {
+  const medianPos = pos(row.p_median, row.p_min, row.p_max);
+  const hasUp = row.outliers.some((o) => o.direction === "above");
+  const hasDown = row.outliers.some((o) => o.direction === "below");
+  return (
+    <div
+      className="py-3.5 cursor-pointer hover:bg-taco-page/60 -mx-2 px-2 rounded-lg"
+      onClick={onOpen}
+    >
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[13px] font-semibold text-taco-text">
+            {row.sku_name}
+          </span>
+          <span className="text-[10px] text-taco-muted bg-taco-page border border-taco-border rounded-full px-1.5 py-0.5 tabular-nums">
+            N={row.n_invoices} invoice
+          </span>
+          {hasUp && (
+            <span className="text-[10px] text-taco-error bg-[#FBE9E7] rounded-full px-1.5 py-0.5 font-semibold">
+              Outlier ▲
+            </span>
+          )}
+          {hasDown && (
+            <span className="text-[10px] text-taco-success bg-[#E5F4EE] rounded-full px-1.5 py-0.5 font-semibold">
+              Outlier ▼
+            </span>
+          )}
+        </div>
+        <span className="text-[11px] text-taco-sub tabular-nums">
+          spread {Math.round(row.spread_pct * 100)}%
+        </span>
+      </div>
+      <div className="relative h-9">
+        <span className="absolute left-0 -top-0.5 text-[10px] text-taco-muted tabular-nums">
+          {rupiah(row.p_min)}
+        </span>
+        <span className="absolute right-0 -top-0.5 text-[10px] text-taco-muted tabular-nums">
+          {rupiah(row.p_max)}
+        </span>
+        <div className="absolute left-0 right-0 top-5 h-1.5 rounded-full bg-taco-divider" />
+        <div
+          className="absolute top-5 h-1.5 rounded-full bg-taco-accent/30"
+          style={{ left: "2%", right: "2%" }}
+        />
+        <div
+          className="absolute top-3.5 w-0.5 h-4 bg-taco-text rounded"
+          style={{ left: `${medianPos}%` }}
+        />
+        <span
+          className="absolute top-[34px] text-[9px] text-taco-text tabular-nums -translate-x-1/2 whitespace-nowrap"
+          style={{ left: `${medianPos}%` }}
+        >
+          median {rupiah(row.p_median)}
+        </span>
+        {row.outliers.map((o, i) => {
+          const left = pos(o.unit_price, row.p_min, row.p_max);
+          const up = o.direction === "above";
+          const tip = `${rupiah(o.unit_price)} · ${o.supplier_name} · ${
+            o.region_name
+          }${o.invoice_date ? ` · ${fmtDate(o.invoice_date)}` : ""} · Outlier ${
+            up ? "▲" : "▼"
+          }`;
+          return (
+            <div
+              key={i}
+              className={`absolute -translate-x-1/2 ${up ? "-top-0.5" : "top-[26px]"}`}
+              style={{ left: `${left}%` }}
+              title={tip}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOutlier(o);
+              }}
+            >
+              <span
+                className={`block w-3 h-3 rounded-full border-2 border-white shadow ${
+                  up ? "bg-taco-error" : "bg-taco-success"
+                }`}
+              />
+              <span
+                className={`text-[12px] leading-none ${
+                  up ? "text-taco-error" : "text-taco-success"
+                }`}
+              >
+                {up ? "▲" : "▼"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── ▸ F-3 Evidence drawer (AC-7) ─────────────────────────────────────────────
+
+interface DrawerState {
+  open: boolean;
+  skuId: string;
+  fallbackName: string;
+  band: { min: number; median: number; max: number } | null;
+  /** Outliers from the clicked band — tag evidence rows ▲/▼ on live data. */
+  outliers: PriceBandOutlier[];
+  highlight: string | null;
+}
+
+function EvidenceDrawer({
+  state,
   data,
   loading,
+  error,
   onClose,
+  onRetry,
 }: {
-  open: boolean;
-  areaName: string;
-  data: AreaStoresDrillV2 | null;
+  state: DrawerState;
+  data: SkuEvidenceV2 | null;
   loading: boolean;
+  error: boolean;
   onClose: () => void;
+  onRetry: () => void;
 }) {
-  if (!open) return null;
+  const highlightRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!loading && data && state.highlight && highlightRef.current) {
+      highlightRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [loading, data, state.highlight]);
+
+  if (!state.open) return null;
+  const band = state.band;
+  const cov = data?.coverage;
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div
         className="absolute inset-0 bg-black/30 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative w-full max-w-lg bg-white h-full overflow-y-auto flex flex-col shadow-2xl">
-        <div className="px-5 py-4 border-b border-taco-divider flex items-center justify-between">
-          <div>
-            <h3 className="text-[15px] font-semibold text-taco-text">
-              {areaName}
-            </h3>
-            <p className="text-[12px] text-taco-sub">Toko per area</p>
+      <div className="relative w-full max-w-[480px] sm:max-w-[480px] bg-white h-full overflow-y-auto flex flex-col shadow-2xl">
+        <div className="px-5 py-4 border-b border-taco-divider flex-shrink-0">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-[15px] font-semibold text-taco-text">
+                {data?.sku_name ?? state.fallbackName}
+              </h3>
+              {band && (
+                <div className="text-[11px] text-taco-sub mt-0.5 tabular-nums">
+                  min {rupiah(band.min)} · median {rupiah(band.median)} · maks{" "}
+                  {rupiah(band.max)}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="text-taco-muted hover:text-taco-text text-[20px] leading-none"
+            >
+              ✕
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="text-taco-muted hover:text-taco-text text-[20px] leading-none"
-          >
-            ×
-          </button>
+          <div className="mt-2">
+            <CoverageChip c={cov} error={error} />
+          </div>
         </div>
 
-        {data?.area_kpis && (
-          <div className="px-5 py-3 border-b border-taco-divider grid grid-cols-3 gap-3">
-            <div>
-              <div className="text-[10px] font-semibold text-taco-muted uppercase tracking-wider">
-                TACO Share
-              </div>
-              <div className="text-[18px] font-bold text-taco-text">
-                {data.area_kpis.taco_share_value_pct.toFixed(1)}%
-              </div>
-            </div>
-            <div>
-              <div className="text-[10px] font-semibold text-taco-muted uppercase tracking-wider">
-                Invoices
-              </div>
-              <div className="text-[18px] font-bold text-taco-text">
-                {data.area_kpis.invoice_count}
-              </div>
-            </div>
-            <div>
-              <div className="text-[10px] font-semibold text-taco-muted uppercase tracking-wider">
-                Kompetitor
-              </div>
-              <div className="text-[18px] font-bold text-taco-text">
-                {data.area_kpis.competitor_share_pct.toFixed(1)}%
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="flex-1">
+        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
           {loading ? (
-            <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
-              Memuat…
+            <div className="space-y-2.5">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="h-[72px] rounded-xl bg-taco-divider animate-pulse"
+                />
+              ))}
             </div>
-          ) : !data || data.stores.length === 0 ? (
+          ) : error ? (
+            <PanelError onRetry={onRetry} />
+          ) : !data || data.invoices.length === 0 ? (
             <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
-              Tidak ada data toko untuk area ini.
+              Tidak ada invoice untuk SKU ini pada filter saat ini.
             </div>
           ) : (
-            <table className="w-full">
-              <thead>
-                <tr className="bg-taco-page border-b border-taco-border">
-                  {["Toko", "Invoice", "TACO Share", "Top SKU"].map((h) => (
-                    <th
-                      key={h}
-                      className="text-left px-4 py-2.5 text-[10px] font-semibold text-taco-muted uppercase tracking-wider"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.stores.map((s) => (
-                  <tr
-                    key={s.store_id}
-                    className="border-b border-taco-divider last:border-0"
+            <>
+              {data.invoices.map((inv) => {
+                const isHL = state.highlight === inv.invoice_id;
+                const up = inv.outlier_direction === "above";
+                const down = inv.outlier_direction === "below";
+                return (
+                  <div
+                    key={inv.invoice_id}
+                    ref={isHL ? highlightRef : undefined}
+                    className={`rounded-xl p-3 ${
+                      isHL && up
+                        ? "border-2 border-taco-error/40 bg-[#FCEEEC]"
+                        : isHL && down
+                        ? "border-2 border-taco-success/40 bg-[#ECF7F2]"
+                        : "border border-taco-divider"
+                    }`}
                   >
-                    <td className="px-4 py-3 text-[13px] font-medium text-taco-text">
-                      {s.store_name}
-                    </td>
-                    <td className="px-4 py-3 text-[13px] text-taco-sub">
-                      {s.invoice_count}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className="text-[13px] font-semibold"
-                        style={{
-                          color:
-                            s.taco_share_value_pct >= 50
-                              ? TACO_GREEN
-                              : s.taco_share_value_pct >= 25
-                              ? "#D97706"
-                              : COMP_RED,
-                        }}
-                      >
-                        {s.taco_share_value_pct.toFixed(1)}%
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12px] font-semibold text-taco-text">
+                        {inv.store_name} · {inv.region_name}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 text-[12px] text-taco-sub truncate max-w-[140px]">
-                      {s.top_sku_name ?? "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <span
+                        className={`text-[13px] font-semibold tabular-nums ${
+                          up
+                            ? "text-taco-error"
+                            : down
+                            ? "text-taco-success"
+                            : "text-taco-text"
+                        }`}
+                      >
+                        {rupiah(inv.unit_price)}
+                        {up ? " ▲" : down ? " ▼" : ""}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mt-1 text-[11px] text-taco-sub">
+                      <span>Distributor: {inv.supplier_name}</span>
+                      <span className="tabular-nums">
+                        {fmtDate(inv.invoice_date)}
+                      </span>
+                    </div>
+                    {inv.image_url ? (
+                      <a
+                        href={inv.image_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11px] text-taco-accent font-medium mt-1.5 inline-flex items-center gap-1"
+                      >
+                        📎 Lihat invoice ↗
+                      </a>
+                    ) : (
+                      <span className="text-[11px] text-taco-muted mt-1.5 inline-block">
+                        Tanpa lampiran gambar
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              <p className="text-[10px] text-taco-muted text-center pt-1">
+                diurutkan dari tanggal terbaru · menampilkan nama distributor asli
+              </p>
+            </>
           )}
         </div>
       </div>
@@ -307,699 +433,582 @@ function DrillDrawer({
   );
 }
 
-// ── Main Page ────────────────────────────────────────────────────────────────
+// ── Main page ────────────────────────────────────────────────────────────────
 
 export default function AnalyticsPage() {
   const [period, setPeriod] = useState("30d");
-  const [areaFilter, setAreaFilter] = useState<string>("");
-  // Per-section SKU area filter — independent of the global area filter
-  const [skuAreaFilter, setSkuAreaFilter] = useState<string>("");
+  const [area, setArea] = useState("");
+  const [areaOptions, setAreaOptions] = useState<{ id: string; name: string }[]>(
+    []
+  );
 
-  // Data
-  const [summary, setSummary] = useState<AnalyticsSummaryV2 | null>(null);
-  const [shareByArea, setShareByArea] = useState<ShareByAreaV2 | null>(null);
-  const [trend, setTrend] = useState<AnalyticsTrendV2 | null>(null);
-  const [topSkus, setTopSkus] = useState<TopSkusV2 | null>(null);
-  const [competitor, setCompetitor] = useState<CompetitorBrandsV2 | null>(null);
+  const [cov, setCov] = useState<Async<CoverageV2>>(LOADING);
+  const [bands, setBands] = useState<Async<PriceBandsV2>>(LOADING);
+  const [demand, setDemand] = useState<Async<DemandMixV2>>(LOADING);
+  const [comp, setComp] = useState<Async<CompetitorBasketV2>>(LOADING);
+  const [dist, setDist] = useState<Async<DistributorPerfV2>>(LOADING);
 
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [topSkusLoading, setTopSkusLoading] = useState(true);
+  // Evidence drawer
+  const [drawer, setDrawer] = useState<DrawerState>({
+    open: false,
+    skuId: "",
+    fallbackName: "",
+    band: null,
+    outliers: [],
+    highlight: null,
+  });
+  const [evidence, setEvidence] = useState<Async<SkuEvidenceV2>>(LOADING);
 
-  // Drill-down
-  const [drillAreaId, setDrillAreaId] = useState<string | null>(null);
-  const [drillAreaName, setDrillAreaName] = useState("");
-  const [drillData, setDrillData] = useState<AreaStoresDrillV2 | null>(null);
-  const [drillLoading, setDrillLoading] = useState(false);
-
-  // AI insight (single Generate button → modal). Reuses the persisted
-  // taro_v2_market_insights row + markdown modal infra.
+  // AI modal
   const [insight, setInsight] = useState<AiInsightV2 | null>(null);
-  const [insightModalOpen, setInsightModalOpen] = useState(false);
+  const [insightOpen, setInsightOpen] = useState(false);
   const [insightGenerating, setInsightGenerating] = useState(false);
 
-  const fetchAll = useCallback(async () => {
-    setLoading(true);
-    setLoadError(false);
-    try {
-      const params = {
-        period,
-        ...(areaFilter ? { area: areaFilter } : {}),
-      };
-      const [sumRes, shareRes, trendRes, compRes] = await Promise.all([
-        getAnalyticsSummary(params),
-        getAnalyticsShareByArea(params),
-        getAnalyticsTrend(params),
-        getAnalyticsCompetitorBrands(params),
-      ]);
-      setSummary(sumRes.data);
-      setShareByArea(shareRes.data);
-      setTrend(trendRes.data);
-      setCompetitor(compRes.data);
-    } catch {
-      setLoadError(true);
-    } finally {
-      setLoading(false);
-    }
-  }, [period, areaFilter]);
+  const scope: MarketScope = useMemo(
+    () => ({ period, area: area || undefined }),
+    [period, area]
+  );
 
-  const fetchTopSkus = useCallback(async () => {
-    setTopSkusLoading(true);
-    try {
-      const params = {
-        period,
-        ...(skuAreaFilter ? { area: skuAreaFilter } : {}),
-      };
-      const res = await getAnalyticsTopSkus(params);
-      setTopSkus(res.data);
-    } catch {
-      setTopSkus(null);
-    } finally {
-      setTopSkusLoading(false);
-    }
-  }, [period, skuAreaFilter]);
+  // Area dropdown — authoritative regions (type=area).
+  useEffect(() => {
+    let cancelled = false;
+    getRegionsV2({ type: "area" })
+      .then((res) => {
+        if (cancelled) return;
+        const rows = unwrapList<RegionBU>(res.data);
+        setAreaOptions(rows.map((r) => ({ id: r.id, name: r.name })));
+      })
+      .catch(() => {
+        if (!cancelled) setAreaOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  // Load the latest SAVED insight for the period (no LLM call) on mount/period change.
+  // AC-12 atomic reflow: one scope drives every panel; all enter loading
+  // together and resolve together — no stale-N moment across panels.
+  const loadAll = useCallback(async () => {
+    setCov(LOADING);
+    setBands(LOADING);
+    setDemand(LOADING);
+    setComp(LOADING);
+    setDist(LOADING);
+    const [c, pb, dm, cb, dp] = await Promise.allSettled([
+      fetchCoverage(scope),
+      fetchPriceBands(scope),
+      fetchDemandMix(scope),
+      fetchCompetitorBasket(scope),
+      fetchDistributorPerformance(scope),
+    ]);
+    setCov(settle(c));
+    setBands(settle(pb));
+    setDemand(settle(dm));
+    setComp(settle(cb));
+    setDist(settle(dp));
+  }, [scope]);
+
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
+
+  // AI: load latest SAVED insight on scope change (no LLM call). AC-13.
   const fetchSavedInsight = useCallback(async () => {
     try {
-      const res = await getDashboardLatestInsight({ period });
+      const res = await getDashboardLatestInsight({ period, area: area || undefined });
       setInsight(adaptLatestInsight(res.data));
     } catch {
       setInsight(null);
     }
-  }, [period]);
+  }, [period, area]);
+  useEffect(() => {
+    fetchSavedInsight();
+  }, [fetchSavedInsight]);
 
-  // Generate a fresh insight (Sonnet) — triggered from the modal.
   const generateInsight = useCallback(async () => {
     setInsightGenerating(true);
     try {
       const res = await getDashboardAiInsight({ period });
       setInsight(adaptAiInsight(res.data));
+    } catch {
+      /* keep prior insight; modal stays open */
     } finally {
       setInsightGenerating(false);
     }
   }, [period]);
 
-  useEffect(() => {
-    fetchAll();
-  }, [fetchAll]);
-
-  useEffect(() => {
-    fetchTopSkus();
-  }, [fetchTopSkus]);
-
-  useEffect(() => {
-    fetchSavedInsight();
-  }, [fetchSavedInsight]);
-
-  const openDrill = useCallback(
-    async (areaId: string | null, areaName: string) => {
-      if (!areaId) return;
-      setDrillAreaId(areaId);
-      setDrillAreaName(areaName);
-      setDrillLoading(true);
-      setDrillData(null);
+  // Drawer open + fetch evidence.
+  const openDrawer = useCallback(
+    async (row: PriceBandRow, highlight: string | null) => {
+      setDrawer({
+        open: true,
+        skuId: row.sku_id,
+        fallbackName: row.sku_name,
+        band: { min: row.p_min, median: row.p_median, max: row.p_max },
+        outliers: row.outliers,
+        highlight,
+      });
+      setEvidence(LOADING);
       try {
-        const res = await getAnalyticsAreaStores({ area_id: areaId, period });
-        setDrillData(res.data);
+        const data = await fetchSkuEvidence(row.sku_id, scope, {
+          sku_name: row.sku_name,
+          p_min: row.p_min,
+          p_median: row.p_median,
+          p_max: row.p_max,
+          outliers: row.outliers,
+        });
+        setEvidence({ loading: false, error: false, data });
       } catch {
-        setDrillData(null);
-      } finally {
-        setDrillLoading(false);
+        setEvidence({ loading: false, error: true, data: null });
       }
     },
-    [period]
+    [scope]
   );
-
-  const closeDrill = () => setDrillAreaId(null);
+  const retryEvidence = useCallback(async () => {
+    if (!drawer.skuId) return;
+    setEvidence(LOADING);
+    try {
+      const data = await fetchSkuEvidence(drawer.skuId, scope, {
+        sku_name: drawer.fallbackName,
+        p_min: drawer.band?.min,
+        p_median: drawer.band?.median,
+        p_max: drawer.band?.max,
+        outliers: drawer.outliers,
+      });
+      setEvidence({ loading: false, error: false, data });
+    } catch {
+      setEvidence({ loading: false, error: true, data: null });
+    }
+  }, [drawer.skuId, drawer.fallbackName, drawer.band, drawer.outliers, scope]);
 
   // Derived
-  const byArea = shareByArea?.by_area ?? [];
-  const kpis = summary?.kpis;
+  const scopeCov = cov.data;
+  const periodLabel =
+    PERIODS.find((p) => p.value === period)?.label ?? period;
+  const areaName = areaOptions.find((a) => a.id === area)?.name;
+  const insightSubtitle = `Periode ${periodLabel} · ${
+    areaName ?? "Semua wilayah"
+  }`;
 
-  // 4 management KPI cards derived from fetched data
-  const areasCovered = byArea.filter((a) => a.invoice_count > 0).length;
-  const weakestArea = useMemo(() => {
-    if (byArea.length === 0) return null;
-    return byArea.reduce((w, a) =>
-      a.taco_share_value_pct < w.taco_share_value_pct ? a : w
-    );
-  }, [byArea]);
-  // Area with the highest TACO share (name + %) — replaces the old value card.
-  const topArea = useMemo(() => {
-    if (byArea.length === 0) return null;
-    return byArea.reduce((t, a) =>
-      a.taco_share_value_pct > t.taco_share_value_pct ? a : t
-    );
-  }, [byArea]);
-
-  // Area options for the global filter and SKU section filter
-  const areaOptions = useMemo(
-    () => byArea.map((a) => ({ id: a.area_id ?? "", name: a.area_name })),
-    [byArea]
-  );
-
-  // Trend: pivot per-area series into recharts format [{bucket, area1, area2…}]
-  const trendData = useMemo(() => {
-    const perArea = trend?.per_area ?? [];
-    const buckets = new Map<string, Record<string, number>>();
-    for (const area of perArea) {
-      for (const pt of area.series) {
-        if (!buckets.has(pt.bucket))
-          buckets.set(pt.bucket, {
-            bucket: pt.bucket as unknown as number,
-          });
-        buckets.get(pt.bucket)![area.area_name] = pt.taco_share_value_pct;
-      }
-    }
-    return Array.from(buckets.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([, v]) => v);
-  }, [trend]);
-
-  const trendAreas = trend?.per_area ?? [];
-
-  // Competitor: only show areas with at least one named brand
-  const namedCompetitorAreas = useMemo(
-    () => (competitor?.by_area ?? []).filter((a) => a.top_brands.length > 0),
-    [competitor]
-  );
+  /** Panel coverage = the panel's own coverage, else the scope coverage. */
+  function panelCov(d: { coverage?: CoverageV2 } | null): CoverageV2 | null {
+    return d?.coverage ?? scopeCov;
+  }
+  function isThin(c: CoverageV2 | null): boolean {
+    return !!c && c.n_invoices < 3;
+  }
 
   return (
     <>
-      <div className="space-y-5">
-        {/* ── Header (sticky on scroll) ──────────────────────────────── */}
-        <div className="sticky top-0 z-20 -mx-6 -mt-6 px-6 pt-6 pb-3 bg-taco-page/95 backdrop-blur-sm border-b border-taco-border">
-          <V2PageHeader
-            title="Dashboard"
-            actions={
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={() => setInsightModalOpen(true)}
-                  className="h-[32px] px-3 inline-flex items-center gap-1.5 bg-taco-accent text-white rounded-lg text-[12px] font-semibold hover:opacity-90 transition-opacity"
+      <div className="space-y-4">
+        {/* ── Header + AI trigger ─────────────────────────────────────── */}
+        <V2PageHeader
+          title="Intelijen Pasar"
+          actions={
+            <button
+              onClick={() => setInsightOpen(true)}
+              className="h-[34px] px-3.5 inline-flex items-center gap-1.5 bg-taco-accent text-white rounded-lg text-[12px] font-semibold hover:bg-taco-accent-dark transition-colors"
+            >
+              <SparkleIcon size={13} />
+              Ringkasan AI
+            </button>
+          }
+        />
+
+        {/* ── ① TRUTH BANNER (AC-1) — first content block, every state ── */}
+        <TruthBanner
+          cov={scopeCov}
+          loading={cov.loading}
+          error={cov.error}
+          onRetry={loadAll}
+        />
+
+        {/* ── ② FILTER BAR (AC-12) — sticky ───────────────────────────── */}
+        <div className="sticky top-0 z-10 -mx-6 px-6 py-2 bg-taco-page/95 backdrop-blur-sm border-b border-taco-divider flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {PERIODS.map((p) => (
+              <button
+                key={p.value}
+                onClick={() => setPeriod(p.value)}
+                className={`h-8 px-3 rounded-full text-[12px] font-semibold transition-colors ${
+                  period === p.value
+                    ? "bg-taco-accent text-white"
+                    : "bg-white border border-taco-border text-taco-sub hover:text-taco-text"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className="ml-auto">
+            <select
+              value={area}
+              onChange={(e) => setArea(e.target.value)}
+              className="h-8 px-3 rounded-lg text-[12px] bg-white border border-taco-border text-taco-text outline-none"
+            >
+              <option value="">Semua wilayah</option>
+              {areaOptions.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* ── ③ HERO — PETA HARGA NYATA (AC-4,5,6) ────────────────────── */}
+        <Panel
+          title="Peta Harga Nyata"
+          sub="Harga transaksi nyata per SKU — rentang min · median · maks dari invoice distributor."
+          coverage={panelCov(bands.data)}
+          coverageError={bands.error}
+        >
+          {bands.loading ? (
+            <SkeletonRails rows={6} />
+          ) : bands.error ? (
+            <PanelError onRetry={loadAll} />
+          ) : isThin(panelCov(bands.data)) ? (
+            <ThinData n={panelCov(bands.data)?.n_invoices ?? 0} />
+          ) : !bands.data || bands.data.skus.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-10">
+              <div className="text-[24px] mb-2 opacity-60">🔎</div>
+              <p className="text-[13px] text-taco-text font-medium">
+                Belum ada SKU dengan ≥3 invoice pada filter ini.
+              </p>
+              <p className="text-[12px] text-taco-sub mt-1">
+                Tambah periode atau perluas wilayah.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-taco-divider">
+              {bands.data.skus.map((row) => (
+                <BandRow
+                  key={row.sku_id}
+                  row={row}
+                  onOpen={() => openDrawer(row, null)}
+                  onOutlier={(o) => openDrawer(row, o.invoice_id)}
+                />
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        {/* ── ④ SEBARAN PERMINTAAN PER WILAYAH (AC-8,9) ───────────────── */}
+        <Panel
+          title={
+            areaName
+              ? `Sebaran Permintaan — ${areaName}`
+              : "Sebaran Permintaan per Wilayah"
+          }
+          sub="Seberapa sering SKU muncul di invoice — bukan total volume terjual."
+          legend={
+            !area ? (
+              <p className="text-[10px] text-taco-muted mt-0.5">
+                Angka % = <b>muncul di …% invoice</b> wilayah tsb — frekuensi
+                kemunculan, bukan volume/pangsa.
+              </p>
+            ) : undefined
+          }
+          coverage={panelCov(demand.data)}
+          coverageError={demand.error}
+        >
+          {demand.loading ? (
+            <SkeletonRails rows={5} />
+          ) : demand.error ? (
+            <PanelError onRetry={loadAll} />
+          ) : isThin(panelCov(demand.data)) ? (
+            <ThinData n={panelCov(demand.data)?.n_invoices ?? 0} />
+          ) : !demand.data || demand.data.regions.length === 0 ? (
+            <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
+              Tidak ada data permintaan untuk filter ini.
+            </div>
+          ) : area ? (
+            // Single area → one column, top 10, full canonical label.
+            <div className="space-y-2">
+              {demand.data.regions[0].skus.slice(0, 10).map((s) => {
+                const pct = Math.round(s.occurrence_pct * 100);
+                return (
+                  <div key={s.sku_id}>
+                    <div className="flex justify-between text-[12px]">
+                      <span className="text-taco-sub truncate pr-2">
+                        {s.sku_name}
+                      </span>
+                      <span className="text-taco-muted tabular-nums whitespace-nowrap">
+                        muncul di {pct}% invoice
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-taco-divider mt-1">
+                      <div
+                        className="h-2 rounded-full bg-taco-accent"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+              <p className="text-[10px] text-taco-muted pt-1">top 10 SKU</p>
+            </div>
+          ) : (
+            // All areas → up to 6 region columns, top 5 each.
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {demand.data.regions.slice(0, 6).map((r) => (
+                <div
+                  key={r.region_id ?? r.region_name}
+                  className="rounded-xl border border-taco-divider p-3"
                 >
-                  <SparkleIcon size={13} />
-                  Generate Insight
-                </button>
-                <div className="flex items-center gap-1 bg-white border border-taco-border rounded-lg p-0.5">
-                  {PERIODS.map((p) => (
-                    <button
-                      key={p.value}
-                      onClick={() => setPeriod(p.value)}
-                      className={`h-[30px] px-2.5 rounded-md text-[12px] font-semibold transition-colors ${
-                        period === p.value
-                          ? "bg-taco-text text-white"
-                          : "text-taco-sub hover:text-taco-text"
+                  <div className="text-[12px] font-semibold text-taco-text mb-2">
+                    {r.region_name}{" "}
+                    <span className="text-[10px] text-taco-muted font-normal tabular-nums">
+                      · {r.n_invoices} invoice
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {r.skus.slice(0, 5).map((s) => {
+                      const pct = Math.round(s.occurrence_pct * 100);
+                      return (
+                        <div key={s.sku_id}>
+                          <div className="flex justify-between text-[11px]">
+                            <span className="text-taco-sub truncate pr-1">
+                              {s.sku_name}
+                            </span>
+                            <span className="text-taco-muted tabular-nums whitespace-nowrap">
+                              muncul di {pct}%
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-taco-divider mt-1">
+                            <div
+                              className="h-1.5 rounded-full bg-taco-accent"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        {/* ── ⑤ BERBAGI KERANJANG KOMPETITOR (AC-10,11) ───────────────── */}
+        <Panel
+          title="Berbagi Keranjang Kompetitor"
+          sub="Seberapa sering invoice memuat TACO sekaligus merek kompetitor — co-occurrence pada sampel, bukan pangsa pasar."
+          coverage={panelCov(comp.data)}
+          coverageError={comp.error}
+        >
+          {comp.loading ? (
+            <SkeletonRails rows={3} />
+          ) : comp.error ? (
+            <PanelError onRetry={loadAll} />
+          ) : isThin(panelCov(comp.data)) ? (
+            <ThinData n={panelCov(comp.data)?.n_invoices ?? 0} />
+          ) : !comp.data ||
+            comp.data.n_with_taco_and_competitor === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-9">
+              <div className="text-[22px] mb-2 opacity-50">🧺</div>
+              <p className="text-[13px] text-taco-text font-medium">
+                Tidak ada invoice yang memuat TACO + kompetitor pada filter ini.
+              </p>
+              <p className="text-[12px] text-taco-sub mt-1 tabular-nums">
+                0 dari {comp.data?.n_invoices ?? 0} invoice tersampel.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-6 items-center">
+              <div className="rounded-xl bg-taco-accent-tint border border-[#F8D6CB] p-4">
+                <div className="text-[13px] text-taco-sub leading-snug">
+                  <b className="text-taco-text tabular-nums text-[22px]">
+                    {comp.data.n_with_taco_and_competitor}
+                  </b>{" "}
+                  dari{" "}
+                  <b className="tabular-nums">{comp.data.n_invoices}</b> invoice
+                  memuat <b className="text-taco-accent">TACO + kompetitor</b>
+                </div>
+                <div className="text-[12px] text-taco-accent font-semibold mt-1 tabular-nums">
+                  co-occurrence {Math.round(comp.data.co_occurrence_pct * 100)}%
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-taco-muted mb-2 uppercase tracking-wide">
+                  Top merek kompetitor yang muncul bersama
+                </div>
+                <div className="space-y-2">
+                  {comp.data.top_brands.slice(0, 3).map((b, i, arr) => (
+                    <div
+                      key={b.brand_id}
+                      className={`flex items-center justify-between ${
+                        i < arr.length - 1
+                          ? "border-b border-taco-divider pb-2"
+                          : "pb-1"
                       }`}
                     >
-                      {p.label}
-                    </button>
+                      <span className="text-[13px] text-taco-text font-medium">
+                        🚩 {b.brand_name}
+                      </span>
+                      <span className="text-[12px] text-taco-sub tabular-nums">
+                        {b.n_invoices} invoice
+                      </span>
+                    </div>
                   ))}
+                  {comp.data.top_brands.length === 0 && (
+                    <p className="text-[12px] text-taco-muted">
+                      Belum ada merek kompetitor terverifikasi pada filter ini.
+                    </p>
+                  )}
                 </div>
-                <select
-                  value={areaFilter}
-                  onChange={(e) => setAreaFilter(e.target.value)}
-                  className="h-[32px] text-[13px] border border-taco-border rounded-lg px-2.5 text-taco-text bg-white outline-none"
-                >
-                  <option value="">Semua Area</option>
-                  {areaOptions.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            }
-          />
-        </div>
-
-        {/* ── Error state ─────────────────────────────────────────────── */}
-        {loadError && (
-          <div className="text-[13px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-4 py-3">
-            Gagal memuat data. Periksa koneksi lalu coba lagi.
-          </div>
-        )}
-
-        {/* ── A. 4 KPI cards ──────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <KpiTile
-            label="TACO Share (%)"
-            value={kpis ? `${kpis.taco_share_pct.toFixed(1)}%` : "—"}
-            delta={kpis?.taco_share_delta_pp}
-            suffix=" pp"
-            sub="vs. Non-TACO"
-          />
-          <KpiTile
-            label="Area Tertinggi"
-            value={
-              loading
-                ? "—"
-                : topArea
-                ? `${topArea.taco_share_value_pct.toFixed(1)}%`
-                : "—"
-            }
-            sub={topArea?.area_name ?? "share TACO tertinggi"}
-          />
-          <KpiTile
-            label="Area Terjangkau"
-            value={loading ? "—" : String(areasCovered)}
-            sub="area dengan invoice"
-          />
-          <KpiTile
-            label="Area Terlemah"
-            value={
-              loading
-                ? "—"
-                : weakestArea
-                ? `${weakestArea.taco_share_value_pct.toFixed(1)}%`
-                : "—"
-            }
-            sub={weakestArea?.area_name ?? undefined}
-          />
-        </div>
-
-        {/* ── B. TACO vs Non-TACO per Area ────────────────────────────── */}
-        <SectionCard
-          title="TACO vs Non-TACO per Area"
-          sub="Proporsi nilai IDR yang dikuasai TACO dibanding merek lain, per wilayah."
-        >
-          {loading ? (
-            <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
-              Memuat…
-            </div>
-          ) : byArea.length === 0 ? (
-            <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
-              Tidak ada data untuk periode ini.
-            </div>
-          ) : (
-            <div className="p-5">
-              <ResponsiveContainer
-                width="100%"
-                height={Math.max(200, byArea.length * 60)}
-              >
-                <BarChart
-                  data={byArea.map((a) => ({
-                    area_name: a.area_name,
-                    TACO: Number(a.taco_share_value_pct.toFixed(1)),
-                    "Non-TACO": Number(
-                      (100 - a.taco_share_value_pct).toFixed(1)
-                    ),
-                    _areaId: a.area_id,
-                  }))}
-                  layout="vertical"
-                  margin={{ left: 8, right: 24 }}
-                  onClick={(e) => {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const payload = (e as any)?.activePayload?.[0]
-                      ?.payload as AreaShareRow & { _areaId: string };
-                    if (payload?._areaId) {
-                      openDrill(payload._areaId, payload.area_name);
-                    }
-                  }}
-                  style={{ cursor: "pointer" }}
-                >
-                  <CartesianGrid horizontal={false} stroke="#F0F0F0" />
-                  <XAxis
-                    type="number"
-                    domain={[0, 100]}
-                    tick={{ fontSize: 11, fill: "#717171" }}
-                    tickFormatter={(v) => `${v}%`}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="area_name"
-                    width={120}
-                    tick={{ fontSize: 12, fill: "#1A1A1A" }}
-                  />
-                  <Tooltip content={<ShareTooltip />} />
-                  <Legend
-                    wrapperStyle={{ fontSize: 12 }}
-                    formatter={(value) => (
-                      <span style={{ color: BLACK }}>{value}</span>
-                    )}
-                  />
-                  <Bar
-                    dataKey="TACO"
-                    fill={TACO_ORANGE}
-                    stackId="share"
-                    radius={[0, 0, 0, 0]}
-                  />
-                  <Bar
-                    dataKey="Non-TACO"
-                    fill={NON_TACO_GREY}
-                    stackId="share"
-                    radius={[0, 3, 3, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </SectionCard>
-
-        {/* ── Trend Over Time ─────────────────────────────────────────── */}
-        <SectionCard
-          title="Trend TACO Share dari Waktu ke Waktu"
-          sub={`Per area, dikelompokkan berdasarkan tanggal upload (${
-            trend?.bucket_type === "week" ? "mingguan" : "bulanan"
-          }).`}
-        >
-          {loading ? (
-            <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
-              Memuat…
-            </div>
-          ) : trendData.length === 0 ? (
-            <div className="px-5 py-10 text-center text-[13px] text-taco-muted">
-              Belum ada data trend untuk periode ini.
-            </div>
-          ) : (
-            <div className="p-5">
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={trendData} margin={{ left: 0, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                  <XAxis
-                    dataKey="bucket"
-                    tick={{ fontSize: 11, fill: "#717171" }}
-                  />
-                  <YAxis
-                    domain={[0, 100]}
-                    tick={{ fontSize: 11, fill: "#717171" }}
-                    tickFormatter={(v) => `${v}%`}
-                  />
-                  <Tooltip
-                    formatter={(v: unknown, name: unknown) => [
-                      `${Number(v).toFixed(1)}%`,
-                      String(name),
-                    ]}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {trendAreas.map((a, i) => (
-                    <Line
-                      key={a.area_id ?? i}
-                      type="monotone"
-                      dataKey={a.area_name}
-                      stroke={AREA_COLORS[i % AREA_COLORS.length]}
-                      strokeWidth={2.5}
-                      dot={{ r: 4 }}
-                      connectNulls
-                    />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </SectionCard>
-
-        {/* ── Ringkasan per Area (table) ───────────────────────────────── */}
-        <SectionCard
-          title="Ringkasan per Area"
-          sub="Rincian share nilai IDR, kuantitas, dan frekuensi invoice per wilayah."
-        >
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px]">
-              <thead>
-                <tr className="bg-taco-page border-b border-taco-border">
-                  {[
-                    "Area",
-                    "Invoice",
-                    "TACO Share (nilai)",
-                    "TACO Share (qty)",
-                    "TACO Share (freq)",
-                    "Kompetitor %",
-                    "Unresolved",
-                    "Nilai TACO",
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      className="text-left px-4 py-2.5 text-[10px] font-semibold text-taco-muted uppercase tracking-wider whitespace-nowrap"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td
-                      colSpan={8}
-                      className="px-4 py-10 text-center text-[13px] text-taco-muted"
-                    >
-                      Memuat…
-                    </td>
-                  </tr>
-                ) : byArea.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={8}
-                      className="px-4 py-10 text-center text-[13px] text-taco-muted"
-                    >
-                      Tidak ada data untuk periode ini.
-                    </td>
-                  </tr>
-                ) : (
-                  byArea.map((a, i) => (
-                    <tr
-                      key={a.area_id ?? i}
-                      className="border-b border-taco-divider last:border-0 hover:bg-taco-page cursor-pointer transition-colors"
-                      onClick={() => openDrill(a.area_id, a.area_name)}
-                    >
-                      <td className="px-4 py-3 text-[13px] font-medium text-taco-text">
-                        <span className="inline-flex items-center gap-2">
-                          <span
-                            className="w-2 h-2 rounded-full"
-                            style={{
-                              background: AREA_COLORS[i % AREA_COLORS.length],
-                            }}
-                          />
-                          {a.area_name}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-[13px] text-taco-sub">
-                        {idID.format(a.invoice_count)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className="text-[13px] font-semibold"
-                          style={{ color: TACO_GREEN }}
-                        >
-                          {a.taco_share_value_pct.toFixed(1)}%
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-[13px] text-taco-sub">
-                        {a.taco_share_qty_pct.toFixed(1)}%
-                      </td>
-                      <td className="px-4 py-3 text-[13px] text-taco-sub">
-                        {a.taco_share_freq_pct.toFixed(1)}%
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className="text-[13px] font-semibold"
-                          style={{
-                            color:
-                              a.competitor_share_pct > 20 ? COMP_RED : "#717171",
-                          }}
-                        >
-                          {a.competitor_share_pct.toFixed(1)}%
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-[13px] text-taco-sub">
-                        {idID.format(a.unresolved_count)}
-                      </td>
-                      <td className="px-4 py-3 text-[13px] text-taco-sub">
-                        {idr(a.taco_value)}
-                      </td>
-                    </tr>
-                  ))
+                {comp.data.n_unknown_competitor > 0 && (
+                  <p className="mt-3 text-[11px] text-taco-muted italic">
+                    + {comp.data.n_unknown_competitor} invoice dengan kompetitor
+                    tak dikenali (masuk hitungan total, tidak dinamai).
+                  </p>
                 )}
-              </tbody>
-            </table>
-          </div>
-        </SectionCard>
+              </div>
+            </div>
+          )}
+        </Panel>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {/* ── C. Top TACO SKU ──────────────────────────────────────── */}
-          <SectionCard
-            title="Top TACO SKU"
-            sub={
-              topSkus
-                ? `${topSkus.unmatched_count} item belum tercocokkan ke katalog`
-                : undefined
-            }
-            headerRight={
-              <select
-                value={skuAreaFilter}
-                onChange={(e) => setSkuAreaFilter(e.target.value)}
-                className="h-[28px] text-[12px] border border-taco-border rounded-lg px-2 text-taco-text bg-white outline-none"
-              >
-                <option value="">Semua Area</option>
-                {areaOptions.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            }
-          >
+        {/* ── ⑥ KINERJA DISTRIBUTOR (AC-16,17) ────────────────────────── */}
+        <Panel
+          title="Kinerja Distributor"
+          sub="Berdasarkan invoice yang kami sampel — bukan total pembelian distributor."
+          coverage={panelCov(dist.data)}
+          coverageError={dist.error}
+        >
+          {dist.loading ? (
+            <SkeletonRails rows={3} />
+          ) : dist.error ? (
+            <PanelError onRetry={loadAll} />
+          ) : isThin(panelCov(dist.data)) ||
+            !dist.data ||
+            dist.data.distributors.length === 0 ? (
+            <ThinData n={panelCov(dist.data)?.n_invoices ?? 0} />
+          ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full text-[13px]">
                 <thead>
-                  <tr className="bg-taco-page border-b border-taco-border">
-                    {[
-                      "SKU",
-                      "Kategori",
-                      "Penetrasi Invoice",
-                      "Rata-rata Qty",
-                    ].map((h) => (
-                      <th
-                        key={h}
-                        className="text-left px-4 py-2.5 text-[10px] font-semibold text-taco-muted uppercase tracking-wider"
-                      >
-                        {h}
-                      </th>
-                    ))}
+                  <tr className="text-[11px] text-taco-muted uppercase tracking-wide text-left border-b border-taco-divider">
+                    <th className="py-2 font-semibold">Distributor</th>
+                    <th className="py-2 font-semibold text-right">
+                      Invoice tersampel
+                    </th>
+                    <th className="py-2 font-semibold text-right">
+                      Rata-rata nilai invoice
+                    </th>
+                    <th className="py-2 font-semibold text-right">
+                      Terakhir terlihat
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {topSkusLoading ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-4 py-8 text-center text-[13px] text-taco-muted"
-                      >
-                        Memuat…
-                      </td>
-                    </tr>
-                  ) : !topSkus || topSkus.top_skus.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-4 py-8 text-center text-[13px] text-taco-muted"
-                      >
-                        Belum ada TACO SKU yang terverifikasi.
-                      </td>
-                    </tr>
-                  ) : (
-                    topSkus.top_skus.map((s, i) => (
+                  {[...dist.data.distributors]
+                    .sort(
+                      (a, b) =>
+                        b.n_invoices - a.n_invoices ||
+                        (b.last_invoice_date ?? "").localeCompare(
+                          a.last_invoice_date ?? ""
+                        )
+                    )
+                    .map((d) => (
                       <tr
-                        key={s.sku_id}
+                        key={d.supplier_name_normalized}
                         className="border-b border-taco-divider last:border-0"
                       >
-                        <td className="px-4 py-2.5 text-[13px] font-medium text-taco-text">
-                          <span className="inline-flex items-center gap-2">
-                            <span className="text-[11px] text-taco-muted font-mono w-5 text-right">
-                              {i + 1}
-                            </span>
-                            <span className="flex flex-col">
-                              <span>{s.sku_name}</span>
-                              {s.sku_code && (
-                                <span className="text-[11px] text-taco-muted font-mono">
-                                  {s.sku_code}
-                                </span>
-                              )}
-                            </span>
+                        <td className="py-2.5 font-medium text-taco-text">
+                          {d.supplier_name_normalized}{" "}
+                          <span
+                            className="text-taco-muted cursor-help"
+                            title={`raw: ${d.supplier_name_raw_sample}`}
+                          >
+                            ⓘ
                           </span>
                         </td>
-                        <td className="px-4 py-2.5">
-                          {s.catalog_category ? (
-                            <span className="text-[11px] bg-taco-page text-taco-sub px-2 py-0.5 rounded-full">
-                              {s.catalog_category}
-                            </span>
-                          ) : (
-                            <span className="text-[11px] text-taco-muted">
-                              —
-                            </span>
-                          )}
+                        <td className="py-2.5 text-right tabular-nums">
+                          {d.n_invoices} invoice
                         </td>
-                        <td className="px-4 py-2.5">
-                          <span className="text-[13px] font-semibold text-taco-text">
-                            {s.invoice_count}
-                          </span>
-                          <span className="text-[11px] text-taco-muted ml-1">
-                            dari {topSkus.total_invoices} invoice
-                          </span>
+                        <td className="py-2.5 text-right tabular-nums">
+                          {rupiah(d.avg_invoice_value)}
                         </td>
-                        <td className="px-4 py-2.5 text-[13px] text-taco-sub">
-                          {s.avg_qty_per_invoice.toFixed(1)}
-                          <span className="text-[11px] text-taco-muted ml-0.5">
-                            /inv
-                          </span>
+                        <td className="py-2.5 text-right tabular-nums text-taco-sub">
+                          {fmtDate(d.last_invoice_date)}
                         </td>
                       </tr>
-                    ))
-                  )}
+                    ))}
                 </tbody>
               </table>
             </div>
-          </SectionCard>
-
-          {/* ── D. Sinyal Kompetitor ─────────────────────────────────── */}
-          <SectionCard
-            title="Sinyal Kompetitor"
-            sub="Merek kompetitor yang muncul berhadapan dengan TACO dan seberapa kuat, per wilayah. Terisi dari baris invoice yang ditandai admin sebagai merek kompetitor saat resolusi."
-          >
-            {loading ? (
-              <div className="px-5 py-8 text-center text-[13px] text-taco-muted">
-                Memuat…
-              </div>
-            ) : namedCompetitorAreas.length === 0 ? (
-              <div className="px-5 py-8 text-center text-[13px] text-taco-muted">
-                Belum ada merek kompetitor yang ditandai. Tandai baris invoice
-                sebagai merek kompetitor saat resolusi agar muncul di sini.
-              </div>
-            ) : (
-              <div className="divide-y divide-taco-divider">
-                {namedCompetitorAreas.map((a, i) => (
-                  <div key={a.area_id ?? i} className="px-5 py-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[13px] font-semibold text-taco-text">
-                        {a.area_name}
-                      </span>
-                      <span
-                        className="text-[13px] font-bold"
-                        style={{
-                          color: a.competitor_pct > 15 ? COMP_RED : "#717171",
-                        }}
-                      >
-                        {a.competitor_pct.toFixed(1)}% kompetitor
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {a.top_brands.map((b) => (
-                        <span
-                          key={b.brand_name}
-                          className="text-[11px] bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full"
-                        >
-                          {b.brand_name} · {idr(b.value)}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </SectionCard>
-        </div>
+          )}
+        </Panel>
       </div>
 
-      {/* ── Area Drill-Down Drawer ─────────────────────────────────────── */}
-      <DrillDrawer
-        open={drillAreaId !== null}
-        areaName={drillAreaName}
-        data={drillData}
-        loading={drillLoading}
-        onClose={closeDrill}
+      {/* ── ▸ Evidence drawer (F-3 / AC-7) ───────────────────────────── */}
+      <EvidenceDrawer
+        state={drawer}
+        data={evidence.data}
+        loading={evidence.loading}
+        error={evidence.error}
+        onClose={() => setDrawer((s) => ({ ...s, open: false }))}
+        onRetry={retryEvidence}
       />
 
-      {/* ── AI Insight Modal (single Generate button) ──────────────────── */}
+      {/* ── ▸ Ringkasan AI Mingguan modal (F-7 / AC-13,14) ───────────── */}
       <AiInsightModal
-        open={insightModalOpen}
-        onOpenChange={setInsightModalOpen}
+        open={insightOpen}
+        onOpenChange={setInsightOpen}
         insight={insight}
         loading={false}
         period={period}
+        title="Ringkasan AI Mingguan"
+        subtitle={insightSubtitle}
+        regenerateLabel="Buat Ringkasan Baru"
+        emptyCtaLabel="Buat Ringkasan Baru"
         onRegenerate={generateInsight}
         regenerating={insightGenerating}
       />
     </>
+  );
+}
+
+// ── ① Truth banner ───────────────────────────────────────────────────────────
+
+function TruthBanner({
+  cov,
+  loading,
+  error,
+  onRetry,
+}: {
+  cov: CoverageV2 | null;
+  loading: boolean;
+  error: boolean;
+  onRetry: () => void;
+}) {
+  const shimmer = (
+    <span className="inline-block align-middle h-3 w-5 bg-[#E6D3B5] rounded animate-pulse" />
+  );
+  const N = error ? "—" : loading ? shimmer : cov?.n_invoices ?? 0;
+  const M = error ? "—" : loading ? shimmer : cov?.m_stores ?? 0;
+  const K = error ? "—" : loading ? shimmer : cov?.k_areas ?? 0;
+  return (
+    <div className="rounded-xl bg-[#FEF6EC] border border-[#F3D9B5] flex items-start gap-3 px-4 py-3">
+      <div className="w-1 self-stretch rounded-full bg-taco-warning flex-shrink-0" />
+      <span className="text-taco-warning text-[16px] leading-none mt-0.5">
+        ⚖️
+      </span>
+      <p className="text-[13px] text-taco-text leading-relaxed">
+        Sinyal pasar dari <b className="tabular-nums">{N}</b> invoice yang
+        diambil sampel di <b className="tabular-nums">{M}</b> toko,{" "}
+        <b className="tabular-nums">{K}</b> wilayah —{" "}
+        <b>bukan total penjualan TACO.</b>
+        {error && (
+          <button
+            onClick={onRetry}
+            className="ml-2 text-[12px] text-taco-warning font-semibold underline"
+          >
+            Coba lagi
+          </button>
+        )}
+      </p>
+    </div>
   );
 }

@@ -255,6 +255,134 @@ export interface AreaStoresDrillV2 {
   stores: DrillStoreRow[];
 }
 
+// ── Market Intelligence (Intelijen Pasar — /v2/market-intel/*) ─────────────
+// Honest-sample surface. Every panel response carries its OWN coverage object
+// (computed from the rows that fed THAT panel) so the AC-2 chip is truthful per
+// panel, not page-level. When a panel endpoint omits `coverage`, the FE falls
+// back to the scope-level /coverage so the chip always renders (AC-2.1).
+
+/** Coverage = sample size for a scope or a single panel's contributing rows. */
+export interface CoverageV2 {
+  n_invoices: number;
+  m_stores: number;
+  k_areas: number;
+  /** ISO date of the most recent contributing invoice, or null when none. */
+  last_invoice_date: string | null;
+}
+
+/** One flagged invoice on a price band (AC-5). */
+export interface PriceBandOutlier {
+  invoice_id: string;
+  supplier_name: string;
+  region_name: string;
+  unit_price: number;
+  /** "above" = pricier (▲ error); "below" = cheaper (▼ success). */
+  direction: "above" | "below";
+  /** Invoice date — surfaced in the AC-5.1 marker tooltip when present. */
+  invoice_date?: string;
+}
+
+/** One per-SKU real-price band row (AC-4). */
+export interface PriceBandRow {
+  sku_id: string;
+  sku_name: string;
+  n_invoices: number;
+  p_min: number;
+  p_median: number;
+  p_max: number;
+  /** (max − min) / median, as a fraction (0.34 = 34%). */
+  spread_pct: number;
+  outliers: PriceBandOutlier[];
+}
+
+/** /market-intel/price-bands response. */
+export interface PriceBandsV2 {
+  coverage?: CoverageV2;
+  skus: PriceBandRow[];
+}
+
+/** One contributing invoice in the per-SKU evidence drawer (AC-7). */
+export interface SkuEvidenceRow {
+  invoice_id: string;
+  store_name: string;
+  region_name: string;
+  /** RAW supplier_name (drawer shows the un-normalized form). */
+  supplier_name: string;
+  invoice_date: string;
+  unit_price: number;
+  image_url: string | null;
+  /** Set when this invoice is an outlier on the band. */
+  outlier_direction?: "above" | "below" | null;
+}
+
+/** /market-intel/sku-evidence response. */
+export interface SkuEvidenceV2 {
+  coverage?: CoverageV2;
+  sku_id: string;
+  sku_name: string;
+  p_min: number;
+  p_median: number;
+  p_max: number;
+  invoices: SkuEvidenceRow[];
+}
+
+/** One SKU's occurrence frequency within a region (AC-8). */
+export interface DemandSku {
+  sku_id: string;
+  sku_name: string;
+  occurrence_count: number;
+  /** Fraction of the region's invoices that contain this SKU (0.75 = 75%). */
+  occurrence_pct: number;
+}
+
+/** One region column of the demand-mix panel (AC-9). */
+export interface DemandRegion {
+  region_id: string | null;
+  region_name: string;
+  n_invoices: number;
+  skus: DemandSku[];
+}
+
+/** /market-intel/demand-mix response. */
+export interface DemandMixV2 {
+  coverage?: CoverageV2;
+  regions: DemandRegion[];
+}
+
+/** One co-occurring competitor brand (AC-10, AC-11 — resolved brands only). */
+export interface CompetitorCoBrand {
+  brand_id: string;
+  brand_name: string;
+  n_invoices: number;
+}
+
+/** /market-intel/competitor-basket response. */
+export interface CompetitorBasketV2 {
+  coverage?: CoverageV2;
+  n_invoices: number;
+  n_with_taco_and_competitor: number;
+  /** Fraction of sample invoices with TACO + a competitor (0.39 = 39%). */
+  co_occurrence_pct: number;
+  top_brands: CompetitorCoBrand[];
+  /** Invoices with an UNKNOWN competitor — counted, never named (AC-11). */
+  n_unknown_competitor: number;
+}
+
+/** One normalized distributor row (AC-16, AC-17). */
+export interface DistributorPerfRow {
+  supplier_name_normalized: string;
+  supplier_name_raw_sample: string;
+  n_invoices: number;
+  avg_invoice_value: number;
+  last_invoice_date: string;
+}
+
+/** /market-intel/distributor-performance response. */
+export interface DistributorPerfV2 {
+  coverage?: CoverageV2;
+  distributors: DistributorPerfRow[];
+}
+
 /** /dashboard/ai-insight?period= — single LLM-generated market-demand insight. */
 export interface AiInsightV2 {
   period: string;

@@ -16,6 +16,10 @@ export function AiInsightModal({
   period,
   onRegenerate,
   regenerating,
+  title = "AI Insight Permintaan Pasar",
+  subtitle,
+  regenerateLabel = "Generate Ulang",
+  emptyCtaLabel = "Generate Insight",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -24,6 +28,14 @@ export function AiInsightModal({
   period: string;
   onRegenerate?: () => void;
   regenerating?: boolean;
+  /** Modal title. Default keeps the legacy dashboard copy. */
+  title?: string;
+  /** Sub-line under the title. Defaults to `Periode {period}`. */
+  subtitle?: string;
+  /** Header regenerate-button copy. */
+  regenerateLabel?: string;
+  /** Empty-state CTA copy (when no saved insight yet). */
+  emptyCtaLabel?: string;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -38,10 +50,10 @@ export function AiInsightModal({
               </span>
               <div>
                 <Dialog.Title className="text-[15px] font-semibold text-taco-text leading-tight">
-                  AI Insight Permintaan Pasar
+                  {title}
                 </Dialog.Title>
                 <div className="text-[11px] text-taco-muted">
-                  Periode {period}
+                  {subtitle ?? `Periode ${period}`}
                 </div>
               </div>
             </div>
@@ -53,7 +65,7 @@ export function AiInsightModal({
                   className="h-[32px] px-3 inline-flex items-center gap-1.5 bg-[#F97316] text-white rounded-lg text-[12px] font-semibold hover:bg-[#EA6C0A] transition-colors disabled:opacity-60"
                 >
                   <SparkleIcon size={12} />
-                  {regenerating ? "Menganalisa…" : "Generate Ulang"}
+                  {regenerating ? "Menganalisa…" : regenerateLabel}
                 </button>
               )}
               <Dialog.Close className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-taco-muted hover:bg-[#F0F2FB] hover:text-taco-text transition-colors">
@@ -89,7 +101,7 @@ export function AiInsightModal({
                     className="h-[38px] px-5 inline-flex items-center gap-2 bg-[#F97316] text-white rounded-lg text-[13px] font-semibold hover:bg-[#EA6C0A] transition-colors disabled:opacity-60"
                   >
                     <SparkleIcon size={14} />
-                    {regenerating ? "Menganalisa…" : "Generate Insight"}
+                    {regenerating ? "Menganalisa…" : emptyCtaLabel}
                   </button>
                 )}
               </div>
