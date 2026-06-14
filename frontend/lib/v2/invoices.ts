@@ -253,6 +253,56 @@ export async function createV2Invoice(
   return inv;
 }
 
+// ── Batch create (photo-first BATCH upload, review/regroup commit) ──────────
+// One round-trip for the whole reviewed batch: one invoice per group, each
+// group's staged photos adopted (no re-upload / no second vision call). Mirrors
+// Grout's `POST /api/v2/invoices/batch` (commit `1b92ccf1`). Results are aligned
+// to `groups` BY INDEX — a bad group never loses the rest of the batch.
+
+/** One reviewed group → one future invoice. Either `store_id` (existing/matched)
+ *  OR `store_name` (free-typed, persisted) identifies the store. */
+export interface BatchInvoiceGroupInput {
+  area_id: string;
+  store_id?: string | null;
+  store_name?: string | null;
+  staged_image_ids: string[];
+  notes?: string;
+}
+
+export interface BatchCreateResultItem {
+  index: number;
+  ok: boolean;
+  invoice: InvoiceV2 | null;
+  error: string | null;
+}
+
+export interface BatchCreateResponse {
+  created_count: number;
+  failed_count: number;
+  results: BatchCreateResultItem[];
+}
+
+/** Commit a reviewed batch: one invoice per group. `process:true` (default)
+ *  enqueues OCR for each created invoice in the same call. Per-group results are
+ *  index-aligned to `groups` so a failed group is isolated, not fatal. */
+export async function batchCreateV2Invoices(
+  groups: BatchInvoiceGroupInput[],
+  process = true
+): Promise<BatchCreateResponse> {
+  const res = await api.post(
+    "/v2/invoices/batch",
+    { process, groups },
+    { timeout: 180_000 }
+  );
+  const body = (res.data as { data?: BatchCreateResponse }).data ?? res.data;
+  const b = body as Partial<BatchCreateResponse>;
+  return {
+    created_count: typeof b.created_count === "number" ? b.created_count : 0,
+    failed_count: typeof b.failed_count === "number" ? b.failed_count : 0,
+    results: Array.isArray(b.results) ? b.results : [],
+  };
+}
+
 function readImages(body: unknown): InvoiceImageV2[] {
   const imgs = (body as { images?: InvoiceImageV2[] })?.images;
   return Array.isArray(imgs) ? imgs : unwrapList<InvoiceImageV2>(body);

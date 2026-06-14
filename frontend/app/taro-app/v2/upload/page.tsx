@@ -7,15 +7,11 @@ import { getAreas, getStoresV2, unwrapList } from "@/lib/v2/api";
 import type { AreaV2, StoreV2 } from "@/lib/v2/types";
 import {
   detectV2StoreLocation,
-  createV2Invoice,
-  uploadV2Images,
-  validateV2Images,
-  deleteV2Image,
-  processV2Invoice,
+  batchCreateV2Invoices,
   getV2ImageUrl,
   type DetectStoreResponse,
-  type DetectOutcome,
-  type InvoiceImageV2,
+  type BatchInvoiceGroupInput,
+  type BatchCreateResponse,
 } from "@/lib/v2/invoices";
 import { TopBar } from "../../_components/TopBar";
 import { useTaroGuard } from "../../_components/useTaroGuard";
@@ -32,22 +28,69 @@ import {
   AlertTriangleIcon,
   XCircleIcon,
   ChevronRightIcon,
-  ExpandIcon,
   RefreshIcon,
+  TrashIcon,
+  PencilIcon,
 } from "../../_components/icons";
 
-/** Photo-first flow phases:
- *  photo   → rep takes/picks the FIRST invoice photo (drives detection)
- *  invalid → image unusable (cut / blurry / not an invoice) — stop with reason
- *  confirm → auto/best_guess/manual store+area confirm/edit
- *  extra   → invoice created; optional add-more photos, then process
- *  success → done */
-type Phase = "photo" | "invalid" | "confirm" | "extra" | "success";
+/** Batch photo-first flow phases:
+ *  pick    → rep multi-picks invoice photos; each detects independently
+ *  review  → live auto-grouped review/regroup screen BEFORE any invoice exists
+ *  success → batch committed; per-group result summary */
+type Phase = "pick" | "review" | "success";
 
-type ImageCard = InvoiceImageV2 & { _thumb?: string };
+/** Per-photo detection lifecycle. */
+type PhotoStatus = "detecting" | "ready" | "error";
 
 const ACCEPTED = ["image/jpeg", "image/png", "image/jpg"];
 const ACCEPT_ATTR = "image/jpeg,image/png";
+/** Cap concurrent vision calls — reps may snap many; don't hammer the BE / burn
+ *  the metered vision tier all at once (KC cost discipline). */
+const MAX_CONCURRENT_DETECT = 4;
+
+/** A resolved store+area assignment — the grouping key + display labels. */
+interface Assignment {
+  areaId: string;
+  areaName: string;
+  areaCode?: string;
+  /** null when the store is free-typed (no master match → BE persists by name). */
+  storeId: string | null;
+  storeName: string;
+}
+
+interface BatchPhoto {
+  id: string;
+  thumb: string;
+  status: PhotoStatus;
+  detect: DetectStoreResponse | null;
+  error: string | null;
+  /** Rep-applied correction (AC-7). Overrides the detected assignment. */
+  override: Assignment | null;
+}
+
+/** Where a photo lands once detection settles. */
+type Resolved =
+  | { kind: "pending" } // still detecting (or detect errored — re-runnable)
+  | { kind: "invalid"; reason: string }
+  | { kind: "needs"; areaHint: AreaV2 | null } // no resolvable store (AC-5)
+  | { kind: "grouped"; assignment: Assignment };
+
+interface Group {
+  key: string;
+  areaId: string;
+  areaName: string;
+  areaCode?: string;
+  storeId: string | null;
+  storeName: string;
+  photoIds: string[];
+}
+
+const uid = () =>
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `p_${Math.round(performance.now())}_${Math.floor(performance.now() % 99999)}`;
+
+const normName = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 function extractErrorMessage(err: unknown): string {
   if (err instanceof AxiosError) {
@@ -64,96 +107,106 @@ function extractErrorMessage(err: unknown): string {
   return "Terjadi kesalahan tidak diketahui.";
 }
 
-/** Copy + tone for the confirm-screen banner, by detection outcome. */
-function outcomeBanner(outcome: DetectOutcome): {
-  tone: "ok" | "warn" | "muted";
-  title: string;
-  body: string;
-} {
-  switch (outcome) {
-    case "auto":
-      return {
-        tone: "ok",
-        title: "Toko & area terdeteksi otomatis",
-        body: "Kami yakin dengan hasil ini. Periksa sebentar lalu lanjut.",
-      };
-    case "best_guess":
-      return {
-        tone: "warn",
-        title: "Perkiraan toko & area",
-        body: "Kami menebak dari foto — pastikan benar atau perbaiki di bawah.",
-      };
-    default:
-      return {
-        tone: "muted",
-        title: "Toko & area tidak terbaca",
-        body: "Tidak ada yang cocok dari foto. Silakan pilih toko & area manual.",
-      };
+/** Resolve one photo into its bucket. Grouping is GATED on the detect outcome:
+ *  only `auto`/`best_guess` auto-group. On the `manual` band the BE may return a
+ *  weak sub-threshold non-null match (see TACO-PF-01) — never auto-group from it,
+ *  or photos collapse under the wrong store. Manual → needs-input until the rep
+ *  assigns by hand. A rep override always wins. */
+function resolvePhoto(p: BatchPhoto, areas: AreaV2[]): Resolved {
+  if (p.status !== "ready" || !p.detect) return { kind: "pending" };
+  if (p.override) return { kind: "grouped", assignment: p.override };
+
+  const d = p.detect;
+  if (d.outcome === "invalid") {
+    return {
+      kind: "invalid",
+      reason:
+        d.validation.invalid_reason ??
+        "Foto tidak memenuhi syarat (buram / terpotong / bukan nota).",
+    };
   }
+
+  if (d.outcome === "auto" || d.outcome === "best_guess") {
+    const areaId = d.area_match?.id ?? d.store_match?.area_id ?? null;
+    if (areaId) {
+      const areaRow = areas.find((a) => a.id === areaId) ?? null;
+      const areaName = d.area_match?.name ?? areaRow?.name ?? "Area";
+      const areaCode = d.area_match?.code ?? areaRow?.code;
+      // Matched store → key by store id.
+      if (d.store_match) {
+        return {
+          kind: "grouped",
+          assignment: {
+            areaId,
+            areaName,
+            areaCode,
+            storeId: d.store_match.id,
+            storeName: d.store_match.name,
+          },
+        };
+      }
+      // No store match but a printed store name → free-typed group key.
+      const raw = d.detected.store_name_raw?.trim();
+      if (raw) {
+        return {
+          kind: "grouped",
+          assignment: {
+            areaId,
+            areaName,
+            areaCode,
+            storeId: null,
+            storeName: raw,
+          },
+        };
+      }
+    }
+  }
+
+  // No resolvable store (manual band, or valid-but-no-store-printed) → needs
+  // input. Carry the area as a hint if the BE matched one (AC-6: no-store but
+  // valid is needs-input, NOT invalid).
+  const hintId = p.detect.area_match?.id ?? null;
+  const areaHint = hintId ? areas.find((a) => a.id === hintId) ?? null : null;
+  return { kind: "needs", areaHint };
 }
 
-export default function TaroV2UploadPage() {
-  const router = useRouter();
-  const { ready } = useTaroGuard();
+const groupKey = (a: Assignment) =>
+  `${a.areaId}::${a.storeId ? `id:${a.storeId}` : `name:${normName(a.storeName)}`}`;
 
-  const [phase, setPhase] = useState<Phase>("photo");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  // ── Photo-first: the primary photo + its detection result ─────────────────
-  const [primaryFile, setPrimaryFile] = useState<File | null>(null);
-  const [primaryThumb, setPrimaryThumb] = useState<string | null>(null);
-  const [detect, setDetect] = useState<DetectStoreResponse | null>(null);
-  const photoCameraRef = useRef<HTMLInputElement>(null);
-  const photoGalleryRef = useRef<HTMLInputElement>(null);
-
-  // ── Store + area (confirm phase) ──────────────────────────────────────────
-  const [areas, setAreas] = useState<AreaV2[]>([]);
-  const [areasLoading, setAreasLoading] = useState(true);
-  const [selectedArea, setSelectedArea] = useState<AreaV2 | null>(null);
-  const [areaPickerOpen, setAreaPickerOpen] = useState(false);
+// ── Inline store autocomplete + area picker, used by AssignSheet ─────────────
+function AssignSheet({
+  areas,
+  areasLoading,
+  title,
+  initial,
+  onCancel,
+  onSave,
+}: {
+  areas: AreaV2[];
+  areasLoading: boolean;
+  title: string;
+  initial: { areaId?: string; storeId?: string | null; storeName?: string } | null;
+  onCancel: () => void;
+  onSave: (a: Assignment) => void;
+}) {
+  const [area, setArea] = useState<AreaV2 | null>(
+    initial?.areaId ? areas.find((a) => a.id === initial.areaId) ?? null : null
+  );
+  const [areaListOpen, setAreaListOpen] = useState(!initial?.areaId);
   const [areaQuery, setAreaQuery] = useState("");
   const [stores, setStores] = useState<StoreV2[]>([]);
   const [storesLoading, setStoresLoading] = useState(false);
-  const [storeQuery, setStoreQuery] = useState("");
+  const [storeQuery, setStoreQuery] = useState(initial?.storeName ?? "");
   const [selectedStore, setSelectedStore] = useState<StoreV2 | null>(null);
 
-  // ── Invoice + extra photos (extra phase) ──────────────────────────────────
-  const [invoiceId, setInvoiceId] = useState<string | null>(null);
-  const [images, setImages] = useState<ImageCard[]>([]);
-  const thumbByName = useRef<Map<string, string>>(new Map());
-  const extraCameraRef = useRef<HTMLInputElement>(null);
-  const extraGalleryRef = useRef<HTMLInputElement>(null);
-  const validateTimer = useRef<number | undefined>(undefined);
-
-  const [preview, setPreview] = useState<string | null>(null);
-
-  // ── Load areas once (needed for the manual / edit picker) ─────────────────
   useEffect(() => {
-    let alive = true;
-    setAreasLoading(true);
-    getAreas()
-      .then((res) => {
-        if (alive) setAreas(unwrapList<AreaV2>(res.data));
-      })
-      .catch(() => {
-        /* non-fatal; rep can still proceed if a match was auto-filled */
-      })
-      .finally(() => alive && setAreasLoading(false));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // ── Load stores when an area is set (confirm phase) ────────────────────────
-  useEffect(() => {
-    if (!selectedArea) {
+    if (!area) {
       setStores([]);
       return;
     }
     let alive = true;
     setStoresLoading(true);
-    getStoresV2({ area_id: selectedArea.id })
+    getStoresV2({ area_id: area.id })
       .then((res) => {
         if (alive) setStores(unwrapList<StoreV2>(res.data));
       })
@@ -164,16 +217,15 @@ export default function TaroV2UploadPage() {
     return () => {
       alive = false;
     };
-  }, [selectedArea]);
+  }, [area]);
 
-  // Cleanup object URLs + timers on unmount.
+  // Preselect the initial store once its area's stores arrive.
   useEffect(() => {
-    const thumbs = thumbByName.current;
-    return () => {
-      if (validateTimer.current) window.clearTimeout(validateTimer.current);
-      thumbs.forEach((url) => URL.revokeObjectURL(url));
-    };
-  }, []);
+    if (initial?.storeId && stores.length) {
+      const s = stores.find((x) => x.id === initial.storeId);
+      if (s) setSelectedStore(s);
+    }
+  }, [stores, initial?.storeId]);
 
   const filteredAreas = useMemo(() => {
     const q = areaQuery.trim().toLowerCase();
@@ -197,235 +249,512 @@ export default function TaroV2UploadPage() {
     return stores.find((s) => s.name.trim().toLowerCase() === q) ?? null;
   }, [stores, storeQuery]);
 
-  // ── Phase 1: pick the primary photo ────────────────────────────────────────
-  const pickPrimary = useCallback((files: FileList | File[]) => {
-    const file = Array.from(files).find((f) => ACCEPTED.includes(f.type));
-    if (!file) {
-      setError("Hanya gambar JPG/PNG yang didukung.");
-      return;
-    }
-    setPrimaryFile(file);
-    setPrimaryThumb((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
+  const canSave = !!area && (!!selectedStore || storeQuery.trim().length > 0);
+
+  const save = () => {
+    if (!area) return;
+    const store = selectedStore ?? exactStoreMatch;
+    onSave({
+      areaId: area.id,
+      areaName: area.name,
+      areaCode: area.code,
+      storeId: store ? store.id : null,
+      storeName: store ? store.name : storeQuery.trim(),
     });
-    setError(null);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col justify-end">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
+      <div className="relative z-10 bg-white rounded-t-2xl max-h-[88vh] flex flex-col">
+        <div className="flex items-center justify-between px-4 pt-4 pb-2 border-b border-taco-divider shrink-0">
+          <span className="text-[15px] font-semibold text-taco-text">{title}</span>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="w-8 h-8 flex items-center justify-center text-taco-muted rounded-lg active:bg-taco-page"
+          >
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-4 py-4">
+          {/* Area */}
+          <label className="block text-[13px] font-medium text-taco-sub mb-1.5">
+            Area <span className="text-taco-error">*</span>
+          </label>
+          <button
+            type="button"
+            onClick={() => setAreaListOpen((v) => !v)}
+            className={[
+              "w-full min-h-[52px] rounded-xl border px-4 flex items-center gap-2.5 text-left transition-colors",
+              area ? "border-taco-text bg-taco-accent-tint" : "border-taco-border bg-white",
+            ].join(" ")}
+          >
+            <span className="text-taco-sub shrink-0">
+              <PinIcon size={18} />
+            </span>
+            <span className="flex-1 min-w-0">
+              {area ? (
+                <>
+                  <span className="block text-[15px] font-medium text-taco-text truncate">
+                    {area.name}
+                  </span>
+                  {area.code && (
+                    <span className="block text-[11px] text-taco-muted">{area.code}</span>
+                  )}
+                </>
+              ) : (
+                <span className="text-[15px] text-taco-muted">Pilih area…</span>
+              )}
+            </span>
+            <span
+              className={[
+                "text-taco-muted shrink-0 inline-flex transition-transform",
+                areaListOpen ? "-rotate-90" : "rotate-90",
+              ].join(" ")}
+            >
+              <ChevronRightIcon size={18} />
+            </span>
+          </button>
+
+          {areaListOpen && (
+            <div className="mt-2 border border-taco-border rounded-xl overflow-hidden">
+              <div className="px-3 py-2 border-b border-taco-divider">
+                <div className="relative">
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-taco-muted pointer-events-none">
+                    <SearchIcon size={15} />
+                  </span>
+                  <input
+                    autoFocus
+                    type="text"
+                    inputMode="search"
+                    placeholder="Cari nama atau kode area…"
+                    value={areaQuery}
+                    onChange={(e) => setAreaQuery(e.target.value)}
+                    className="w-full h-[40px] border border-taco-border rounded-lg pl-8 pr-3 text-[14px] text-taco-text bg-taco-page outline-none focus:border-taco-text"
+                  />
+                </div>
+              </div>
+              <div className="max-h-[34vh] overflow-y-auto">
+                {areasLoading ? (
+                  <div className="px-4 py-4 text-[13px] text-taco-muted text-center">
+                    Memuat area…
+                  </div>
+                ) : filteredAreas.length === 0 ? (
+                  <div className="px-4 py-4 text-[13px] text-taco-muted text-center">
+                    Tidak ada area yang cocok.
+                  </div>
+                ) : (
+                  filteredAreas.map((a) => {
+                    const sel = area?.id === a.id;
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => {
+                          setArea(a);
+                          setSelectedStore(null);
+                          setStoreQuery("");
+                          setAreaListOpen(false);
+                        }}
+                        className={[
+                          "w-full min-h-[48px] px-4 flex items-center gap-3 text-left border-b border-taco-divider last:border-0",
+                          sel ? "bg-taco-accent-tint" : "active:bg-taco-page",
+                        ].join(" ")}
+                      >
+                        <span className="text-taco-sub shrink-0">
+                          <PinIcon size={16} />
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-[14px] font-medium text-taco-text truncate">
+                            {a.name}
+                          </span>
+                          {a.code && (
+                            <span className="block text-[11px] text-taco-muted">
+                              {a.code}
+                            </span>
+                          )}
+                        </span>
+                        {sel && (
+                          <span className="text-taco-success shrink-0">
+                            <CheckIcon size={16} />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Store */}
+          <label className="block text-[13px] font-medium text-taco-sub mb-1.5 mt-5">
+            Nama Toko <span className="text-taco-error">*</span>
+          </label>
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-taco-muted pointer-events-none">
+              <SearchIcon size={16} />
+            </span>
+            <input
+              type="text"
+              inputMode="text"
+              value={storeQuery}
+              disabled={!area}
+              onChange={(e) => {
+                setStoreQuery(e.target.value);
+                setSelectedStore(null);
+              }}
+              placeholder={area ? "Cari atau ketik nama toko" : "Pilih area dulu"}
+              className="w-full h-[52px] border border-taco-border rounded-xl pl-10 pr-4 text-[16px] text-taco-text bg-white outline-none focus:border-taco-text disabled:bg-taco-page disabled:text-taco-muted"
+            />
+          </div>
+
+          {area && (
+            <div className="mt-2 bg-white border border-taco-border rounded-xl overflow-hidden">
+              {storesLoading ? (
+                <div className="px-4 py-3 text-[13px] text-taco-muted">Memuat toko…</div>
+              ) : (
+                <>
+                  {filteredStores.slice(0, 6).map((s) => {
+                    const sel = selectedStore?.id === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedStore(s);
+                          setStoreQuery(s.name);
+                        }}
+                        className="w-full min-h-[48px] px-4 flex items-center gap-2.5 text-left border-b border-taco-divider last:border-0 active:bg-taco-page"
+                      >
+                        <span className="text-taco-sub shrink-0">
+                          <StoreIcon size={16} />
+                        </span>
+                        <span className="flex-1 text-[14px] text-taco-text truncate">
+                          {s.name}
+                        </span>
+                        {sel && (
+                          <span className="text-taco-success shrink-0">
+                            <CheckIcon size={16} />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+
+                  {storeQuery.trim() && !exactStoreMatch && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedStore(null)}
+                      className="w-full min-h-[48px] px-4 flex items-center gap-2.5 text-left border-b border-taco-divider last:border-0 active:bg-taco-page"
+                    >
+                      <span className="text-taco-accent shrink-0">
+                        <PlusIcon size={16} />
+                      </span>
+                      <span className="flex-1 text-[14px] text-taco-text truncate">
+                        Tambah toko baru:{" "}
+                        <span className="font-semibold">“{storeQuery.trim()}”</span>
+                      </span>
+                    </button>
+                  )}
+
+                  {!storesLoading &&
+                    filteredStores.length === 0 &&
+                    !storeQuery.trim() && (
+                      <div className="px-4 py-3 text-[13px] text-taco-muted">
+                        Belum ada toko di area ini — ketik untuk menambah.
+                      </div>
+                    )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="px-4 pb-5 pt-2 border-t border-taco-divider shrink-0">
+          <button
+            type="button"
+            onClick={save}
+            disabled={!canSave}
+            className="w-full min-h-[52px] rounded-xl bg-taco-accent text-white font-semibold text-[15px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors"
+          >
+            Simpan
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function TaroV2UploadPage() {
+  const router = useRouter();
+  const { ready } = useTaroGuard();
+
+  const [phase, setPhase] = useState<Phase>("pick");
+  const [error, setError] = useState<string | null>(null);
+  const [committing, setCommitting] = useState(false);
+  const [result, setResult] = useState<BatchCreateResponse | null>(null);
+  /** Group labels by their commit index, for the success summary. */
+  const [committedLabels, setCommittedLabels] = useState<string[]>([]);
+
+  const [photos, setPhotos] = useState<BatchPhoto[]>([]);
+  const [areas, setAreas] = useState<AreaV2[]>([]);
+  const [areasLoading, setAreasLoading] = useState(true);
+  const [preview, setPreview] = useState<string | null>(null);
+
+  /** AssignSheet target: a whole group (applies to all members) or one photo. */
+  const [editor, setEditor] = useState<
+    | { target: { type: "group"; key: string } | { type: "photo"; id: string }; title: string; initial: { areaId?: string; storeId?: string | null; storeName?: string } | null }
+    | null
+  >(null);
+
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
+  const fileMap = useRef<Map<string, File>>(new Map());
+  const thumbs = useRef<Set<string>>(new Set());
+  const detectQueue = useRef<string[]>([]);
+  const inFlight = useRef(0);
+
+  // Load areas once (for needs-input resolution + group editing).
+  useEffect(() => {
+    let alive = true;
+    setAreasLoading(true);
+    getAreas()
+      .then((res) => {
+        if (alive) setAreas(unwrapList<AreaV2>(res.data));
+      })
+      .catch(() => {})
+      .finally(() => alive && setAreasLoading(false));
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  /** Resolve the detected matches into prefilled selectedArea / selectedStore.
-   *  Gated on band: only `auto`/`best_guess` are trustworthy enough to prefill.
-   *  On the `manual` band the BE may still return a sub-threshold (weak)
-   *  non-null match — never prefill from it, or the wrong store + wrong-area
-   *  would be staged AND "Lanjut" would enable, letting bad data through.
-   *  Manual band → clear everything; the rep must pick store + area by hand. */
-  const applyDetectPrefill = useCallback(
-    (res: DetectStoreResponse) => {
-      if (res.outcome !== "auto" && res.outcome !== "best_guess") {
-        setSelectedArea(null);
-        setSelectedStore(null);
-        setStoreQuery("");
+  // Revoke object URLs on unmount.
+  useEffect(() => {
+    const set = thumbs.current;
+    return () => set.forEach((u) => URL.revokeObjectURL(u));
+  }, []);
+
+  const detectOne = useCallback(async (id: string) => {
+    const file = fileMap.current.get(id);
+    if (!file) return;
+    setPhotos((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, status: "detecting", error: null } : p))
+    );
+    try {
+      const res = await detectV2StoreLocation(file);
+      setPhotos((prev) =>
+        prev.map((p) =>
+          p.id === id ? { ...p, status: "ready", detect: res, error: null } : p
+        )
+      );
+    } catch (err) {
+      setPhotos((prev) =>
+        prev.map((p) =>
+          p.id === id
+            ? { ...p, status: "error", error: extractErrorMessage(err) }
+            : p
+        )
+      );
+    }
+  }, []);
+
+  // Concurrency-limited detect pump (AC-2: each photo its own call, non-blocking).
+  const pump = useCallback(() => {
+    while (inFlight.current < MAX_CONCURRENT_DETECT && detectQueue.current.length) {
+      const id = detectQueue.current.shift();
+      if (!id) break;
+      inFlight.current += 1;
+      detectOne(id).finally(() => {
+        inFlight.current -= 1;
+        pump();
+      });
+    }
+  }, [detectOne]);
+
+  const addPhotos = useCallback(
+    (files: FileList | File[]) => {
+      const list = Array.from(files).filter((f) => ACCEPTED.includes(f.type));
+      if (list.length === 0) {
+        setError("Hanya gambar JPG/PNG yang didukung.");
         return;
       }
-      // Area — prefer the loaded AreaV2 (full shape) but synthesize if absent.
-      if (res.area_match) {
-        const m = res.area_match;
-        const found = areas.find((a) => a.id === m.id);
-        setSelectedArea(found ?? { id: m.id, name: m.name, code: m.code });
-      } else {
-        setSelectedArea(null);
-      }
-      // Store — synthesize a StoreV2 from the match (id is a real StoreV2 id).
-      if (res.store_match) {
-        const m = res.store_match;
-        setSelectedStore({
-          id: m.id,
-          name: m.name,
-          area_id: m.area_id ?? res.area_match?.id ?? "",
-        });
-        setStoreQuery(m.name);
-      } else {
-        setSelectedStore(null);
-        setStoreQuery("");
-      }
-    },
-    [areas]
-  );
-
-  const runDetect = async () => {
-    if (!primaryFile) {
-      setError("Ambil atau pilih foto invoice dulu.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await detectV2StoreLocation(primaryFile);
-      setDetect(res);
-      if (res.outcome === "invalid") {
-        setPhase("invalid");
-      } else {
-        applyDetectPrefill(res);
-        setPhase("confirm");
-      }
-    } catch (err) {
-      setError(`Gagal membaca foto: ${extractErrorMessage(err)}. Coba lagi.`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const retakePhoto = () => {
-    setPrimaryFile(null);
-    setPrimaryThumb((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
-    setDetect(null);
-    setSelectedArea(null);
-    setSelectedStore(null);
-    setStoreQuery("");
-    setError(null);
-    setPhase("photo");
-  };
-
-  const canConfirm =
-    !!selectedArea && (!!selectedStore || storeQuery.trim().length > 0);
-
-  // ── Phase confirm → create invoice (adopts the staged photo) ───────────────
-  const confirmStoreArea = async () => {
-    if (!selectedArea) {
-      setError("Pilih area dulu.");
-      return;
-    }
-    const stagedId = detect?.staged_image_id;
-    if (!stagedId) {
-      setError("Foto belum siap. Ambil ulang foto invoice.");
-      return;
-    }
-    const name = storeQuery.trim();
-    if (!selectedStore && !name) {
-      setError("Pilih atau ketik nama toko.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      // An existing store (matched or exact-typed) → store_id; otherwise the BE
-      // persists the free-typed store_name under this area.
-      const store = selectedStore ?? exactStoreMatch;
-      const inv = await createV2Invoice({
-        area_id: selectedArea.id,
-        ...(store ? { store_id: store.id } : { store_name: name }),
-        staged_image_ids: [stagedId],
+      setError(null);
+      const items: BatchPhoto[] = list.map((f) => {
+        const id = uid();
+        const thumb = URL.createObjectURL(f);
+        fileMap.current.set(id, f);
+        thumbs.current.add(thumb);
+        return { id, thumb, status: "detecting", detect: null, error: null, override: null };
       });
-      setInvoiceId(inv.id);
-      if (primaryFile) thumbByName.current.set(primaryFile.name, primaryThumb ?? "");
-      // Load the adopted (already-valid) image row(s). validate() re-checks only
-      // pending images — the adopted photo is valid, so this is a no-op read.
-      try {
-        const imgs = await validateV2Images(inv.id);
-        setImages(attachThumbs(imgs));
-      } catch {
-        setImages([]);
-      }
-      setPhase("extra");
-    } catch (err) {
-      setError(`Gagal membuat invoice: ${extractErrorMessage(err)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const attachThumbs = useCallback(
-    (imgs: InvoiceImageV2[]): ImageCard[] =>
-      imgs.map((i) => ({
-        ...i,
-        _thumb: i.file_name ? thumbByName.current.get(i.file_name) : undefined,
-      })),
-    []
-  );
-
-  const runValidation = useCallback(
-    async (id: string, attempt = 0) => {
-      try {
-        const imgs = await validateV2Images(id);
-        setImages(attachThumbs(imgs));
-        const stillPending = imgs.some((i) => i.validation_status === "pending");
-        if (stillPending && attempt < 5) {
-          validateTimer.current = window.setTimeout(
-            () => runValidation(id, attempt + 1),
-            2500
-          );
-        }
-      } catch (err) {
-        setError(`Validasi gagal: ${extractErrorMessage(err)}`);
-      }
+      setPhotos((prev) => [...prev, ...items]);
+      items.forEach((it) => detectQueue.current.push(it.id));
+      pump();
     },
-    [attachThumbs]
+    [pump]
   );
 
-  // ── Phase extra: add more photos (validated normally) ──────────────────────
-  const addExtraPhotos = async (files: FileList | File[]) => {
-    const list = Array.from(files).filter((f) => ACCEPTED.includes(f.type));
-    if (list.length === 0 || !invoiceId) return;
-    list.forEach((f) => thumbByName.current.set(f.name, URL.createObjectURL(f)));
-    setBusy(true);
-    setError(null);
-    try {
-      await uploadV2Images(invoiceId, list);
-      await runValidation(invoiceId);
-    } catch (err) {
-      setError(`Gagal menambah foto: ${extractErrorMessage(err)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const retryDetect = useCallback(
+    (id: string) => {
+      detectQueue.current.push(id);
+      pump();
+    },
+    [pump]
+  );
 
-  const openImagePreview = async (img: ImageCard) => {
-    if (img._thumb) {
-      setPreview(img._thumb);
+  const removePhoto = useCallback((id: string) => {
+    setPhotos((prev) => {
+      const p = prev.find((x) => x.id === id);
+      if (p) {
+        URL.revokeObjectURL(p.thumb);
+        thumbs.current.delete(p.thumb);
+      }
+      fileMap.current.delete(id);
+      return prev.filter((x) => x.id !== id);
+    });
+  }, []);
+
+  // ── Live grouping (recomputes on every photo / override change → AC-7) ──────
+  const resolvedList = useMemo(
+    () => photos.map((p) => ({ photo: p, res: resolvePhoto(p, areas) })),
+    [photos, areas]
+  );
+
+  const groups = useMemo<Group[]>(() => {
+    const map = new Map<string, Group>();
+    for (const { photo, res } of resolvedList) {
+      if (res.kind !== "grouped") continue;
+      const k = groupKey(res.assignment);
+      const g = map.get(k);
+      if (g) {
+        g.photoIds.push(photo.id);
+      } else {
+        map.set(k, {
+          key: k,
+          areaId: res.assignment.areaId,
+          areaName: res.assignment.areaName,
+          areaCode: res.assignment.areaCode,
+          storeId: res.assignment.storeId,
+          storeName: res.assignment.storeName,
+          photoIds: [photo.id],
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [resolvedList]);
+
+  const needsPhotos = useMemo(
+    () =>
+      resolvedList
+        .filter((x) => x.res.kind === "needs")
+        .map((x) => ({
+          photo: x.photo,
+          areaHint: (x.res as Extract<Resolved, { kind: "needs" }>).areaHint,
+        })),
+    [resolvedList]
+  );
+  const invalidPhotos = useMemo(
+    () =>
+      resolvedList
+        .filter((x) => x.res.kind === "invalid")
+        .map((x) => ({
+          photo: x.photo,
+          reason: (x.res as Extract<Resolved, { kind: "invalid" }>).reason,
+        })),
+    [resolvedList]
+  );
+  const detecting = useMemo(
+    () => photos.filter((p) => p.status === "detecting").length,
+    [photos]
+  );
+  const errored = useMemo(
+    () => photos.filter((p) => p.status === "error").length,
+    [photos]
+  );
+
+  const thumbOf = useCallback(
+    (id: string) => photos.find((p) => p.id === id)?.thumb,
+    [photos]
+  );
+
+  // ── AssignSheet apply (group edit / photo move / needs-input resolve) ───────
+  const applyAssignment = useCallback(
+    (a: Assignment) => {
+      if (!editor) return;
+      const t = editor.target;
+      setPhotos((prev) => {
+        if (t.type === "photo") {
+          return prev.map((p) => (p.id === t.id ? { ...p, override: a } : p));
+        }
+        // Group edit: re-assign every photo currently in this group.
+        const memberIds = new Set(
+          groups.find((g) => g.key === t.key)?.photoIds ?? []
+        );
+        return prev.map((p) => (memberIds.has(p.id) ? { ...p, override: a } : p));
+      });
+      setEditor(null);
+    },
+    [editor, groups]
+  );
+
+  const openGroupEditor = (g: Group) =>
+    setEditor({
+      target: { type: "group", key: g.key },
+      title: "Ubah toko & area",
+      initial: { areaId: g.areaId, storeId: g.storeId, storeName: g.storeName },
+    });
+
+  const openPhotoEditor = (id: string, hint: AreaV2 | null, title: string) =>
+    setEditor({
+      target: { type: "photo", id },
+      title,
+      initial: hint ? { areaId: hint.id } : null,
+    });
+
+  const openImagePreview = async (id: string) => {
+    const local = thumbOf(id);
+    if (local) {
+      setPreview(local);
       return;
     }
-    const url = (await getV2ImageUrl(img.id)) ?? img.url ?? null;
+    const url = await getV2ImageUrl(id);
     if (url) setPreview(url);
   };
 
-  const handleDeleteImage = async (imageId: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await deleteV2Image(imageId);
-      setImages((prev) => prev.filter((i) => i.id !== imageId));
-    } catch (err) {
-      setError(`Gagal menghapus foto: ${extractErrorMessage(err)}`);
-    } finally {
-      setBusy(false);
+  // ── Commit (AC-8): one invoice per group via the batch endpoint ────────────
+  const commit = async () => {
+    const payload: BatchInvoiceGroupInput[] = [];
+    const labels: string[] = [];
+    for (const g of groups) {
+      const stagedIds = g.photoIds
+        .map((id) => photos.find((p) => p.id === id)?.detect?.staged_image_id)
+        .filter((x): x is string => !!x);
+      if (stagedIds.length === 0) continue;
+      payload.push({
+        area_id: g.areaId,
+        ...(g.storeId ? { store_id: g.storeId } : { store_name: g.storeName }),
+        staged_image_ids: stagedIds,
+      });
+      labels.push(`${g.storeName} · ${g.areaName}`);
     }
-  };
-
-  const allValid =
-    images.length > 0 && images.every((i) => i.validation_status === "valid");
-  const pendingCount = images.filter(
-    (i) => i.validation_status === "pending"
-  ).length;
-  const invalidCount = images.filter(
-    (i) => i.validation_status === "invalid"
-  ).length;
-  const validCount = images.filter(
-    (i) => i.validation_status === "valid"
-  ).length;
-
-  const finishAndProcess = async () => {
-    if (!invoiceId || !allValid) return;
-    setBusy(true);
+    if (payload.length === 0) {
+      setError("Belum ada grup yang siap dibuat.");
+      return;
+    }
+    setCommitting(true);
     setError(null);
     try {
-      await processV2Invoice(invoiceId);
-      if (validateTimer.current) window.clearTimeout(validateTimer.current);
-      router.push("/taro-app/v2/history");
+      const resp = await batchCreateV2Invoices(payload, true);
+      setResult(resp);
+      setCommittedLabels(labels);
+      setPhase("success");
     } catch (err) {
-      setError(`Gagal memproses: ${extractErrorMessage(err)}`);
-      setBusy(false);
+      setError(`Gagal membuat invoice: ${extractErrorMessage(err)}`);
+    } finally {
+      setCommitting(false);
     }
   };
 
@@ -437,19 +766,31 @@ export default function TaroV2UploadPage() {
     );
   }
 
+  const canReview = photos.length > 0 && detecting === 0;
+
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
       <div className="phone-shell flex flex-col min-h-screen">
         <TopBar
           title="Upload Invoice"
           right={
-            <button
-              type="button"
-              onClick={() => router.push("/taro-app/v2/home")}
-              className="text-[13px] font-medium text-taco-sub px-2 py-1"
-            >
-              Batal
-            </button>
+            phase === "review" ? (
+              <button
+                type="button"
+                onClick={() => setPhase("pick")}
+                className="text-[13px] font-medium text-taco-sub px-2 py-1"
+              >
+                Kembali
+              </button>
+            ) : phase === "pick" ? (
+              <button
+                type="button"
+                onClick={() => router.push("/taro-app/v2/home")}
+                className="text-[13px] font-medium text-taco-sub px-2 py-1"
+              >
+                Batal
+              </button>
+            ) : undefined
           }
         />
 
@@ -459,641 +800,460 @@ export default function TaroV2UploadPage() {
           </div>
         )}
 
-        {/* ── Phase 1: Photo first ─────────────────────────────────────────── */}
-        {phase === "photo" && (
+        {/* ── Phase: Pick (multi) ─────────────────────────────────────────── */}
+        {phase === "pick" && (
           <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
             <div className="text-[15px] font-semibold text-taco-text">
-              Foto invoice dulu
+              Foto semua invoice
             </div>
             <div className="text-[13px] text-taco-sub mt-1">
-              Ambil satu foto invoice yang jelas. Kami akan membaca toko & lokasi
-              dari foto secara otomatis.
+              Ambil atau pilih beberapa foto sekaligus. Kami baca toko &amp; area
+              tiap foto, lalu kelompokkan otomatis.
             </div>
 
-            {!primaryThumb ? (
-              <div className="grid grid-cols-2 gap-2 mt-4">
-                <button
-                  type="button"
-                  onClick={() => photoCameraRef.current?.click()}
-                  className="min-h-[140px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-2 text-taco-sub active:bg-taco-page"
-                >
-                  <CameraIcon size={32} />
-                  <span className="text-[13px] font-medium">Ambil Foto</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => photoGalleryRef.current?.click()}
-                  className="min-h-[140px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-2 text-taco-sub active:bg-taco-page"
-                >
-                  <PlusIcon size={32} />
-                  <span className="text-[13px] font-medium">Dari Galeri</span>
-                </button>
-              </div>
-            ) : (
-              <div className="mt-4">
-                <button
-                  type="button"
-                  onClick={() => primaryThumb && setPreview(primaryThumb)}
-                  className="relative w-full aspect-[4/3] rounded-xl overflow-hidden bg-taco-page border border-taco-border active:opacity-90"
-                  aria-label="Lihat foto"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={primaryThumb}
-                    alt="Foto invoice"
-                    className="w-full h-full object-cover"
-                  />
-                  <span className="absolute bottom-2 right-2 w-7 h-7 rounded-md bg-black/55 text-white flex items-center justify-center">
-                    <ExpandIcon size={14} />
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={retakePhoto}
-                  className="mt-2 inline-flex items-center gap-1.5 text-[13px] font-medium text-taco-sub"
-                >
-                  <RefreshIcon size={15} /> Ganti foto
-                </button>
-              </div>
-            )}
+            <div className="grid grid-cols-2 gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => cameraRef.current?.click()}
+                className="min-h-[88px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page"
+              >
+                <CameraIcon size={26} />
+                <span className="text-[13px] font-medium">Ambil Foto</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => galleryRef.current?.click()}
+                className="min-h-[88px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page"
+              >
+                <PlusIcon size={26} />
+                <span className="text-[13px] font-medium">Dari Galeri</span>
+              </button>
+            </div>
 
             <input
-              ref={photoCameraRef}
+              ref={cameraRef}
               type="file"
               accept="image/*"
               capture="environment"
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) pickPrimary(e.target.files);
+                if (e.target.files) addPhotos(e.target.files);
                 e.target.value = "";
               }}
             />
             <input
-              ref={photoGalleryRef}
-              type="file"
-              accept={ACCEPT_ATTR}
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) pickPrimary(e.target.files);
-                e.target.value = "";
-              }}
-            />
-
-            <div className="mt-auto pt-6">
-              <button
-                type="button"
-                onClick={runDetect}
-                disabled={!primaryFile || busy}
-                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors flex items-center justify-center gap-2"
-              >
-                {busy ? (
-                  <>
-                    <span className="animate-spin inline-flex">
-                      <SpinnerIcon size={18} />
-                    </span>
-                    Membaca invoice…
-                  </>
-                ) : (
-                  "Deteksi & Lanjut"
-                )}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Phase: Invalid image ─────────────────────────────────────────── */}
-        {phase === "invalid" && (
-          <div className="px-4 pt-6 flex-1 flex flex-col pb-6">
-            <div className="bg-white border border-red-200 rounded-2xl p-5 flex flex-col items-center text-center">
-              <div className="w-14 h-14 rounded-full bg-red-50 text-taco-error flex items-center justify-center">
-                <XCircleIcon size={30} />
-              </div>
-              <div className="text-[16px] font-semibold text-taco-text mt-3">
-                Foto tidak bisa digunakan
-              </div>
-              <div className="text-[13px] text-taco-sub mt-1.5 max-w-[300px]">
-                {detect?.validation.invalid_reason ??
-                  "Foto tidak memenuhi syarat. Pastikan seluruh invoice terlihat jelas dan tidak terpotong."}
-              </div>
-            </div>
-
-            {primaryThumb && (
-              <button
-                type="button"
-                onClick={() => setPreview(primaryThumb)}
-                className="relative w-full aspect-[4/3] rounded-xl overflow-hidden bg-taco-page border border-taco-border mt-4 active:opacity-90"
-                aria-label="Lihat foto"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={primaryThumb}
-                  alt="Foto invoice"
-                  className="w-full h-full object-cover"
-                />
-              </button>
-            )}
-
-            <div className="mt-auto pt-6">
-              <button
-                type="button"
-                onClick={retakePhoto}
-                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors flex items-center justify-center gap-2"
-              >
-                <RefreshIcon size={18} /> Ganti Foto
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Phase: Confirm store + area ──────────────────────────────────── */}
-        {phase === "confirm" && detect && (
-          <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
-            {(() => {
-              const b = outcomeBanner(detect.outcome);
-              const cls =
-                b.tone === "ok"
-                  ? "bg-emerald-50 border-emerald-100"
-                  : b.tone === "warn"
-                    ? "bg-amber-50 border-amber-100"
-                    : "bg-taco-page border-taco-border";
-              const icon =
-                b.tone === "ok" ? (
-                  <span className="text-taco-success">
-                    <CheckIcon size={18} />
-                  </span>
-                ) : b.tone === "warn" ? (
-                  <span className="text-taco-warning">
-                    <AlertTriangleIcon size={18} />
-                  </span>
-                ) : (
-                  <span className="text-taco-sub">
-                    <SearchIcon size={18} />
-                  </span>
-                );
-              const pct = Math.round((detect.match_confidence ?? 0) * 100);
-              return (
-                <div className={`rounded-xl border px-3 py-3 flex items-start gap-2.5 ${cls}`}>
-                  <span className="mt-0.5 shrink-0">{icon}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-semibold text-taco-text">
-                      {b.title}
-                      {detect.outcome !== "manual" && pct > 0 && (
-                        <span className="ml-1.5 text-[11px] font-medium text-taco-sub">
-                          ({pct}% cocok)
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[12px] text-taco-sub mt-0.5">{b.body}</div>
-                    {(detect.detected.store_name_raw ||
-                      detect.detected.location_raw) && (
-                      <div className="text-[11px] text-taco-muted mt-1.5">
-                        Terbaca dari foto:{" "}
-                        {detect.detected.store_name_raw ?? "—"}
-                        {detect.detected.location_raw
-                          ? ` · ${detect.detected.location_raw}`
-                          : ""}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Area picker */}
-            <label className="block text-[13px] font-medium text-taco-sub mb-1.5 mt-5">
-              Area <span className="text-taco-error">*</span>
-            </label>
-            <button
-              type="button"
-              onClick={() => {
-                setAreaQuery("");
-                setAreaPickerOpen(true);
-              }}
-              className={[
-                "w-full min-h-[52px] rounded-xl border px-4 flex items-center gap-2.5 text-left transition-colors",
-                selectedArea
-                  ? "border-taco-text bg-taco-accent-tint"
-                  : "border-taco-border bg-white",
-              ].join(" ")}
-            >
-              <span className="text-taco-sub shrink-0">
-                <PinIcon size={18} />
-              </span>
-              <span className="flex-1 min-w-0">
-                {selectedArea ? (
-                  <>
-                    <span className="block text-[15px] font-medium text-taco-text truncate">
-                      {selectedArea.name}
-                    </span>
-                    {selectedArea.code && (
-                      <span className="block text-[11px] text-taco-muted">
-                        {selectedArea.code}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-[15px] text-taco-muted">Pilih area…</span>
-                )}
-              </span>
-              {selectedArea ? (
-                <span className="text-taco-success shrink-0">
-                  <CheckIcon size={18} />
-                </span>
-              ) : (
-                <span className="text-taco-muted shrink-0 rotate-90 inline-flex">
-                  <ChevronRightIcon size={18} />
-                </span>
-              )}
-            </button>
-
-            {/* Store autocomplete (free-type-new) */}
-            <div className="mt-5">
-              <label className="block text-[13px] font-medium text-taco-sub mb-1.5">
-                Nama Toko <span className="text-taco-error">*</span>
-              </label>
-              <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-taco-muted pointer-events-none">
-                  <SearchIcon size={16} />
-                </span>
-                <input
-                  type="text"
-                  inputMode="text"
-                  value={storeQuery}
-                  disabled={!selectedArea}
-                  onChange={(e) => {
-                    setStoreQuery(e.target.value);
-                    setSelectedStore(null);
-                  }}
-                  placeholder={
-                    selectedArea ? "Cari atau ketik nama toko" : "Pilih area dulu"
-                  }
-                  className="w-full h-[52px] border border-taco-border rounded-xl pl-10 pr-4 text-[16px] text-taco-text bg-white outline-none focus:border-taco-text disabled:bg-taco-page disabled:text-taco-muted"
-                />
-              </div>
-
-              {selectedArea && (
-                <div className="mt-2 bg-white border border-taco-border rounded-xl overflow-hidden">
-                  {storesLoading ? (
-                    <div className="px-4 py-3 text-[13px] text-taco-muted">
-                      Memuat toko…
-                    </div>
-                  ) : (
-                    <>
-                      {filteredStores.slice(0, 6).map((s) => {
-                        const sel = selectedStore?.id === s.id;
-                        return (
-                          <button
-                            key={s.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedStore(s);
-                              setStoreQuery(s.name);
-                            }}
-                            className="w-full min-h-[48px] px-4 flex items-center gap-2.5 text-left border-b border-taco-divider last:border-0 active:bg-taco-page"
-                          >
-                            <span className="text-taco-sub shrink-0">
-                              <StoreIcon size={16} />
-                            </span>
-                            <span className="flex-1 text-[14px] text-taco-text truncate">
-                              {s.name}
-                            </span>
-                            {sel && (
-                              <span className="text-taco-success shrink-0">
-                                <CheckIcon size={16} />
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-
-                      {storeQuery.trim() && !exactStoreMatch && (
-                        <button
-                          type="button"
-                          onClick={() => setSelectedStore(null)}
-                          className="w-full min-h-[48px] px-4 flex items-center gap-2.5 text-left border-b border-taco-divider last:border-0 active:bg-taco-page"
-                        >
-                          <span className="text-taco-accent shrink-0">
-                            <PlusIcon size={16} />
-                          </span>
-                          <span className="flex-1 text-[14px] text-taco-text truncate">
-                            Tambah toko baru:{" "}
-                            <span className="font-semibold">
-                              “{storeQuery.trim()}”
-                            </span>
-                          </span>
-                        </button>
-                      )}
-
-                      {!storesLoading &&
-                        filteredStores.length === 0 &&
-                        !storeQuery.trim() && (
-                          <div className="px-4 py-3 text-[13px] text-taco-muted">
-                            Belum ada toko di area ini — ketik untuk menambah.
-                          </div>
-                        )}
-                    </>
-                  )}
-                </div>
-              )}
-              <div className="text-[11px] text-taco-muted mt-1.5">
-                Toko baru otomatis tersimpan untuk pemilihan berikutnya.
-              </div>
-            </div>
-
-            <div className="mt-auto pt-6 flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={confirmStoreArea}
-                disabled={!canConfirm || busy}
-                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors"
-              >
-                {busy ? "Menyimpan…" : "Lanjut"}
-              </button>
-              <button
-                type="button"
-                onClick={retakePhoto}
-                disabled={busy}
-                className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border disabled:opacity-40 inline-flex items-center justify-center gap-1.5"
-              >
-                <RefreshIcon size={15} /> Ganti Foto
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Phase: Extra photos + process ────────────────────────────────── */}
-        {phase === "extra" && (
-          <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
-            <div className="bg-white border border-taco-border rounded-xl px-4 py-3 mb-3">
-              <div className="text-[12px] text-taco-sub">Toko</div>
-              <div className="text-[15px] font-medium text-taco-text">
-                {selectedStore?.name ?? storeQuery}
-              </div>
-              <div className="text-[12px] text-taco-muted mt-0.5">
-                {selectedArea?.name}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <div className="text-[13px] font-medium text-taco-sub">
-                Foto ({images.length})
-              </div>
-              <div className="text-[11px] text-taco-muted">
-                {validCount} valid
-                {invalidCount > 0 ? ` · ${invalidCount} bermasalah` : ""}
-                {pendingCount > 0 ? ` · ${pendingCount} diperiksa` : ""}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              {images.map((img) => {
-                const valid = img.validation_status === "valid";
-                const invalid = img.validation_status === "invalid";
-                return (
-                  <div
-                    key={img.id}
-                    className={[
-                      "rounded-xl border bg-white p-2.5 flex gap-3",
-                      invalid ? "border-red-200" : "border-taco-border",
-                    ].join(" ")}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => openImagePreview(img)}
-                      aria-label="Lihat foto"
-                      className="relative w-16 h-16 rounded-lg overflow-hidden bg-taco-page border border-taco-border shrink-0 active:opacity-80"
-                    >
-                      {img._thumb || img.url ? (
-                        <>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={img._thumb ?? img.url ?? ""}
-                            alt={img.file_name ?? "invoice"}
-                            className="w-full h-full object-cover"
-                          />
-                          <span className="absolute bottom-0.5 right-0.5 w-5 h-5 rounded-md bg-black/55 text-white flex items-center justify-center pointer-events-none">
-                            <ExpandIcon size={12} />
-                          </span>
-                        </>
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-taco-muted">
-                          <StoreIcon size={20} />
-                        </div>
-                      )}
-                    </button>
-                    <div className="flex-1 min-w-0 flex flex-col justify-center">
-                      {valid && (
-                        <div className="flex items-center gap-1.5 text-taco-success text-[13px] font-medium">
-                          <CheckIcon size={16} /> Valid
-                        </div>
-                      )}
-                      {invalid && (
-                        <>
-                          <div className="flex items-center gap-1.5 text-taco-error text-[13px] font-medium">
-                            <AlertTriangleIcon size={15} /> Tidak valid
-                          </div>
-                          <div className="text-[12px] text-taco-sub mt-0.5">
-                            {img.invalid_reason ??
-                              "Foto tidak memenuhi syarat. Ganti foto."}
-                          </div>
-                        </>
-                      )}
-                      {img.validation_status === "pending" && (
-                        <div className="flex items-center gap-1.5 text-taco-info text-[13px] font-medium">
-                          <span className="animate-spin inline-flex">
-                            <SpinnerIcon size={15} />
-                          </span>
-                          Memeriksa…
-                        </div>
-                      )}
-                      {img.file_name && (
-                        <div className="text-[11px] text-taco-muted truncate mt-0.5">
-                          {img.file_name}
-                        </div>
-                      )}
-                    </div>
-                    {img.validation_status !== "pending" && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteImage(img.id)}
-                        disabled={busy}
-                        aria-label="Hapus foto"
-                        className={[
-                          "self-center min-h-[44px] px-3 rounded-lg text-[13px] font-medium bg-white disabled:opacity-40 shrink-0 border",
-                          invalid
-                            ? "border-red-200 text-taco-error active:bg-red-50"
-                            : "border-taco-border text-taco-sub active:bg-taco-page",
-                        ].join(" ")}
-                      >
-                        Hapus
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {invalidCount > 0 && (
-              <div className="mt-3 text-[12px] text-taco-sub bg-taco-accent-tint border border-taco-accent/20 rounded-lg px-3 py-2">
-                Hapus atau ganti foto yang bermasalah. Proses hanya bisa saat semua
-                foto valid.
-              </div>
-            )}
-
-            <input
-              ref={extraCameraRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) addExtraPhotos(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <input
-              ref={extraGalleryRef}
+              ref={galleryRef}
               type="file"
               accept={ACCEPT_ATTR}
               multiple
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) addExtraPhotos(e.target.files);
+                if (e.target.files) addPhotos(e.target.files);
                 e.target.value = "";
               }}
             />
 
-            <div className="mt-3 grid grid-cols-2 gap-2">
+            {photos.length > 0 && (
+              <>
+                <div className="flex items-center justify-between mt-5 mb-2">
+                  <div className="text-[13px] font-medium text-taco-sub">
+                    {photos.length} foto
+                  </div>
+                  <div className="text-[11px] text-taco-muted">
+                    {detecting > 0 ? `${detecting} dibaca…` : "Semua terbaca"}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {photos.map((p) => {
+                    const res = resolvePhoto(p, areas);
+                    return (
+                      <div
+                        key={p.id}
+                        className="relative aspect-square rounded-xl overflow-hidden bg-taco-page border border-taco-border"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => openImagePreview(p.id)}
+                          className="absolute inset-0"
+                          aria-label="Lihat foto"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={p.thumb}
+                            alt="invoice"
+                            className="w-full h-full object-cover"
+                          />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => removePhoto(p.id)}
+                          aria-label="Hapus foto"
+                          className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/55 text-white flex items-center justify-center active:bg-black/70"
+                        >
+                          <CloseIcon size={13} />
+                        </button>
+
+                        <div className="absolute inset-x-0 bottom-0 px-1.5 py-1 bg-black/55 text-white text-[10px] leading-tight">
+                          {p.status === "detecting" && (
+                            <span className="flex items-center gap-1">
+                              <span className="animate-spin inline-flex">
+                                <SpinnerIcon size={11} />
+                              </span>
+                              Membaca…
+                            </span>
+                          )}
+                          {p.status === "error" && (
+                            <button
+                              type="button"
+                              onClick={() => retryDetect(p.id)}
+                              className="flex items-center gap-1 text-amber-200"
+                            >
+                              <RefreshIcon size={11} /> Coba lagi
+                            </button>
+                          )}
+                          {p.status === "ready" && res.kind === "invalid" && (
+                            <span className="flex items-center gap-1 text-red-200">
+                              <XCircleIcon size={11} /> Tidak valid
+                            </span>
+                          )}
+                          {p.status === "ready" && res.kind === "needs" && (
+                            <span className="flex items-center gap-1 text-amber-200">
+                              <AlertTriangleIcon size={11} /> Perlu input
+                            </span>
+                          )}
+                          {p.status === "ready" && res.kind === "grouped" && (
+                            <span className="block truncate">
+                              {res.assignment.storeName}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <div className="mt-auto pt-6">
               <button
                 type="button"
-                onClick={() => extraCameraRef.current?.click()}
-                disabled={busy}
-                className="min-h-[48px] rounded-xl border border-taco-border bg-white text-[13px] font-medium text-taco-sub flex items-center justify-center gap-1.5 disabled:opacity-40"
+                onClick={() => setPhase("review")}
+                disabled={!canReview}
+                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors flex items-center justify-center gap-2"
               >
-                <CameraIcon size={18} /> Tambah Foto
-              </button>
-              <button
-                type="button"
-                onClick={() => extraGalleryRef.current?.click()}
-                disabled={busy}
-                className="min-h-[48px] rounded-xl border border-taco-border bg-white text-[13px] font-medium text-taco-sub flex items-center justify-center gap-1.5 disabled:opacity-40"
-              >
-                <PlusIcon size={18} /> Dari Galeri
+                {detecting > 0 ? (
+                  <>
+                    <span className="animate-spin inline-flex">
+                      <SpinnerIcon size={18} />
+                    </span>
+                    Membaca {detecting} foto…
+                  </>
+                ) : (
+                  `Tinjau & Kelompokkan${photos.length ? ` (${photos.length})` : ""}`
+                )}
               </button>
             </div>
+          </div>
+        )}
+
+        {/* ── Phase: Review / regroup ─────────────────────────────────────── */}
+        {phase === "review" && (
+          <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
+            <div className="text-[13px] text-taco-sub mb-3">
+              {groups.length} invoice akan dibuat
+              {needsPhotos.length > 0 ? ` · ${needsPhotos.length} perlu input` : ""}
+              {invalidPhotos.length > 0 ? ` · ${invalidPhotos.length} tidak valid` : ""}
+            </div>
+
+            {errored > 0 && (
+              <div className="mb-3 text-[12px] text-taco-sub bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                {errored} foto gagal dibaca. Kembali untuk coba lagi atau hapus.
+              </div>
+            )}
+
+            {/* Groups → one future invoice each */}
+            {groups.map((g) => (
+              <div
+                key={g.key}
+                className="bg-white border border-taco-border rounded-2xl p-3 mb-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[15px] font-semibold text-taco-text truncate flex items-center gap-1.5">
+                      <span className="text-taco-sub shrink-0">
+                        <StoreIcon size={15} />
+                      </span>
+                      {g.storeName}
+                      {!g.storeId && (
+                        <span className="text-[10px] font-medium text-taco-accent bg-taco-accent-tint rounded px-1 py-0.5 shrink-0">
+                          baru
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[12px] text-taco-muted mt-0.5 truncate">
+                      {g.areaName}
+                      {g.areaCode ? ` · ${g.areaCode}` : ""} · {g.photoIds.length} foto
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openGroupEditor(g)}
+                    className="shrink-0 inline-flex items-center gap-1 text-[12px] font-medium text-taco-accent px-2 py-1 rounded-lg active:bg-taco-accent-tint"
+                  >
+                    <PencilIcon size={14} /> Ubah
+                  </button>
+                </div>
+
+                <div className="flex gap-2 mt-2.5 flex-wrap">
+                  {g.photoIds.map((id) => (
+                    <div key={id} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => openImagePreview(id)}
+                        className="w-14 h-14 rounded-lg overflow-hidden bg-taco-page border border-taco-border block active:opacity-80"
+                        aria-label="Lihat foto"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={thumbOf(id) ?? ""}
+                          alt="invoice"
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openPhotoEditor(id, null, "Pindahkan / ubah toko foto")
+                        }
+                        aria-label="Pindahkan foto"
+                        className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-white border border-taco-border text-taco-sub flex items-center justify-center active:bg-taco-page"
+                      >
+                        <RefreshIcon size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            {/* Needs-input pile (AC-5) */}
+            {needsPhotos.length > 0 && (
+              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 mb-3">
+                <div className="text-[13px] font-semibold text-taco-text flex items-center gap-1.5">
+                  <span className="text-taco-warning">
+                    <AlertTriangleIcon size={15} />
+                  </span>
+                  Perlu input ({needsPhotos.length})
+                </div>
+                <div className="text-[12px] text-taco-sub mt-0.5">
+                  Toko tidak terbaca. Tetapkan toko &amp; area agar ikut dibuat.
+                </div>
+                <div className="flex flex-col gap-2 mt-2.5">
+                  {needsPhotos.map(({ photo, areaHint }) => (
+                    <div
+                      key={photo.id}
+                      className="bg-white border border-taco-border rounded-xl p-2 flex items-center gap-3"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => openImagePreview(photo.id)}
+                        className="w-14 h-14 rounded-lg overflow-hidden bg-taco-page border border-taco-border shrink-0 active:opacity-80"
+                        aria-label="Lihat foto"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={photo.thumb}
+                          alt="invoice"
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[12px] text-taco-sub truncate">
+                          {photo.detect?.detected.store_name_raw
+                            ? `Terbaca: ${photo.detect.detected.store_name_raw}`
+                            : "Toko tidak terbaca dari foto"}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openPhotoEditor(
+                              photo.id,
+                              areaHint,
+                              "Tetapkan toko & area"
+                            )
+                          }
+                          className="mt-1 inline-flex items-center gap-1 text-[12px] font-semibold text-taco-accent"
+                        >
+                          <PlusIcon size={13} /> Tetapkan toko &amp; area
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removePhoto(photo.id)}
+                        aria-label="Hapus foto"
+                        className="shrink-0 w-9 h-9 rounded-lg border border-taco-border text-taco-sub flex items-center justify-center active:bg-taco-page"
+                      >
+                        <TrashIcon size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Invalid pile (AC-6) */}
+            {invalidPhotos.length > 0 && (
+              <div className="bg-white border border-red-200 rounded-2xl p-3 mb-3">
+                <div className="text-[13px] font-semibold text-taco-text flex items-center gap-1.5">
+                  <span className="text-taco-error">
+                    <XCircleIcon size={15} />
+                  </span>
+                  Tidak valid ({invalidPhotos.length})
+                </div>
+                <div className="text-[12px] text-taco-sub mt-0.5">
+                  Dikeluarkan dari batch. Hapus, atau kembali untuk foto ulang.
+                </div>
+                <div className="flex flex-col gap-2 mt-2.5">
+                  {invalidPhotos.map(({ photo, reason }) => (
+                    <div
+                      key={photo.id}
+                      className="border border-red-200 rounded-xl p-2 flex items-center gap-3"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => openImagePreview(photo.id)}
+                        className="w-14 h-14 rounded-lg overflow-hidden bg-taco-page border border-red-200 shrink-0 active:opacity-80"
+                        aria-label="Lihat foto"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={photo.thumb}
+                          alt="invoice"
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[12px] text-taco-error font-medium">
+                          {reason}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removePhoto(photo.id)}
+                        aria-label="Hapus foto"
+                        className="shrink-0 w-9 h-9 rounded-lg border border-red-200 text-taco-error flex items-center justify-center active:bg-red-50"
+                      >
+                        <TrashIcon size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {groups.length === 0 &&
+              needsPhotos.length === 0 &&
+              invalidPhotos.length === 0 && (
+                <div className="text-[13px] text-taco-muted text-center py-8">
+                  Belum ada foto. Kembali untuk menambah.
+                </div>
+              )}
 
             <div className="mt-auto pt-6 flex flex-col gap-2">
-              {pendingCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => invoiceId && runValidation(invoiceId)}
-                  disabled={busy}
-                  className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-info bg-white border border-taco-border disabled:opacity-40"
-                >
-                  Periksa Lagi
-                </button>
-              )}
               <button
                 type="button"
-                onClick={finishAndProcess}
-                disabled={!allValid || busy}
-                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors"
+                onClick={commit}
+                disabled={groups.length === 0 || committing}
+                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors flex items-center justify-center gap-2"
               >
-                {busy ? "Memproses…" : "Selesai & Proses"}
+                {committing ? (
+                  <>
+                    <span className="animate-spin inline-flex">
+                      <SpinnerIcon size={18} />
+                    </span>
+                    Membuat…
+                  </>
+                ) : (
+                  `Buat ${groups.length} Invoice`
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPhase("pick")}
+                disabled={committing}
+                className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border disabled:opacity-40 inline-flex items-center justify-center gap-1.5"
+              >
+                <PlusIcon size={15} /> Tambah Foto
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Phase: Success ──────────────────────────────────────────────── */}
+        {phase === "success" && result && (
+          <div className="px-4 pt-6 flex-1 flex flex-col pb-6">
+            <div className="bg-white border border-taco-border rounded-2xl p-5 flex flex-col items-center text-center">
+              <div className="w-14 h-14 rounded-full bg-emerald-50 text-taco-success flex items-center justify-center">
+                <CheckIcon size={30} />
+              </div>
+              <div className="text-[16px] font-semibold text-taco-text mt-3">
+                {result.created_count} invoice dibuat
+              </div>
+              <div className="text-[13px] text-taco-sub mt-1">
+                Sedang diproses (OCR). Lihat hasilnya di Riwayat.
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 mt-4">
+              {result.results.map((r) => (
+                <div
+                  key={r.index}
+                  className={[
+                    "rounded-xl border p-3 flex items-center gap-2.5",
+                    r.ok ? "bg-white border-taco-border" : "bg-red-50 border-red-200",
+                  ].join(" ")}
+                >
+                  <span className={r.ok ? "text-taco-success" : "text-taco-error"}>
+                    {r.ok ? <CheckIcon size={18} /> : <XCircleIcon size={18} />}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[14px] font-medium text-taco-text truncate">
+                      {committedLabels[r.index] ?? `Grup ${r.index + 1}`}
+                    </div>
+                    {!r.ok && r.error && (
+                      <div className="text-[12px] text-taco-error mt-0.5">
+                        {r.error}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-auto pt-6">
+              <button
+                type="button"
+                onClick={() => router.push("/taro-app/v2/history")}
+                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors"
+              >
+                Lihat Riwayat
               </button>
             </div>
           </div>
         )}
       </div>
 
-      {/* ── Area picker bottom sheet ─────────────────────────────────────── */}
-      {areaPickerOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col justify-end">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setAreaPickerOpen(false)}
-          />
-          <div className="relative z-10 bg-white rounded-t-2xl max-h-[75vh] flex flex-col">
-            <div className="flex items-center justify-between px-4 pt-4 pb-2 border-b border-taco-divider shrink-0">
-              <span className="text-[15px] font-semibold text-taco-text">
-                Pilih Area
-              </span>
-              <button
-                type="button"
-                onClick={() => setAreaPickerOpen(false)}
-                className="w-8 h-8 flex items-center justify-center text-taco-muted rounded-lg active:bg-taco-page"
-              >
-                <CloseIcon size={18} />
-              </button>
-            </div>
-            <div className="px-4 py-3 border-b border-taco-divider shrink-0">
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-taco-muted pointer-events-none">
-                  <SearchIcon size={16} />
-                </span>
-                <input
-                  autoFocus
-                  type="text"
-                  inputMode="search"
-                  placeholder="Cari nama atau kode area…"
-                  value={areaQuery}
-                  onChange={(e) => setAreaQuery(e.target.value)}
-                  className="w-full h-[44px] border border-taco-border rounded-xl pl-9 pr-4 text-[15px] text-taco-text bg-taco-page outline-none focus:border-taco-text"
-                />
-              </div>
-            </div>
-            <div className="overflow-y-auto flex-1">
-              {areasLoading ? (
-                <div className="px-4 py-5 text-[13px] text-taco-muted text-center">
-                  Memuat area…
-                </div>
-              ) : filteredAreas.length === 0 ? (
-                <div className="px-4 py-5 text-[13px] text-taco-muted text-center">
-                  Tidak ada area yang cocok.
-                </div>
-              ) : (
-                filteredAreas.map((a) => {
-                  const sel = selectedArea?.id === a.id;
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedArea(a);
-                        setSelectedStore(null);
-                        setStoreQuery("");
-                        setAreaPickerOpen(false);
-                      }}
-                      className={[
-                        "w-full min-h-[56px] px-4 flex items-center gap-3 text-left border-b border-taco-divider last:border-0",
-                        sel ? "bg-taco-accent-tint" : "active:bg-taco-page",
-                      ].join(" ")}
-                    >
-                      <span className="text-taco-sub shrink-0">
-                        <PinIcon size={18} />
-                      </span>
-                      <span className="flex-1 min-w-0">
-                        <span className="block text-[15px] font-medium text-taco-text truncate">
-                          {a.name}
-                        </span>
-                        {a.code && (
-                          <span className="block text-[11px] text-taco-muted">
-                            {a.code}
-                          </span>
-                        )}
-                      </span>
-                      {sel && (
-                        <span className="text-taco-success shrink-0">
-                          <CheckIcon size={18} />
-                        </span>
-                      )}
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
+      {editor && (
+        <AssignSheet
+          areas={areas}
+          areasLoading={areasLoading}
+          title={editor.title}
+          initial={editor.initial}
+          onCancel={() => setEditor(null)}
+          onSave={applyAssignment}
+        />
       )}
 
       {preview && (
