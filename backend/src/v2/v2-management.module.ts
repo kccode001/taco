@@ -25,6 +25,8 @@ import { V2DashboardController } from './dashboard/v2-dashboard.controller';
 import { V2DashboardService } from './dashboard/v2-dashboard.service';
 import { V2AnalyticsController } from './analytics/v2-analytics.controller';
 import { V2AnalyticsService } from './analytics/v2-analytics.service';
+import { MarketIntelController } from './market-intel/market-intel.controller';
+import { MarketIntelService } from './market-intel/market-intel.service';
 import { RecommendationsController } from './recommendations/recommendations.controller';
 import { RecommendationsService } from './recommendations/recommendations.service';
 
@@ -65,6 +67,7 @@ import { RecommendationsService } from './recommendations/recommendations.servic
     SalesController,
     V2DashboardController,
     V2AnalyticsController,
+    MarketIntelController,
     RecommendationsController,
   ],
   providers: [
@@ -74,6 +77,7 @@ import { RecommendationsService } from './recommendations/recommendations.servic
     SalesService,
     V2DashboardService,
     V2AnalyticsService,
+    MarketIntelService,
     RecommendationsService,
   ],
 })
