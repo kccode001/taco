@@ -40,6 +40,7 @@ import {
 } from './store-location-matcher';
 import { PatchLineItemV2Dto } from './dto/patch-line-item-v2.dto';
 import { CreateInvoiceV2Dto } from './dto/create-invoice-v2.dto';
+import { BatchCreateInvoicesV2Dto } from './dto/batch-create-invoices-v2.dto';
 import {
   QUEUE_TARO_V2_OCR,
   JOB_PROCESS_TARO_V2,
@@ -93,6 +94,21 @@ export interface DetectStoreResponse {
   store_match: DetectMatch | null;
   area_match: DetectMatch | null;
   match_confidence: number;
+}
+
+/** One slot in a batch-create response, aligned to the input `groups` by index. */
+export interface BatchCreateItem {
+  index: number;
+  ok: boolean;
+  invoice: InvoiceV2 | null;
+  error: string | null;
+}
+
+/** Result of `POST /api/v2/invoices/batch` — per-group outcomes + tallies. */
+export interface BatchCreateResult {
+  results: BatchCreateItem[];
+  created_count: number;
+  failed_count: number;
 }
 
 /** On-disk record pairing a staged photo with its validation/detection result. */
@@ -202,6 +218,66 @@ export class InvoicesV2Service {
       await this.adoptStagedImages(invoice.id, dto.staged_image_ids);
     }
     return invoice;
+  }
+
+  /**
+   * Batch commit for photo-first BATCH upload: one invoice per reviewed group.
+   * Each group is created independently — a bad group (unknown area/store) is
+   * reported in its slot and does NOT abort the others, so the rep never loses a
+   * whole batch over one bad row. Results are aligned to the input `groups` by
+   * index. When `process` is set, every successfully created invoice is enqueued
+   * for OCR in the same call (adopted staged photos are already VALID).
+   */
+  async createBatch(
+    dto: BatchCreateInvoicesV2Dto,
+    user: AuthedUser,
+  ): Promise<BatchCreateResult> {
+    const results: BatchCreateItem[] = [];
+    for (let i = 0; i < dto.groups.length; i++) {
+      const group = dto.groups[i];
+      try {
+        const invoice = await this.create(
+          {
+            area_id: group.area_id,
+            store_id: group.store_id,
+            store_name: group.store_name,
+            notes: group.notes,
+            staged_image_ids: group.staged_image_ids,
+          },
+          user,
+        );
+        if (dto.process) {
+          // Enqueue OCR now so the batch commits in one call. Mirrors process():
+          // adopted staged images are VALID, so this transitions to ocr_processing.
+          try {
+            await this.process(invoice.id, user);
+            invoice.status = InvoiceV2Status.OCR_PROCESSING;
+          } catch (e) {
+            // Created OK but couldn't start OCR — surface it without failing the
+            // group; the FE can retry process on this id.
+            this.logger.warn(
+              `createBatch: invoice ${invoice.id} created but process failed: ${(e as Error).message}`,
+            );
+          }
+        }
+        results.push({ index: i, ok: true, invoice, error: null });
+      } catch (e) {
+        this.logger.warn(
+          `createBatch: group ${i} failed: ${(e as Error).message}`,
+        );
+        results.push({
+          index: i,
+          ok: false,
+          invoice: null,
+          error: (e as Error).message,
+        });
+      }
+    }
+    return {
+      results,
+      created_count: results.filter((r) => r.ok).length,
+      failed_count: results.filter((r) => !r.ok).length,
+    };
   }
 
   /** Find a store by case-insensitive name within an area, or create it. */

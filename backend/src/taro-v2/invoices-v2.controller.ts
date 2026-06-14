@@ -24,6 +24,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../database/entities/user.entity';
 import { InvoicesV2Service } from './invoices-v2.service';
 import { CreateInvoiceV2Dto } from './dto/create-invoice-v2.dto';
+import { BatchCreateInvoicesV2Dto } from './dto/batch-create-invoices-v2.dto';
 import { InvoiceV2Status } from '../database/entities/v2/invoice-v2.enums';
 
 function getContentType(filePath: string): string {
@@ -81,6 +82,22 @@ export class InvoicesV2Controller {
     @CurrentUser('role') role: UserRole,
   ) {
     return this.invoices.create(body, { id: userId, role });
+  }
+
+  /**
+   * Photo-first BATCH commit: the rep's reviewed groups in one request → one
+   * invoice per group, each adopting its grouped staged photos (no re-upload, no
+   * second vision call). Per-group results are returned aligned by index so a
+   * single bad group never loses the rest of the batch. Pass `process: true` to
+   * enqueue OCR for every created invoice in the same call.
+   */
+  @Post('invoices/batch')
+  createBatch(
+    @Body() body: BatchCreateInvoicesV2Dto,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: UserRole,
+  ) {
+    return this.invoices.createBatch(body, { id: userId, role });
   }
 
   /**
