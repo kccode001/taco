@@ -498,7 +498,7 @@ export class V2DashboardService {
 
     const systemPrompt =
       'Anda analis intelijen pasar untuk manajemen TACO (HPL/laminate/edging). ' +
-      'PENTING: data Anda BUKAN total penjualan TACO — ini SAMPEL invoice distributor nyata yang kami kumpulkan. ' +
+      'PENTING: data Anda BUKAN keseluruhan penjualan TACO — ini SAMPEL invoice distributor nyata yang kami kumpulkan. ' +
       'Jangan pernah menyiratkan pangsa pasar, market share, persen pasar, total/volume penjualan, atau peringkat "area terkuat/terlemah". ' +
       'Anda menerima sinyal jujur dari invoice tersampel:\n' +
       '- price_evidence: band harga nyata per SKU (min/median/max + spread% + outlier) dengan bukti invoice (tiap baris punya kode invoice `cite`).\n' +
