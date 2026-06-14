@@ -212,9 +212,20 @@ export default function TaroV2UploadPage() {
     setError(null);
   }, []);
 
-  /** Resolve the detected matches into prefilled selectedArea / selectedStore. */
+  /** Resolve the detected matches into prefilled selectedArea / selectedStore.
+   *  Gated on band: only `auto`/`best_guess` are trustworthy enough to prefill.
+   *  On the `manual` band the BE may still return a sub-threshold (weak)
+   *  non-null match — never prefill from it, or the wrong store + wrong-area
+   *  would be staged AND "Lanjut" would enable, letting bad data through.
+   *  Manual band → clear everything; the rep must pick store + area by hand. */
   const applyDetectPrefill = useCallback(
     (res: DetectStoreResponse) => {
+      if (res.outcome !== "auto" && res.outcome !== "best_guess") {
+        setSelectedArea(null);
+        setSelectedStore(null);
+        setStoreQuery("");
+        return;
+      }
       // Area — prefer the loaded AreaV2 (full shape) but synthesize if absent.
       if (res.area_match) {
         const m = res.area_match;
