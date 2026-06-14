@@ -23,7 +23,7 @@ interface OcrLineItem {
   confidence: number;
 }
 
-const OCR_MODEL = 'claude-opus-4-8';
+const OCR_MODEL = 'claude-sonnet-4-6';
 
 /**
  * Multi-invoice OCR worker. Per AUDIT-009 §03:
@@ -167,6 +167,7 @@ export class InvoiceOcrProcessor {
     const base64 = buf.toString('base64');
     const mediaType = mediaTypeFor(imagePath);
 
+    this.logger.log(`Invoice OCR vision call model=${OCR_MODEL}`);
     const response = await this.anthropic.messages.create({
       model: OCR_MODEL,
       max_tokens: 4096,

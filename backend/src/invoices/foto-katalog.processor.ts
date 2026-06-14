@@ -17,7 +17,7 @@ interface OcrKatalogRow {
   confidence: number;
 }
 
-const OCR_MODEL = 'claude-opus-4-8';
+const OCR_MODEL = 'claude-sonnet-4-6';
 
 /**
  * Foto Katalog OCR — TACO pricing extraction from a store's posted price board
@@ -122,6 +122,7 @@ export class FotoKatalogProcessor {
     const base64 = buf.toString('base64');
     const mediaType = mediaTypeFor(imagePath);
 
+    this.logger.log(`Foto Katalog OCR vision call model=${OCR_MODEL}`);
     const response = await this.anthropic.messages.create({
       model: OCR_MODEL,
       max_tokens: 4096,
