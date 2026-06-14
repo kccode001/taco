@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AxiosError } from "axios";
-import { getAreas, getStoresV2, createStoreV2, unwrapList } from "@/lib/v2/api";
+import { getAreas, getStoresV2, unwrapList } from "@/lib/v2/api";
 import type { AreaV2, StoreV2 } from "@/lib/v2/types";
 import {
+  detectV2StoreLocation,
   createV2Invoice,
   uploadV2Images,
   validateV2Images,
   deleteV2Image,
   processV2Invoice,
   getV2ImageUrl,
+  type DetectStoreResponse,
+  type DetectOutcome,
   type InvoiceImageV2,
 } from "@/lib/v2/invoices";
 import { TopBar } from "../../_components/TopBar";
@@ -27,18 +30,19 @@ import {
   StoreIcon,
   SpinnerIcon,
   AlertTriangleIcon,
-  ChevronLeftIcon,
+  XCircleIcon,
   ChevronRightIcon,
   ExpandIcon,
+  RefreshIcon,
 } from "../../_components/icons";
 
-type Step = 1 | 2 | 3 | 4;
-
-interface QueueItem {
-  id: string;
-  file: File;
-  thumbnail?: string;
-}
+/** Photo-first flow phases:
+ *  photo   → rep takes/picks the FIRST invoice photo (drives detection)
+ *  invalid → image unusable (cut / blurry / not an invoice) — stop with reason
+ *  confirm → auto/best_guess/manual store+area confirm/edit
+ *  extra   → invoice created; optional add-more photos, then process
+ *  success → done */
+type Phase = "photo" | "invalid" | "confirm" | "extra" | "success";
 
 type ImageCard = InvoiceImageV2 & { _thumb?: string };
 
@@ -60,14 +64,50 @@ function extractErrorMessage(err: unknown): string {
   return "Terjadi kesalahan tidak diketahui.";
 }
 
+/** Copy + tone for the confirm-screen banner, by detection outcome. */
+function outcomeBanner(outcome: DetectOutcome): {
+  tone: "ok" | "warn" | "muted";
+  title: string;
+  body: string;
+} {
+  switch (outcome) {
+    case "auto":
+      return {
+        tone: "ok",
+        title: "Toko & area terdeteksi otomatis",
+        body: "Kami yakin dengan hasil ini. Periksa sebentar lalu lanjut.",
+      };
+    case "best_guess":
+      return {
+        tone: "warn",
+        title: "Perkiraan toko & area",
+        body: "Kami menebak dari foto — pastikan benar atau perbaiki di bawah.",
+      };
+    default:
+      return {
+        tone: "muted",
+        title: "Toko & area tidak terbaca",
+        body: "Tidak ada yang cocok dari foto. Silakan pilih toko & area manual.",
+      };
+  }
+}
+
 export default function TaroV2UploadPage() {
   const router = useRouter();
   const { ready } = useTaroGuard();
 
-  const [step, setStep] = useState<Step>(1);
+  const [phase, setPhase] = useState<Phase>("photo");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  // Step 1 — Area + Store
+  // ── Photo-first: the primary photo + its detection result ─────────────────
+  const [primaryFile, setPrimaryFile] = useState<File | null>(null);
+  const [primaryThumb, setPrimaryThumb] = useState<string | null>(null);
+  const [detect, setDetect] = useState<DetectStoreResponse | null>(null);
+  const photoCameraRef = useRef<HTMLInputElement>(null);
+  const photoGalleryRef = useRef<HTMLInputElement>(null);
+
+  // ── Store + area (confirm phase) ──────────────────────────────────────────
   const [areas, setAreas] = useState<AreaV2[]>([]);
   const [areasLoading, setAreasLoading] = useState(true);
   const [selectedArea, setSelectedArea] = useState<AreaV2 | null>(null);
@@ -78,35 +118,26 @@ export default function TaroV2UploadPage() {
   const [storeQuery, setStoreQuery] = useState("");
   const [selectedStore, setSelectedStore] = useState<StoreV2 | null>(null);
 
-  // Step 2 — local photo queue (pre-upload)
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const cameraRef = useRef<HTMLInputElement>(null);
-
-  // Step 3 — server images + validation
+  // ── Invoice + extra photos (extra phase) ──────────────────────────────────
   const [invoiceId, setInvoiceId] = useState<string | null>(null);
   const [images, setImages] = useState<ImageCard[]>([]);
   const thumbByName = useRef<Map<string, string>>(new Map());
-
-  const [busy, setBusy] = useState(false); // upload/validate/process in flight
+  const extraCameraRef = useRef<HTMLInputElement>(null);
+  const extraGalleryRef = useRef<HTMLInputElement>(null);
   const validateTimer = useRef<number | undefined>(undefined);
 
-  // Full-screen preview of an uploaded photo (feedback #4 — rep can preview the
-  // photo[s] they uploaded before processing).
   const [preview, setPreview] = useState<string | null>(null);
 
-  // ── Load areas on mount ──────────────────────────────────────────────────
+  // ── Load areas once (needed for the manual / edit picker) ─────────────────
   useEffect(() => {
     let alive = true;
     setAreasLoading(true);
     getAreas()
       .then((res) => {
-        if (!alive) return;
-        setAreas(unwrapList<AreaV2>(res.data));
+        if (alive) setAreas(unwrapList<AreaV2>(res.data));
       })
-      .catch((err) => {
-        if (!alive) return;
-        setError(`Tidak bisa memuat daftar area: ${extractErrorMessage(err)}`);
+      .catch(() => {
+        /* non-fatal; rep can still proceed if a match was auto-filled */
       })
       .finally(() => alive && setAreasLoading(false));
     return () => {
@@ -114,7 +145,7 @@ export default function TaroV2UploadPage() {
     };
   }, []);
 
-  // ── Load stores when an area is picked ─────────────────────────────────────
+  // ── Load stores when an area is set (confirm phase) ────────────────────────
   useEffect(() => {
     if (!selectedArea) {
       setStores([]);
@@ -124,11 +155,9 @@ export default function TaroV2UploadPage() {
     setStoresLoading(true);
     getStoresV2({ area_id: selectedArea.id })
       .then((res) => {
-        if (!alive) return;
-        setStores(unwrapList<StoreV2>(res.data));
+        if (alive) setStores(unwrapList<StoreV2>(res.data));
       })
       .catch(() => {
-        // Non-fatal — agent can still free-type a new store.
         if (alive) setStores([]);
       })
       .finally(() => alive && setStoresLoading(false));
@@ -137,7 +166,7 @@ export default function TaroV2UploadPage() {
     };
   }, [selectedArea]);
 
-  // Cleanup object URLs + any pending validate timer on unmount.
+  // Cleanup object URLs + timers on unmount.
   useEffect(() => {
     const thumbs = thumbByName.current;
     return () => {
@@ -168,91 +197,149 @@ export default function TaroV2UploadPage() {
     return stores.find((s) => s.name.trim().toLowerCase() === q) ?? null;
   }, [stores, storeQuery]);
 
-  const canProceedStep1 =
+  // ── Phase 1: pick the primary photo ────────────────────────────────────────
+  const pickPrimary = useCallback((files: FileList | File[]) => {
+    const file = Array.from(files).find((f) => ACCEPTED.includes(f.type));
+    if (!file) {
+      setError("Hanya gambar JPG/PNG yang didukung.");
+      return;
+    }
+    setPrimaryFile(file);
+    setPrimaryThumb((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+    setError(null);
+  }, []);
+
+  /** Resolve the detected matches into prefilled selectedArea / selectedStore. */
+  const applyDetectPrefill = useCallback(
+    (res: DetectStoreResponse) => {
+      // Area — prefer the loaded AreaV2 (full shape) but synthesize if absent.
+      if (res.area_match) {
+        const m = res.area_match;
+        const found = areas.find((a) => a.id === m.id);
+        setSelectedArea(found ?? { id: m.id, name: m.name, code: m.code });
+      } else {
+        setSelectedArea(null);
+      }
+      // Store — synthesize a StoreV2 from the match (id is a real StoreV2 id).
+      if (res.store_match) {
+        const m = res.store_match;
+        setSelectedStore({
+          id: m.id,
+          name: m.name,
+          area_id: m.area_id ?? res.area_match?.id ?? "",
+        });
+        setStoreQuery(m.name);
+      } else {
+        setSelectedStore(null);
+        setStoreQuery("");
+      }
+    },
+    [areas]
+  );
+
+  const runDetect = async () => {
+    if (!primaryFile) {
+      setError("Ambil atau pilih foto invoice dulu.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await detectV2StoreLocation(primaryFile);
+      setDetect(res);
+      if (res.outcome === "invalid") {
+        setPhase("invalid");
+      } else {
+        applyDetectPrefill(res);
+        setPhase("confirm");
+      }
+    } catch (err) {
+      setError(`Gagal membaca foto: ${extractErrorMessage(err)}. Coba lagi.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retakePhoto = () => {
+    setPrimaryFile(null);
+    setPrimaryThumb((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setDetect(null);
+    setSelectedArea(null);
+    setSelectedStore(null);
+    setStoreQuery("");
+    setError(null);
+    setPhase("photo");
+  };
+
+  const canConfirm =
     !!selectedArea && (!!selectedStore || storeQuery.trim().length > 0);
 
-  // ── Step 1 → 2: ensure we have a concrete store_id ─────────────────────────
-  const goStep2 = async () => {
+  // ── Phase confirm → create invoice (adopts the staged photo) ───────────────
+  const confirmStoreArea = async () => {
     if (!selectedArea) {
       setError("Pilih area dulu.");
       return;
     }
-    let store = selectedStore;
-    // Free-typed a name with no selection → reuse exact match or create new.
-    if (!store) {
-      const name = storeQuery.trim();
-      if (!name) {
-        setError("Pilih atau ketik nama toko.");
-        return;
-      }
-      if (exactStoreMatch) {
-        store = exactStoreMatch;
-      } else {
-        setBusy(true);
-        setError(null);
-        try {
-          const res = await createStoreV2({ area_id: selectedArea.id, name });
-          const created =
-            (res.data as { data?: StoreV2 })?.data ?? (res.data as StoreV2);
-          store = created;
-          setStores((prev) => [created, ...prev]);
-        } catch (err) {
-          setBusy(false);
-          setError(`Gagal menyimpan toko baru: ${extractErrorMessage(err)}`);
-          return;
-        }
-        setBusy(false);
-      }
-    }
-    setSelectedStore(store);
-    setStoreQuery(store!.name);
-    setError(null);
-    setStep(2);
-  };
-
-  // ── Local photo queue (step 2) ─────────────────────────────────────────────
-  const addToQueue = useCallback((files: FileList | File[]) => {
-    const list = Array.from(files).filter((f) => ACCEPTED.includes(f.type));
-    if (list.length === 0) {
-      setError("Hanya gambar JPG/PNG yang didukung.");
+    const stagedId = detect?.staged_image_id;
+    if (!stagedId) {
+      setError("Foto belum siap. Ambil ulang foto invoice.");
       return;
     }
-    const items: QueueItem[] = list.map((f) => ({
-      id: `${f.name}-${f.size}-${Math.random().toString(36).slice(2, 7)}`,
-      file: f,
-      thumbnail: URL.createObjectURL(f),
-    }));
-    items.forEach((it) => {
-      if (it.thumbnail) thumbByName.current.set(it.file.name, it.thumbnail);
-    });
-    setQueue((q) => [...q, ...items]);
+    const name = storeQuery.trim();
+    if (!selectedStore && !name) {
+      setError("Pilih atau ketik nama toko.");
+      return;
+    }
+    setBusy(true);
     setError(null);
-  }, []);
-
-  const removeFromQueue = (id: string) =>
-    setQueue((q) => q.filter((i) => i.id !== id));
+    try {
+      // An existing store (matched or exact-typed) → store_id; otherwise the BE
+      // persists the free-typed store_name under this area.
+      const store = selectedStore ?? exactStoreMatch;
+      const inv = await createV2Invoice({
+        area_id: selectedArea.id,
+        ...(store ? { store_id: store.id } : { store_name: name }),
+        staged_image_ids: [stagedId],
+      });
+      setInvoiceId(inv.id);
+      if (primaryFile) thumbByName.current.set(primaryFile.name, primaryThumb ?? "");
+      // Load the adopted (already-valid) image row(s). validate() re-checks only
+      // pending images — the adopted photo is valid, so this is a no-op read.
+      try {
+        const imgs = await validateV2Images(inv.id);
+        setImages(attachThumbs(imgs));
+      } catch {
+        setImages([]);
+      }
+      setPhase("extra");
+    } catch (err) {
+      setError(`Gagal membuat invoice: ${extractErrorMessage(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const attachThumbs = useCallback(
     (imgs: InvoiceImageV2[]): ImageCard[] =>
       imgs.map((i) => ({
         ...i,
-        _thumb: i.file_name
-          ? thumbByName.current.get(i.file_name)
-          : undefined,
+        _thumb: i.file_name ? thumbByName.current.get(i.file_name) : undefined,
       })),
     []
   );
 
-  // Re-validate, polling while any image is still `pending` (BE re-checks only
-  // pending images, so repeated calls are safe + cheap).
   const runValidation = useCallback(
     async (id: string, attempt = 0) => {
       try {
         const imgs = await validateV2Images(id);
         setImages(attachThumbs(imgs));
-        const stillPending = imgs.some(
-          (i) => i.validation_status === "pending"
-        );
+        const stillPending = imgs.some((i) => i.validation_status === "pending");
         if (stillPending && attempt < 5) {
           validateTimer.current = window.setTimeout(
             () => runValidation(id, attempt + 1),
@@ -266,46 +353,11 @@ export default function TaroV2UploadPage() {
     [attachThumbs]
   );
 
-  // ── Step 2 → 3: create invoice, upload queued photos, validate ─────────────
-  const uploadAndValidate = async () => {
-    if (queue.length === 0) {
-      setError("Tambah minimal satu foto invoice.");
-      return;
-    }
-    if (!selectedArea || !selectedStore) {
-      setError("Area atau toko belum lengkap.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      let id = invoiceId;
-      if (!id) {
-        const inv = await createV2Invoice(selectedArea.id, selectedStore.id);
-        id = inv.id;
-        setInvoiceId(id);
-      }
-      await uploadV2Images(
-        id,
-        queue.map((q) => q.file)
-      );
-      setQueue([]);
-      setStep(3);
-      await runValidation(id);
-    } catch (err) {
-      setError(`Upload gagal: ${extractErrorMessage(err)}. Coba lagi.`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // ── Step 3: add more photos (uploads + re-validates only the new ones) ─────
-  const addMoreFiles = async (files: FileList | File[]) => {
+  // ── Phase extra: add more photos (validated normally) ──────────────────────
+  const addExtraPhotos = async (files: FileList | File[]) => {
     const list = Array.from(files).filter((f) => ACCEPTED.includes(f.type));
     if (list.length === 0 || !invoiceId) return;
-    list.forEach((f) =>
-      thumbByName.current.set(f.name, URL.createObjectURL(f))
-    );
+    list.forEach((f) => thumbByName.current.set(f.name, URL.createObjectURL(f)));
     setBusy(true);
     setError(null);
     try {
@@ -318,8 +370,6 @@ export default function TaroV2UploadPage() {
     }
   };
 
-  // Open a full-screen preview for an uploaded image. Prefer the local object
-  // URL (instant, no network); fall back to a signed server URL on reload.
   const openImagePreview = async (img: ImageCard) => {
     if (img._thumb) {
       setPreview(img._thumb);
@@ -342,15 +392,13 @@ export default function TaroV2UploadPage() {
     }
   };
 
-  // ── Step 3 → 4: all valid → kick OCR ───────────────────────────────────────
   const allValid =
-    images.length > 0 &&
-    images.every((i) => i.validation_status === "valid");
-  const invalidCount = images.filter(
-    (i) => i.validation_status === "invalid"
-  ).length;
+    images.length > 0 && images.every((i) => i.validation_status === "valid");
   const pendingCount = images.filter(
     (i) => i.validation_status === "pending"
+  ).length;
+  const invalidCount = images.filter(
+    (i) => i.validation_status === "invalid"
   ).length;
   const validCount = images.filter(
     (i) => i.validation_status === "valid"
@@ -363,25 +411,11 @@ export default function TaroV2UploadPage() {
     try {
       await processV2Invoice(invoiceId);
       if (validateTimer.current) window.clearTimeout(validateTimer.current);
-      router.push(`/taro-app/v2/history`);
+      router.push("/taro-app/v2/history");
     } catch (err) {
       setError(`Gagal memproses: ${extractErrorMessage(err)}`);
       setBusy(false);
     }
-  };
-
-  const resetAll = () => {
-    if (validateTimer.current) window.clearTimeout(validateTimer.current);
-    thumbByName.current.forEach((url) => URL.revokeObjectURL(url));
-    thumbByName.current.clear();
-    setStep(1);
-    setSelectedArea(null);
-    setSelectedStore(null);
-    setStoreQuery("");
-    setQueue([]);
-    setInvoiceId(null);
-    setImages([]);
-    setError(null);
   };
 
   if (!ready) {
@@ -392,71 +426,21 @@ export default function TaroV2UploadPage() {
     );
   }
 
-  const stepLabels = ["Toko", "Foto", "Validasi"];
-
   return (
     <div className="min-h-screen bg-taco-page flex flex-col">
       <div className="phone-shell flex flex-col min-h-screen">
         <TopBar
           title="Upload Invoice"
           right={
-            step < 4 ? (
-              <button
-                type="button"
-                onClick={() => router.push("/taro-app/v2/home")}
-                className="text-[13px] font-medium text-taco-sub px-2 py-1"
-              >
-                Batal
-              </button>
-            ) : undefined
+            <button
+              type="button"
+              onClick={() => router.push("/taro-app/v2/home")}
+              className="text-[13px] font-medium text-taco-sub px-2 py-1"
+            >
+              Batal
+            </button>
           }
         />
-
-        {/* Stepper (hidden on the success screen) */}
-        {step < 4 && (
-          <div className="bg-white border-b border-taco-divider px-4 py-3">
-            <div className="flex items-center justify-between gap-2">
-              {[1, 2, 3].map((n) => {
-                const active = n === step;
-                const done = n < step;
-                return (
-                  <div key={n} className="flex items-center gap-2 flex-1">
-                    <div
-                      className={[
-                        "w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-semibold border shrink-0",
-                        done
-                          ? "bg-taco-success text-white border-taco-success"
-                          : active
-                            ? "bg-taco-text text-white border-taco-text"
-                            : "bg-white text-taco-muted border-taco-border",
-                      ].join(" ")}
-                    >
-                      {done ? <CheckIcon size={14} /> : n}
-                    </div>
-                    <div
-                      className={[
-                        "text-[12px] truncate flex-1",
-                        active
-                          ? "text-taco-text font-semibold"
-                          : "text-taco-sub",
-                      ].join(" ")}
-                    >
-                      {stepLabels[n - 1]}
-                    </div>
-                    {n < 3 && (
-                      <div
-                        className={[
-                          "h-px flex-1",
-                          n < step ? "bg-taco-success" : "bg-taco-divider",
-                        ].join(" ")}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
 
         {error && (
           <div className="mx-4 mt-3 text-[12px] text-taco-error bg-red-50 border border-red-100 rounded-lg px-3 py-2">
@@ -464,10 +448,208 @@ export default function TaroV2UploadPage() {
           </div>
         )}
 
-        {/* ── Step 1: Area + Store ─────────────────────────────────────────── */}
-        {step === 1 && (
+        {/* ── Phase 1: Photo first ─────────────────────────────────────────── */}
+        {phase === "photo" && (
           <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
-            <label className="block text-[13px] font-medium text-taco-sub mb-1.5">
+            <div className="text-[15px] font-semibold text-taco-text">
+              Foto invoice dulu
+            </div>
+            <div className="text-[13px] text-taco-sub mt-1">
+              Ambil satu foto invoice yang jelas. Kami akan membaca toko & lokasi
+              dari foto secara otomatis.
+            </div>
+
+            {!primaryThumb ? (
+              <div className="grid grid-cols-2 gap-2 mt-4">
+                <button
+                  type="button"
+                  onClick={() => photoCameraRef.current?.click()}
+                  className="min-h-[140px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-2 text-taco-sub active:bg-taco-page"
+                >
+                  <CameraIcon size={32} />
+                  <span className="text-[13px] font-medium">Ambil Foto</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => photoGalleryRef.current?.click()}
+                  className="min-h-[140px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-2 text-taco-sub active:bg-taco-page"
+                >
+                  <PlusIcon size={32} />
+                  <span className="text-[13px] font-medium">Dari Galeri</span>
+                </button>
+              </div>
+            ) : (
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={() => primaryThumb && setPreview(primaryThumb)}
+                  className="relative w-full aspect-[4/3] rounded-xl overflow-hidden bg-taco-page border border-taco-border active:opacity-90"
+                  aria-label="Lihat foto"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={primaryThumb}
+                    alt="Foto invoice"
+                    className="w-full h-full object-cover"
+                  />
+                  <span className="absolute bottom-2 right-2 w-7 h-7 rounded-md bg-black/55 text-white flex items-center justify-center">
+                    <ExpandIcon size={14} />
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={retakePhoto}
+                  className="mt-2 inline-flex items-center gap-1.5 text-[13px] font-medium text-taco-sub"
+                >
+                  <RefreshIcon size={15} /> Ganti foto
+                </button>
+              </div>
+            )}
+
+            <input
+              ref={photoCameraRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) pickPrimary(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <input
+              ref={photoGalleryRef}
+              type="file"
+              accept={ACCEPT_ATTR}
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) pickPrimary(e.target.files);
+                e.target.value = "";
+              }}
+            />
+
+            <div className="mt-auto pt-6">
+              <button
+                type="button"
+                onClick={runDetect}
+                disabled={!primaryFile || busy}
+                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors flex items-center justify-center gap-2"
+              >
+                {busy ? (
+                  <>
+                    <span className="animate-spin inline-flex">
+                      <SpinnerIcon size={18} />
+                    </span>
+                    Membaca invoice…
+                  </>
+                ) : (
+                  "Deteksi & Lanjut"
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Phase: Invalid image ─────────────────────────────────────────── */}
+        {phase === "invalid" && (
+          <div className="px-4 pt-6 flex-1 flex flex-col pb-6">
+            <div className="bg-white border border-red-200 rounded-2xl p-5 flex flex-col items-center text-center">
+              <div className="w-14 h-14 rounded-full bg-red-50 text-taco-error flex items-center justify-center">
+                <XCircleIcon size={30} />
+              </div>
+              <div className="text-[16px] font-semibold text-taco-text mt-3">
+                Foto tidak bisa digunakan
+              </div>
+              <div className="text-[13px] text-taco-sub mt-1.5 max-w-[300px]">
+                {detect?.validation.invalid_reason ??
+                  "Foto tidak memenuhi syarat. Pastikan seluruh invoice terlihat jelas dan tidak terpotong."}
+              </div>
+            </div>
+
+            {primaryThumb && (
+              <button
+                type="button"
+                onClick={() => setPreview(primaryThumb)}
+                className="relative w-full aspect-[4/3] rounded-xl overflow-hidden bg-taco-page border border-taco-border mt-4 active:opacity-90"
+                aria-label="Lihat foto"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={primaryThumb}
+                  alt="Foto invoice"
+                  className="w-full h-full object-cover"
+                />
+              </button>
+            )}
+
+            <div className="mt-auto pt-6">
+              <button
+                type="button"
+                onClick={retakePhoto}
+                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors flex items-center justify-center gap-2"
+              >
+                <RefreshIcon size={18} /> Ganti Foto
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Phase: Confirm store + area ──────────────────────────────────── */}
+        {phase === "confirm" && detect && (
+          <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
+            {(() => {
+              const b = outcomeBanner(detect.outcome);
+              const cls =
+                b.tone === "ok"
+                  ? "bg-emerald-50 border-emerald-100"
+                  : b.tone === "warn"
+                    ? "bg-amber-50 border-amber-100"
+                    : "bg-taco-page border-taco-border";
+              const icon =
+                b.tone === "ok" ? (
+                  <span className="text-taco-success">
+                    <CheckIcon size={18} />
+                  </span>
+                ) : b.tone === "warn" ? (
+                  <span className="text-taco-warning">
+                    <AlertTriangleIcon size={18} />
+                  </span>
+                ) : (
+                  <span className="text-taco-sub">
+                    <SearchIcon size={18} />
+                  </span>
+                );
+              const pct = Math.round((detect.match_confidence ?? 0) * 100);
+              return (
+                <div className={`rounded-xl border px-3 py-3 flex items-start gap-2.5 ${cls}`}>
+                  <span className="mt-0.5 shrink-0">{icon}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-semibold text-taco-text">
+                      {b.title}
+                      {detect.outcome !== "manual" && pct > 0 && (
+                        <span className="ml-1.5 text-[11px] font-medium text-taco-sub">
+                          ({pct}% cocok)
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[12px] text-taco-sub mt-0.5">{b.body}</div>
+                    {(detect.detected.store_name_raw ||
+                      detect.detected.location_raw) && (
+                      <div className="text-[11px] text-taco-muted mt-1.5">
+                        Terbaca dari foto:{" "}
+                        {detect.detected.store_name_raw ?? "—"}
+                        {detect.detected.location_raw
+                          ? ` · ${detect.detected.location_raw}`
+                          : ""}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Area picker */}
+            <label className="block text-[13px] font-medium text-taco-sub mb-1.5 mt-5">
               Area <span className="text-taco-error">*</span>
             </label>
             <button
@@ -476,26 +658,18 @@ export default function TaroV2UploadPage() {
                 setAreaQuery("");
                 setAreaPickerOpen(true);
               }}
-              disabled={areasLoading || areas.length === 0}
               className={[
                 "w-full min-h-[52px] rounded-xl border px-4 flex items-center gap-2.5 text-left transition-colors",
                 selectedArea
                   ? "border-taco-text bg-taco-accent-tint"
                   : "border-taco-border bg-white",
-                (areasLoading || areas.length === 0) ? "opacity-60" : "",
               ].join(" ")}
             >
               <span className="text-taco-sub shrink-0">
                 <PinIcon size={18} />
               </span>
               <span className="flex-1 min-w-0">
-                {areasLoading ? (
-                  <span className="text-[15px] text-taco-muted">Memuat area…</span>
-                ) : areas.length === 0 ? (
-                  <span className="text-[15px] text-taco-muted">
-                    Belum ada area — hubungi admin.
-                  </span>
-                ) : selectedArea ? (
+                {selectedArea ? (
                   <>
                     <span className="block text-[15px] font-medium text-taco-text truncate">
                       {selectedArea.name}
@@ -581,13 +755,10 @@ export default function TaroV2UploadPage() {
                         );
                       })}
 
-                      {/* Free-type-new row */}
                       {storeQuery.trim() && !exactStoreMatch && (
                         <button
                           type="button"
-                          onClick={() => {
-                            setSelectedStore(null); // created on "Lanjut"
-                          }}
+                          onClick={() => setSelectedStore(null)}
                           className="w-full min-h-[48px] px-4 flex items-center gap-2.5 text-left border-b border-taco-divider last:border-0 active:bg-taco-page"
                         >
                           <span className="text-taco-accent shrink-0">
@@ -618,134 +789,47 @@ export default function TaroV2UploadPage() {
               </div>
             </div>
 
-            <div className="mt-auto pt-6">
+            <div className="mt-auto pt-6 flex flex-col gap-2">
               <button
                 type="button"
-                onClick={goStep2}
-                disabled={!canProceedStep1 || busy}
+                onClick={confirmStoreArea}
+                disabled={!canConfirm || busy}
                 className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors"
               >
                 {busy ? "Menyimpan…" : "Lanjut"}
+              </button>
+              <button
+                type="button"
+                onClick={retakePhoto}
+                disabled={busy}
+                className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border disabled:opacity-40 inline-flex items-center justify-center gap-1.5"
+              >
+                <RefreshIcon size={15} /> Ganti Foto
               </button>
             </div>
           </div>
         )}
 
-        {/* ── Step 2: Photos ───────────────────────────────────────────────── */}
-        {step === 2 && (
+        {/* ── Phase: Extra photos + process ────────────────────────────────── */}
+        {phase === "extra" && (
           <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
             <div className="bg-white border border-taco-border rounded-xl px-4 py-3 mb-3">
               <div className="text-[12px] text-taco-sub">Toko</div>
               <div className="text-[15px] font-medium text-taco-text">
-                {selectedStore?.name}
+                {selectedStore?.name ?? storeQuery}
               </div>
               <div className="text-[12px] text-taco-muted mt-0.5">
                 {selectedArea?.name}
               </div>
             </div>
 
-            <div className="text-[13px] font-medium text-taco-sub mb-1.5">
-              Foto Invoice ({queue.length} foto)
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => cameraRef.current?.click()}
-                className="min-h-[110px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page"
-              >
-                <CameraIcon size={28} />
-                <span className="text-[13px] font-medium">Ambil Foto</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => inputRef.current?.click()}
-                className="min-h-[110px] rounded-xl border-2 border-dashed border-taco-border bg-white flex flex-col items-center justify-center gap-1.5 text-taco-sub active:bg-taco-page"
-              >
-                <PlusIcon size={28} />
-                <span className="text-[13px] font-medium">Pilih dari Galeri</span>
-              </button>
-            </div>
-
-            <input
-              ref={cameraRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) addToQueue(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <input
-              ref={inputRef}
-              type="file"
-              accept={ACCEPT_ATTR}
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) addToQueue(e.target.files);
-                e.target.value = "";
-              }}
-            />
-
-            {queue.length > 0 && (
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                {queue.map((q) => (
-                  <div
-                    key={q.id}
-                    className="relative aspect-square rounded-lg overflow-hidden bg-taco-page border border-taco-border"
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={q.thumbnail}
-                      alt={q.file.name}
-                      className="w-full h-full object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeFromQueue(q.id)}
-                      aria-label="Hapus"
-                      className="absolute top-1 right-1 w-7 h-7 rounded-full bg-black/70 text-white flex items-center justify-center"
-                    >
-                      <CloseIcon size={13} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-auto pt-6 flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={uploadAndValidate}
-                disabled={queue.length === 0 || busy}
-                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors"
-              >
-                {busy ? "Mengunggah…" : "Unggah & Validasi"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                disabled={busy}
-                className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border disabled:opacity-40"
-              >
-                Kembali
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Step 3: Validation ───────────────────────────────────────────── */}
-        {step === 3 && (
-          <div className="px-4 pt-4 flex-1 flex flex-col pb-6">
             <div className="flex items-center justify-between gap-2 mb-2">
               <div className="text-[13px] font-medium text-taco-sub">
-                Hasil Validasi ({images.length} foto)
+                Foto ({images.length})
               </div>
               <div className="text-[11px] text-taco-muted">
-                {validCount} valid · {invalidCount} bermasalah
+                {validCount} valid
+                {invalidCount > 0 ? ` · ${invalidCount} bermasalah` : ""}
                 {pendingCount > 0 ? ` · ${pendingCount} diperiksa` : ""}
               </div>
             </div>
@@ -817,10 +901,6 @@ export default function TaroV2UploadPage() {
                         </div>
                       )}
                     </div>
-                    {/* Delete is offered for any settled image (valid OR invalid)
-                        so a rep can drop a wrong-but-readable photo, not just a
-                        rejected one (A10). Hidden while a photo is still being
-                        checked to avoid racing the validation poll. */}
                     {img.validation_status !== "pending" && (
                       <button
                         type="button"
@@ -844,31 +924,30 @@ export default function TaroV2UploadPage() {
 
             {invalidCount > 0 && (
               <div className="mt-3 text-[12px] text-taco-sub bg-taco-accent-tint border border-taco-accent/20 rounded-lg px-3 py-2">
-                Hapus atau ganti foto yang bermasalah. Upload selesai hanya saat
-                semua foto valid.
+                Hapus atau ganti foto yang bermasalah. Proses hanya bisa saat semua
+                foto valid.
               </div>
             )}
 
-            {/* add-more inputs */}
             <input
-              ref={cameraRef}
+              ref={extraCameraRef}
               type="file"
               accept="image/*"
               capture="environment"
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) addMoreFiles(e.target.files);
+                if (e.target.files) addExtraPhotos(e.target.files);
                 e.target.value = "";
               }}
             />
             <input
-              ref={inputRef}
+              ref={extraGalleryRef}
               type="file"
               accept={ACCEPT_ATTR}
               multiple
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) addMoreFiles(e.target.files);
+                if (e.target.files) addExtraPhotos(e.target.files);
                 e.target.value = "";
               }}
             />
@@ -876,19 +955,19 @@ export default function TaroV2UploadPage() {
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => cameraRef.current?.click()}
+                onClick={() => extraCameraRef.current?.click()}
                 disabled={busy}
                 className="min-h-[48px] rounded-xl border border-taco-border bg-white text-[13px] font-medium text-taco-sub flex items-center justify-center gap-1.5 disabled:opacity-40"
               >
-                <CameraIcon size={18} /> Ambil Foto
+                <CameraIcon size={18} /> Tambah Foto
               </button>
               <button
                 type="button"
-                onClick={() => inputRef.current?.click()}
+                onClick={() => extraGalleryRef.current?.click()}
                 disabled={busy}
                 className="min-h-[48px] rounded-xl border border-taco-border bg-white text-[13px] font-medium text-taco-sub flex items-center justify-center gap-1.5 disabled:opacity-40"
               >
-                <PlusIcon size={18} /> Tambah dari Galeri
+                <PlusIcon size={18} /> Dari Galeri
               </button>
             </div>
 
@@ -910,39 +989,6 @@ export default function TaroV2UploadPage() {
                 className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark disabled:opacity-40 transition-colors"
               >
                 {busy ? "Memproses…" : "Selesai & Proses"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Step 4: Success ──────────────────────────────────────────────── */}
-        {step === 4 && (
-          <div className="px-4 pt-10 flex-1 flex flex-col items-center text-center">
-            <div className="w-16 h-16 rounded-full bg-taco-success/10 text-taco-success flex items-center justify-center">
-              <CheckIcon size={32} />
-            </div>
-            <div className="text-[18px] font-semibold text-taco-text mt-4">
-              Invoice Terkirim
-            </div>
-            <div className="text-[13px] text-taco-sub mt-1.5 max-w-[280px]">
-              Semua foto valid dan sudah diproses. Sistem sedang menjalankan OCR
-              dan pemetaan SKU. Admin akan meninjau hasilnya.
-            </div>
-
-            <div className="mt-auto w-full pt-8 pb-6 flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={resetAll}
-                className="w-full min-h-[56px] rounded-xl bg-taco-accent text-white font-semibold text-[16px] active:bg-taco-accent-dark transition-colors"
-              >
-                Upload Invoice Lagi
-              </button>
-              <button
-                type="button"
-                onClick={() => router.push("/taro-app/v2/home")}
-                className="w-full min-h-[44px] rounded-xl text-[14px] font-medium text-taco-sub bg-white border border-taco-border flex items-center justify-center gap-1.5"
-              >
-                <ChevronLeftIcon size={16} /> Kembali ke Beranda
               </button>
             </div>
           </div>
@@ -986,7 +1032,11 @@ export default function TaroV2UploadPage() {
               </div>
             </div>
             <div className="overflow-y-auto flex-1">
-              {filteredAreas.length === 0 ? (
+              {areasLoading ? (
+                <div className="px-4 py-5 text-[13px] text-taco-muted text-center">
+                  Memuat area…
+                </div>
+              ) : filteredAreas.length === 0 ? (
                 <div className="px-4 py-5 text-[13px] text-taco-muted text-center">
                   Tidak ada area yang cocok.
                 </div>

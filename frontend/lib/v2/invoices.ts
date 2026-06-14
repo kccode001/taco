@@ -162,17 +162,92 @@ export function v2IsProcessing(status: InvoiceV2Status): boolean {
   return status === "validating" || status === "ocr_processing";
 }
 
+// ── Photo-first detect (PWA upload step 1) ─────────────────────────────────
+// The rep uploads ONE invoice photo BEFORE picking a store/area. The BE runs a
+// single vision call: image validation + store/location read + a fuzzy match
+// against StoreV2/Area master data, banded into auto / best_guess / manual /
+// invalid. Mirrors Grout's `DetectStoreResponse`
+// (backend/src/taro-v2/invoices-v2.service.ts).
+
+/** One master-data match (store or area) the FE can auto-fill / preselect. */
+export interface DetectMatch {
+  id: string;
+  name: string;
+  code?: string;
+  display_path?: string;
+  /** Present on a store match (the store's owning area). */
+  area_id?: string;
+  /** 0..1 match score. */
+  score: number;
+}
+
+/** FE branch selector for the photo-first flow:
+ *  - `invalid`    → image unusable; show `validation.invalid_reason`, stop.
+ *  - `auto`       → confident match; auto-fill store+area and continue.
+ *  - `best_guess` → preselect store/area but keep editable; rep confirms.
+ *  - `manual`     → no confident match (incl. store/location absent); rep inputs. */
+export type DetectOutcome = "auto" | "best_guess" | "manual" | "invalid";
+
+export interface DetectStoreResponse {
+  outcome: DetectOutcome;
+  /** Reference to the staged photo — pass to `createV2Invoice` as
+   *  `staged_image_ids` so the invoice adopts it (no re-upload/re-validate). */
+  staged_image_id: string | null;
+  validation: {
+    clarity_ok: boolean;
+    is_invoice: boolean;
+    valid: boolean;
+    invalid_reason: string | null;
+  };
+  detected: {
+    store_name_raw: string | null;
+    location_raw: string | null;
+  };
+  store_match: DetectMatch | null;
+  area_match: DetectMatch | null;
+  match_confidence: number;
+}
+
+/** Upload one invoice photo for validation + store/location detection. Uses the
+ *  expensive high-tier vision call (KC spend-gated) — call once per upload, never
+ *  batch. Field name is `file` (single) to match the BE FilesInterceptor. */
+export async function detectV2StoreLocation(
+  file: File
+): Promise<DetectStoreResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await api.post("/v2/invoices/detect", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 180_000,
+  });
+  const body = (res.data as { data?: DetectStoreResponse }).data ?? res.data;
+  return body as DetectStoreResponse;
+}
+
 // ── Upload-flow helpers (PWA) ──────────────────────────────────────────────
 
-/** Step 1: create the invoice shell for an Area + Store. */
+/** Body for creating a v2 invoice. Either `store_id` (existing) OR `store_name`
+ *  (free-typed, persisted) is required. `staged_image_ids` adopts photos already
+ *  uploaded+validated via the photo-first detect step. */
+export interface CreateV2InvoiceBody {
+  area_id: string;
+  store_id?: string;
+  store_name?: string;
+  staged_image_ids?: string[];
+  notes?: string;
+}
+
+/** Create the invoice shell. Accepts either the legacy (areaId, storeId) call or
+ *  the photo-first body object (store_name / staged_image_ids). */
 export async function createV2Invoice(
-  areaId: string,
-  storeId: string
+  areaIdOrBody: string | CreateV2InvoiceBody,
+  storeId?: string
 ): Promise<InvoiceV2> {
-  const res = await api.post("/v2/invoices", {
-    area_id: areaId,
-    store_id: storeId,
-  });
+  const body: CreateV2InvoiceBody =
+    typeof areaIdOrBody === "string"
+      ? { area_id: areaIdOrBody, store_id: storeId }
+      : areaIdOrBody;
+  const res = await api.post("/v2/invoices", body);
   const inv = unwrapOne<InvoiceV2>(res.data);
   if (!inv) throw new Error("Server tidak mengembalikan invoice.");
   return inv;
