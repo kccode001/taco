@@ -380,10 +380,10 @@ export class V2DashboardService {
     const cite = (id: string) => id.slice(0, 8);
 
     const coverage = await this.marketIntel.coverage(scope);
-    const [priceBands, topSkus, priceGaps] = await Promise.all([
+    const [priceBands, topSkus, brandComposition] = await Promise.all([
       this.marketIntel.priceBands({ ...scope, page_size: '6' }),
       this.marketIntel.topSkusPerArea({ ...scope, top_n: '5' }),
-      this.marketIntel.priceGapPairs({ ...scope, page_size: '8' }),
+      this.marketIntel.brandBucketDistribution(scope),
     ]);
 
     // Per-SKU invoice evidence for the top bands — the citable invoice IDs.
@@ -440,29 +440,72 @@ export class V2DashboardService {
       });
     }
 
-    // R3 head-to-head price gaps (same-receipt TACO vs resolved competitor) —
-    // the honest competitor signal that replaces the cut co-occurrence basket.
-    const price_gaps = priceGaps.rows.map((r) => ({
-      cite: cite(r.invoice_id),
-      store_name: r.store_name,
-      region_name: r.region_name,
-      taco_sku_name: r.taco_sku_name,
-      taco_unit_price: r.taco_unit_price,
-      competitor_brand_name: r.competitor_brand_name,
-      competitor_unit_price: r.competitor_unit_price,
-      gap_rp: r.gap_rp,
-      gap_pct: r.gap_pct,
-    }));
+    // Competitor pricing (Section 4 absorption of the retired R3 / AC-40): the
+    // resolved-competitor brands' per-SKU observed price stats, drilled two
+    // levels deep through brand-bucket-detail. This is the honest competitor
+    // signal that replaces the cut same-receipt price-gap table.
+    const topBrands = await this.marketIntel.brandBucketDetail({
+      ...scope,
+      bucket: 'kompetitor',
+      page_size: '3',
+    });
+    const brandRows =
+      topBrands.level === 'brands'
+        ? (topBrands.rows as Array<{ id: string; name: string }>)
+        : [];
+    const competitor_pricing: Array<{
+      brand_name: string;
+      sku_label: string;
+      n_invoices: number;
+      p_min: number;
+      p_avg: number;
+      p_max: number;
+      cite: string | null;
+    }> = [];
+    for (const brand of brandRows.slice(0, 3)) {
+      const skus = await this.marketIntel.brandBucketDetail({
+        ...scope,
+        bucket: 'kompetitor',
+        brand_id: brand.id,
+        page_size: '3',
+      });
+      const skuRows =
+        skus.level === 'skus'
+          ? (skus.rows as Array<{
+              label: string;
+              n_invoices: number;
+              p_min: number;
+              p_avg: number;
+              p_max: number;
+              sample_invoice_ids: string[];
+            }>)
+          : [];
+      for (const s of skuRows) {
+        competitor_pricing.push({
+          brand_name: brand.name,
+          sku_label: s.label,
+          n_invoices: s.n_invoices,
+          p_min: s.p_min,
+          p_avg: s.p_avg,
+          p_max: s.p_max,
+          cite: s.sample_invoice_ids?.[0]
+            ? cite(s.sample_invoice_ids[0])
+            : null,
+        });
+      }
+    }
 
     // The pool of invoice IDs the brief is permitted to cite.
     const citable_invoice_ids = Array.from(
-      new Set([
-        ...price_evidence.flatMap((s) => [
-          ...s.invoices.map((i) => i.cite),
-          ...s.outliers.map((o) => o.cite),
-        ]),
-        ...price_gaps.map((p) => p.cite),
-      ]),
+      new Set(
+        [
+          ...price_evidence.flatMap((s) => [
+            ...s.invoices.map((i) => i.cite),
+            ...s.outliers.map((o) => o.cite),
+          ]),
+          ...competitor_pricing.map((p) => p.cite),
+        ].filter((c): c is string => c !== null),
+      ),
     );
 
     return {
@@ -471,11 +514,12 @@ export class V2DashboardService {
       coverage,
       price_evidence,
       top_skus_per_area: topSkus.regions,
-      price_gaps: {
-        pairs: price_gaps,
-        unknown_competitor_count: priceGaps.unknown_competitor_count,
-        total_same_receipt_pairs: priceGaps.total_same_receipt_pairs,
+      brand_composition: {
+        buckets: brandComposition.buckets,
+        total_lines: brandComposition.total_lines,
+        unknown_competitor_count: brandComposition.unknown_competitor_count,
       },
+      competitor_pricing,
       citable_invoice_ids,
     };
   }
@@ -514,7 +558,8 @@ export class V2DashboardService {
       'Anda menerima sinyal jujur dari invoice tersampel:\n' +
       '- price_evidence: band harga nyata per SKU (min/median/max + spread% + outlier) dengan bukti invoice (tiap baris punya kode invoice `cite`).\n' +
       '- top_skus_per_area: seberapa SERING SKU muncul di invoice per wilayah (occurrence, BUKAN volume terjual).\n' +
-      '- price_gaps: adu harga di NOTA YANG SAMA — baris TACO vs kompetitor yang dikenali pada satu invoice, dengan selisih Rupiah & % (gap_pct); plus unknown_competitor_count (observasi kompetitor tak dikenali).\n' +
+      '- brand_composition: jumlah baris invoice per ember (taco / kompetitor / lain_lain) + unknown_competitor_count — komposisi merek dari baris invoice tersampel, BUKAN pangsa pasar.\n' +
+      '- competitor_pricing: per merek kompetitor yang dikenali, band harga nyata per produk (min/avg/maks unit_price) dari invoice tersampel, dengan kode invoice `cite`.\n' +
       '- citable_invoice_ids: daftar kode invoice yang BOLEH Anda kutip.\n' +
       'Tugas: tulis ringkasan manajemen Bahasa Indonesia, format MARKDOWN, berupa TEPAT 3 poin bullet — masing-masing satu sinyal paling penting (mis. anomali/sebaran harga nyata, tekanan kompetitor di satu wilayah lewat adu harga nota-sama, atau SKU yang paling sering muncul).\n' +
       'ATURAN WAJIB:\n' +
@@ -683,20 +728,20 @@ export class V2DashboardService {
         occurrence_pct: number;
       }>;
     }>;
-    price_gaps: {
-      pairs: Array<{
-        cite: string;
-        region_name: string | null;
-        taco_sku_name: string;
-        taco_unit_price: number;
-        competitor_brand_name: string;
-        competitor_unit_price: number;
-        gap_rp: number;
-        gap_pct: number;
-      }>;
+    brand_composition: {
+      buckets: Array<{ bucket: string; n_lines: number; pct: number }>;
+      total_lines: number;
       unknown_competitor_count: number;
-      total_same_receipt_pairs: number;
     };
+    competitor_pricing: Array<{
+      brand_name: string;
+      sku_label: string;
+      n_invoices: number;
+      p_min: number;
+      p_avg: number;
+      p_max: number;
+      cite: string | null;
+    }>;
     citable_invoice_ids: string[];
   }): string {
     const cov = signals.coverage;
@@ -723,16 +768,24 @@ export class V2DashboardService {
       );
     }
 
-    // Point 2 — head-to-head price gap (same-receipt TACO vs competitor, R3).
-    const topGap = signals.price_gaps.pairs[0];
-    if (topGap) {
-      const arah = topGap.gap_rp >= 0 ? 'di atas' : 'di bawah';
+    // Point 2 — competitor pricing (Section 4 / AC-40 — observed price band of a
+    // resolved competitor SKU), preferring a row with a citable invoice.
+    const compPriced =
+      signals.competitor_pricing.find((c) => c.cite !== null) ??
+      signals.competitor_pricing[0];
+    if (compPriced) {
+      const tail = compPriced.cite
+        ? ` — lihat invoice #${compPriced.cite}.`
+        : '.';
       lines.push(
-        `- Adu harga nota-sama: ${topGap.taco_sku_name} (Rp${topGap.taco_unit_price}) ${arah} ${topGap.competitor_brand_name} (Rp${topGap.competitor_unit_price}) — selisih ${Math.abs(topGap.gap_pct)}%${topGap.region_name ? ` di ${topGap.region_name}` : ''}, lihat invoice #${topGap.cite}.`,
+        `- Harga kompetitor ${compPriced.brand_name} (${compPriced.sku_label}): rentang Rp${compPriced.p_min}–Rp${compPriced.p_max} (rata-rata Rp${compPriced.p_avg}) dari ${compPriced.n_invoices} invoice tersampel${tail}`,
       );
-    } else if (signals.price_gaps.unknown_competitor_count > 0 && anyCite) {
+    } else if (
+      signals.brand_composition.unknown_competitor_count > 0 &&
+      anyCite
+    ) {
       lines.push(
-        `- Ada ${signals.price_gaps.unknown_competitor_count} observasi kompetitor pada nota yang memuat TACO, namun mereknya belum dikenali sehingga belum bisa diadu harga — lihat invoice #${anyCite}.`,
+        `- Ada ${signals.brand_composition.unknown_competitor_count} observasi kompetitor yang mereknya belum dikenali, sehingga belum bisa dibandingkan harganya — lihat invoice #${anyCite}.`,
       );
     }
 

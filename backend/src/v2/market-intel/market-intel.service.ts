@@ -4,16 +4,20 @@ import { Repository, SelectQueryBuilder } from 'typeorm';
 
 import { InvoiceLineItemV2 } from '../../database/entities/v2/invoice-line-item-v2.entity';
 import { InvoiceV2 } from '../../database/entities/v2/invoice-v2.entity';
-import { Region, RegionType } from '../../database/entities/region.entity';
+import { Region } from '../../database/entities/region.entity';
 import { TacoSku } from '../../database/entities/taco-sku.entity';
 import { V2Period } from '../dto/period.dto';
 import {
+  BrandBucketDetailQueryDto,
+  BrandBucketDistributionQueryDto,
+  CategoryQueryDto,
+  CategorySkusQueryDto,
   MarketIntelQueryDto,
   PaginatedMarketIntelQueryDto,
   PriceBandsQueryDto,
-  PriceGapPairsQueryDto,
   SkuPriceHistoryQueryDto,
-  SkuWhitespaceQueryDto,
+  SkuStorePricingQueryDto,
+  TopNonTacoQueryDto,
   TopSkusPerAreaQueryDto,
 } from './dto/market-intel.dto';
 
@@ -24,8 +28,15 @@ import {
  */
 const OUTLIER_THRESHOLD = 0.25;
 
-/** Default rows per page for the paginated panels (R2/R3/R4) — PRD §8. */
+/** Default rows per page for the paginated panels — PRD §8. */
 const DEFAULT_PAGE_SIZE = 10;
+
+/** Label for the NULL `catalog_category` bucket (Section 2, AC-32). */
+const UNCATEGORIZED = 'Tidak terkategori';
+
+/** Sentinel brand ids for the single-brand buckets in brand-bucket-detail. */
+const TACO_BRAND = '__taco__';
+const LAIN_LAIN_BRAND = '__lain_lain__';
 
 interface DateScope {
   /** Inclusive lower bound (YYYY-MM-DD) or null for 'all'. */
@@ -51,6 +62,23 @@ export interface Pagination {
 
 type OutlierDirection = 'above' | 'below' | null;
 
+/**
+ * Observed-qty stats (AC-35, AC-36). One observation = one invoice (the SKU's
+ * summed quantity on that invoice); min/avg/max are over the non-zero obs.
+ * `qty_sum_sample` is the AC-36 Total `(tercatat di sampel terunggah)`.
+ * `qty_lines_*` + `qty_missing_pct` back the AC-35 "qty terbaca dari X dari Y
+ * baris" chip — these are LINE-level (a line with quantity=0 is "missing").
+ */
+export interface QtyStats {
+  qty_min: number;
+  qty_avg: number;
+  qty_max: number;
+  qty_sum_sample: number;
+  qty_missing_pct: number;
+  qty_lines_total: number;
+  qty_lines_with: number;
+}
+
 interface RawCoverage {
   n_invoices: string;
   m_stores: string;
@@ -61,6 +89,7 @@ interface RawCoverage {
 interface RawPriceObs {
   sku_id: string;
   sku_name: string | null;
+  sku_code: string | null;
   invoice_id: string;
   store_id: string | null;
   area_id: string | null;
@@ -68,6 +97,9 @@ interface RawPriceObs {
   region_name: string | null;
   supplier_name: string | null;
   unit_price: string;
+  qty_obs: string;
+  line_count: string;
+  line_with_qty: string;
 }
 
 interface RawHistoryObs {
@@ -79,6 +111,9 @@ interface RawHistoryObs {
   supplier_name: string | null;
   invoice_date: string | null;
   unit_price: string;
+  qty_obs: string;
+  line_count: string;
+  line_with_qty: string;
   image_id: string | null;
 }
 
@@ -95,42 +130,51 @@ interface RawDemandSku {
   occurrence_count: string;
 }
 
-interface RawGapPair {
+interface RawNonTacoLine {
   invoice_id: string;
-  store_name: string | null;
-  region_name: string | null;
-  invoice_date: string | null;
-  taco_sku_name: string | null;
-  taco_unit_price: string;
-  competitor_brand_name: string | null;
-  competitor_sku_text: string | null;
-  competitor_unit_price: string;
-  image_id: string | null;
+  brand_id: string | null;
+  brand_name: string | null;
+  raw_text: string | null;
+  qty: string;
+  unit_price: string;
 }
 
-interface RawSeenPair {
-  sku_id: string;
+interface RawCovRow {
+  invoice_id: string;
+  store_id: string | null;
   area_id: string | null;
+  eff_date: string | null;
 }
 
 /**
- * TACO v2 — Market Intelligence service (the revamped `/taro/v2/analytics`).
+ * TACO v2 — Market Intelligence service (the revamped `/taro/v2/analytics`,
+ * KC's 4-section v3 layout).
  *
  * Read-only signals computed straight from the sampled distributor invoices —
- * every one framed honestly (presence/price/frequency, never a market total).
- * Data sources only: `taro_v2_invoices` (status='done'),
+ * every one framed honestly (presence/price/qty/frequency, never a market
+ * total). Data sources only: `taro_v2_invoices` (status='done'),
  * `taro_v2_invoice_line_items`, `taco_skus`, `competitor_brands`, `regions`,
  * `taro_v2_stores`. No schema changes; supplier normalization at query time.
  *
  * Window semantics: the period filters on the invoice's TRANSACTION date
- * (`invoice_date`, falling back to `created_at::date` when unparsed) per PRD
- * §8 — these are market signals about when a deal happened.
+ * (`invoice_date`, falling back to `created_at::date` when unparsed) per PRD §8.
  *
- * Endpoint map (PRD §8 revision): coverage · price-bands (paginated+searchable)
- * · sku-price-history (R5 modal) · top-skus-per-area (R1) · price-gap-pairs (R3)
- * · sku-whitespace (R4). `competitor-basket` + `distributor-performance` are CUT
- * (F-10 retired); `demand-mix` → `top-skus-per-area`; `sku-evidence` →
- * `sku-price-history`.
+ * Endpoint map (PRD §8 v3): coverage · top-skus-per-area (S1) · top-non-taco
+ * (S1) · category-distribution / category-monthly-trend / category-skus (S2) ·
+ * price-bands + sku-price-history (S3, qty-extended) · sku-store-pricing (S3) ·
+ * brand-bucket-distribution + brand-bucket-detail (S4).
+ *
+ * RETIRED in v3: `price-gap-pairs` (R3) + `sku-whitespace` (R4) — removed
+ * cleanly; their AC-IDs (AC-10/11/20/21/22/23/24) do not return. R3's
+ * price-comparison value is absorbed into brand-bucket-detail (AC-40).
+ *
+ * Bucket vocabulary (PRD §8 + AC-41), since v2 line items have NO `is_unknown`
+ * column (that is v1-only): TACO = `matched_sku_id IS NOT NULL`; Kompetitor =
+ * `brand_id IS NOT NULL` (resolved competitor brand); unknown-competitor =
+ * `is_competitor = true AND brand_id IS NULL` (excluded from buckets, returned
+ * as a footer count); Lain-lain = `matched_sku_id IS NULL AND brand_id IS NULL
+ * AND is_competitor = false` — i.e. AC-41's `is_unknown = false` is faithfully
+ * `is_competitor = false` here.
  */
 @Injectable()
 export class MarketIntelService {
@@ -161,11 +205,24 @@ export class MarketIntelService {
     return Math.round((num / den) * 1000) / 10; // 1 decimal
   }
 
+  /** Round a quantity to ≤3 decimals (quantity is numeric(18,3)). */
+  private qtyRound(n: number): number {
+    return Math.round(n * 1000) / 1000;
+  }
+
   private median(sorted: number[]): number {
     const n = sorted.length;
     if (n === 0) return 0;
     const mid = Math.floor(n / 2);
     return n % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  }
+
+  /** True for a canonical 8-4-4-4-12 hex UUID (guards sentinel brand ids). */
+  private isUuid(v: string | undefined | null): v is string {
+    return (
+      typeof v === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+    );
   }
 
   /** Clamp 1-based page + page_size from the (string) query params. */
@@ -206,7 +263,7 @@ export class MarketIntelService {
    * `normalize_supplier(raw)` (PRD §8 — retained): lower-case, strip a leading
    * Indonesian honorific (`PT`/`CV`/`H.`/`HPLG` and common kin, optional
    * trailing dot), collapse whitespace. Available if a future panel groups
-   * distributors; R5's invoice list shows the RAW `supplier_name` as captured.
+   * distributors; the invoice lists show the RAW `supplier_name` as captured.
    */
   private normalizeSupplier(raw: string | null): string {
     let s = (raw ?? '').toLowerCase().trim();
@@ -342,6 +399,39 @@ export class MarketIntelService {
     });
   }
 
+  /**
+   * Roll per-invoice qty observations into the AC-35/AC-36 QtyStats. Each obs is
+   * one invoice: `qty` = the SKU's summed quantity on that invoice; `lines` /
+   * `linesWith` are that invoice's contributing line counts. min/avg/max ignore
+   * zero-qty observations; missing% is LINE-level.
+   */
+  private qtyStats(
+    obs: Array<{ qty: number; lines: number; linesWith: number }>,
+  ): QtyStats {
+    const qtyVals = obs
+      .map((o) => o.qty)
+      .filter((q) => q > 0)
+      .sort((a, b) => a - b);
+    const linesTotal = obs.reduce((s, o) => s + o.lines, 0);
+    const linesWith = obs.reduce((s, o) => s + o.linesWith, 0);
+    const sum = obs.reduce((s, o) => s + o.qty, 0);
+    const avg = qtyVals.length
+      ? qtyVals.reduce((a, b) => a + b, 0) / qtyVals.length
+      : 0;
+    return {
+      qty_min: this.qtyRound(qtyVals.length ? qtyVals[0] : 0),
+      qty_avg: this.qtyRound(avg),
+      qty_max: this.qtyRound(qtyVals.length ? qtyVals[qtyVals.length - 1] : 0),
+      qty_sum_sample: this.qtyRound(sum),
+      qty_missing_pct:
+        linesTotal > 0
+          ? Math.round(((linesTotal - linesWith) / linesTotal) * 1000) / 1000
+          : 0,
+      qty_lines_total: linesTotal,
+      qty_lines_with: linesWith,
+    };
+  }
+
   // ---- 1. coverage (AC-1, AC-2) --------------------------------------------
 
   /** Page-level coverage for the truth banner: N invoice · M toko · K wilayah. */
@@ -372,17 +462,18 @@ export class MarketIntelService {
     };
   }
 
-  // ---- 2. price-bands (AC-4, AC-5, AC-6) -----------------------------------
+  // ---- 2. price-bands (AC-4, AC-5, AC-6, AC-35, AC-36) ----------------------
 
   /**
-   * R2 hero (Peta Harga Nyata). One row per matched SKU with ≥3 contributing
+   * Section 3 Laporan SKU. One row per matched SKU with ≥3 contributing
    * invoices, sorted by invoice-count desc. Each carries min/median/max
-   * unit_price, the spread %, and flagged outliers (≥25% off median-of-others).
+   * unit_price, the spread %, flagged outliers (AC-5), AND the v3 observed-qty
+   * stats (AC-35/AC-36 — min/avg/max/Total + missing-data line counts).
    *
-   * Server-side search (`q`, case-insensitive substring on SKU name) +
+   * Server-side search (`q`, case-insensitive substring on SKU name/code) +
    * pagination (`page`/`page_size`, default 10). The coverage chip is computed
    * over ALL matched-SKU invoices in the period/area scope (AC-2) — it does NOT
-   * narrow with the in-panel search box, which is a within-panel refinement.
+   * narrow with the in-panel search box.
    */
   async priceBands(query: PriceBandsQueryDto) {
     const range = this.resolveRange(query.period);
@@ -396,6 +487,7 @@ export class MarketIntelService {
         .leftJoin('regions', 'area', 'area.id = inv.area_id')
         .select('li.matched_sku_id', 'sku_id')
         .addSelect('MAX(sku.name)', 'sku_name')
+        .addSelect('MAX(sku.code)', 'sku_code')
         .addSelect('inv.id', 'invoice_id')
         .addSelect('inv.store_id', 'store_id')
         .addSelect('inv.area_id', 'area_id')
@@ -403,6 +495,12 @@ export class MarketIntelService {
         .addSelect('MAX(area.name)', 'region_name')
         .addSelect('MAX(inv.supplier_name)', 'supplier_name')
         .addSelect('AVG(CAST(li.unit_price AS numeric))', 'unit_price')
+        .addSelect('SUM(CAST(li.quantity AS numeric))', 'qty_obs')
+        .addSelect('COUNT(*)', 'line_count')
+        .addSelect(
+          'SUM(CASE WHEN CAST(li.quantity AS numeric) > 0 THEN 1 ELSE 0 END)',
+          'line_with_qty',
+        )
         .where('li.matched_sku_id IS NOT NULL')
         .andWhere('CAST(li.unit_price AS numeric) > 0'),
       range,
@@ -424,12 +522,19 @@ export class MarketIntelService {
       region_name: string | null;
       supplier_name: string | null;
       unit_price: number;
+      qty_obs: number;
+      line_count: number;
+      line_with_qty: number;
     }
-    const bySku = new Map<string, { sku_name: string; obs: Obs[] }>();
+    const bySku = new Map<
+      string,
+      { sku_name: string; sku_code: string | null; obs: Obs[] }
+    >();
     for (const r of rows) {
       if (!bySku.has(r.sku_id)) {
         bySku.set(r.sku_id, {
           sku_name: r.sku_name ?? 'SKU Tidak Diketahui',
+          sku_code: r.sku_code ?? null,
           obs: [],
         });
       }
@@ -441,14 +546,17 @@ export class MarketIntelService {
         region_name: r.region_name,
         supplier_name: r.supplier_name,
         unit_price: this.num(r.unit_price),
+        qty_obs: this.num(r.qty_obs),
+        line_count: this.num(r.line_count),
+        line_with_qty: this.num(r.line_with_qty),
       });
     }
 
     // All qualifying bands (≥3 invoices), sorted by invoice-count desc.
     const allBands = Array.from(bySku.entries())
-      .map(([sku_id, { sku_name, obs }]) => {
+      .map(([sku_id, { sku_name, sku_code, obs }]) => {
         const nInvoices = new Set(obs.map((o) => o.invoice_id)).size;
-        return { sku_id, sku_name, obs, nInvoices };
+        return { sku_id, sku_name, sku_code, obs, nInvoices };
       })
       .filter((b) => b.nInvoices >= 3)
       .sort(
@@ -457,7 +565,9 @@ export class MarketIntelService {
       );
 
     // Server-side search (AC-4) then pagination (AC-4, page_size=10).
-    const filtered = allBands.filter((b) => this.matchesQ(query.q, b.sku_name));
+    const filtered = allBands.filter((b) =>
+      this.matchesQ(query.q, b.sku_name, b.sku_code),
+    );
     const total = filtered.length;
     const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
 
@@ -488,11 +598,19 @@ export class MarketIntelService {
       return {
         sku_id: b.sku_id,
         sku_name: b.sku_name,
+        sku_code: b.sku_code,
         n_invoices: b.nInvoices,
         p_min: Math.round(pMin),
         p_median: Math.round(pMed),
         p_max: Math.round(pMax),
         spread_pct: spreadPct,
+        ...this.qtyStats(
+          b.obs.map((o) => ({
+            qty: o.qty_obs,
+            lines: o.line_count,
+            linesWith: o.line_with_qty,
+          })),
+        ),
         outliers,
       };
     });
@@ -507,19 +625,19 @@ export class MarketIntelService {
     };
   }
 
-  // ---- 3. sku-price-history (AC-7, AC-25, AC-26, AC-27) ---------------------
+  // ---- 3. sku-price-history (AC-7, AC-25, AC-26, AC-27, AC-35, AC-36) -------
 
   /**
-   * R5 modal — the ONLY call the modal makes. Returns the SKU's price trend over
-   * time (one point per contributing invoice), min/avg/max, and the contributing
+   * Section 3 detail modal — the price/qty call. Returns the SKU's price trend
+   * AND a parallel qty trend over time (one point per contributing invoice),
+   * the price + qty min/avg/max/Total stats (AC-26), and the contributing
    * invoice list. The in-modal Area (`area`) + Store (`store_id`) filters narrow
-   * the trend, the min/avg/max, the coverage chip, and the invoice list in place
-   * (AC-27). Defaults are "Semua / Semua" (params omitted) — the FE owns dropdown
-   * state and does NOT inherit the page filter (AC-25).
+   * everything in place (AC-27). Defaults are "Semua / Semua" (params omitted) —
+   * the FE owns dropdown state and does NOT inherit the page filter (AC-25).
    *
-   * One observation = one invoice (AVG unit_price across that SKU's lines on the
-   * invoice), consistent with the R2 band math. Outlier direction is the same
-   * leave-one-out ±25% rule as AC-5.
+   * One observation = one invoice: AVG unit_price + SUM quantity across that
+   * SKU's lines on the invoice. Outlier direction is the same leave-one-out
+   * ±25% price rule as AC-5.
    */
   async skuPriceHistory(query: SkuPriceHistoryQueryDto) {
     const range = this.resolveRange(query.period);
@@ -532,7 +650,9 @@ export class MarketIntelService {
         p_min: 0,
         p_avg: 0,
         p_max: 0,
+        ...this.qtyStats([]),
         trend: [],
+        qty_trend: [],
         invoices: [],
       };
     }
@@ -554,6 +674,12 @@ export class MarketIntelService {
           'invoice_date',
         )
         .addSelect('AVG(CAST(li.unit_price AS numeric))', 'unit_price')
+        .addSelect('SUM(CAST(li.quantity AS numeric))', 'qty_obs')
+        .addSelect('COUNT(*)', 'line_count')
+        .addSelect(
+          'SUM(CASE WHEN CAST(li.quantity AS numeric) > 0 THEN 1 ELSE 0 END)',
+          'line_with_qty',
+        )
         .addSelect(this.IMAGE_ID_SUBQUERY, 'image_id')
         .where('li.matched_sku_id = :sku_id', { sku_id: query.sku_id })
         .andWhere('CAST(li.unit_price AS numeric) > 0'),
@@ -584,6 +710,9 @@ export class MarketIntelService {
       supplier_name: r.supplier_name ?? null,
       invoice_date: r.invoice_date ?? null,
       unit_price: Math.round(this.num(r.unit_price)),
+      quantity: this.qtyRound(this.num(r.qty_obs)),
+      line_count: this.num(r.line_count),
+      line_with_qty: this.num(r.line_with_qty),
       image_url: this.imageUrl(r.image_id),
       outlier_direction: dirs[i],
     }));
@@ -595,21 +724,34 @@ export class MarketIntelService {
       ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length)
       : 0;
 
-    // Trend: oldest→newest (chart x-axis is time).
-    const trend = [...obs]
-      .sort((a, b) =>
-        (a.invoice_date ?? '').localeCompare(b.invoice_date ?? ''),
-      )
-      .map((o) => ({
-        invoice_date: o.invoice_date,
-        unit_price: o.unit_price,
-        invoice_id: o.invoice_id,
-        store_id: o.store_id,
-        store_name: o.store_name,
-        region_id: o.region_id,
-        region_name: o.region_name,
-        outlier_direction: o.outlier_direction,
-      }));
+    const qtyStats = this.qtyStats(
+      obs.map((o) => ({
+        qty: o.quantity,
+        lines: o.line_count,
+        linesWith: o.line_with_qty,
+      })),
+    );
+
+    // Trend: oldest→newest (chart x-axis is time). Price + qty are parallel
+    // arrays keyed by the same invoice/date so the FE plots a dual line (AC-26).
+    const sortedAsc = [...obs].sort((a, b) =>
+      (a.invoice_date ?? '').localeCompare(b.invoice_date ?? ''),
+    );
+    const trend = sortedAsc.map((o) => ({
+      invoice_date: o.invoice_date,
+      unit_price: o.unit_price,
+      invoice_id: o.invoice_id,
+      store_id: o.store_id,
+      store_name: o.store_name,
+      region_id: o.region_id,
+      region_name: o.region_name,
+      outlier_direction: o.outlier_direction,
+    }));
+    const qty_trend = sortedAsc.map((o) => ({
+      invoice_date: o.invoice_date,
+      quantity: o.quantity,
+      invoice_id: o.invoice_id,
+    }));
 
     // Invoice list: newest-first (AC-7).
     const invoices = [...obs]
@@ -623,6 +765,7 @@ export class MarketIntelService {
         supplier_name: o.supplier_name,
         invoice_date: o.invoice_date,
         unit_price: o.unit_price,
+        quantity: o.quantity,
         image_url: o.image_url,
         outlier_direction: o.outlier_direction,
       }));
@@ -641,19 +784,20 @@ export class MarketIntelService {
       p_min: pMin,
       p_avg: pAvg,
       p_max: pMax,
+      ...qtyStats,
       trend,
+      qty_trend,
       invoices,
     };
   }
 
-  // ---- 4. top-skus-per-area (AC-8, AC-9, AC-18, AC-19) ----------------------
+  // ---- 4. top-skus-per-area (AC-19, AC-30) ---------------------------------
 
   /**
-   * R1 — per-region top SKUs by line-occurrence frequency (presence, NOT
-   * volume). Restricted to matched SKUs (AC-19); the canonical `taco_skus.name`
-   * is shown, never the raw OCR text. `top_n` defaults to 5 (the FE requests 10
-   * when a single area is selected — AC-9). Per-region thin-data degradation is
-   * a FE concern (AC-18); the BE returns honest per-region counts.
+   * Section 1 Top-10 TACO card — per-region top SKUs by line-occurrence
+   * frequency (presence, NOT volume). Restricted to matched SKUs (AC-19); the
+   * canonical `taco_skus.name` is shown, never the raw OCR text. `top_n`
+   * defaults to 5 (the FE requests 10 for a single selected area — AC-30).
    */
   async topSkusPerArea(query: TopSkusPerAreaQueryDto) {
     const range = this.resolveRange(query.period);
@@ -733,249 +877,874 @@ export class MarketIntelService {
     return { period: range.label, regions };
   }
 
-  // ---- 5. price-gap-pairs (AC-10, AC-11, AC-20, AC-21, AC-22) ---------------
+  // ---- 5. top-non-taco (AC-31) ---------------------------------------------
 
   /**
-   * R3 — same-receipt TACO vs resolved-competitor price gaps. Each row pairs a
-   * matched TACO line with a resolved-competitor line (`brand_id IS NOT NULL`,
-   * `is_competitor=true`) on the SAME invoice (AC-10). Unknown-brand competitor
-   * observations are excluded from rows and counted in `unknown_competitor_count`
-   * (AC-11 footer). Sorted by |% gap| desc (AC-20), searchable by TACO SKU /
-   * competitor brand / store (AC-21), paginated 10/page.
-   *
-   * `total_same_receipt_pairs` (resolved + unknown) lets the FE drive AC-22:
-   *   total<3 → thin-data; total≥3 && resolved total (pagination.total)==0 →
-   *   the distinct zero-pair copy + the AC-11 footer.
+   * Section 1 Top non-TACO card — the resolved-competitor (`brand_id NOT NULL`)
+   * and non-competitor / Lain-lain (AC-41: `matched_sku_id IS NULL AND brand_id
+   * IS NULL AND is_competitor = false`) buckets COMBINED, brand-labeled. Each
+   * row is a product: a competitor brand, or a distinct Lain-lain raw text.
+   * Sortable by the median observed qty (`sort=qty`, default) or unit price
+   * (`sort=price`); `top_n` defaults to 10. Unknown-competitor lines are
+   * EXCLUDED (consistent with AC-41).
    */
-  async priceGapPairs(query: PriceGapPairsQueryDto) {
+  async topNonTaco(query: TopNonTacoQueryDto) {
     const range = this.resolveRange(query.period);
-    const { page, pageSize } = this.resolvePage(query);
+    const topN = Math.min(
+      Math.max(parseInt(query.top_n ?? '10', 10) || 10, 1),
+      50,
+    );
+    const sort = query.sort ?? 'qty';
 
     const raw = await this.applyScope(
       this.lineItems
         .createQueryBuilder('li')
         .innerJoin('li.invoice', 'inv')
-        .innerJoin(
-          'taro_v2_invoice_line_items',
-          'c',
-          'c.invoice_id = inv.id AND c.is_competitor = true AND c.brand_id IS NOT NULL',
-        )
-        .leftJoin('taco_skus', 'sku', 'sku.id = li.matched_sku_id')
-        .leftJoin('competitor_brands', 'brand', 'brand.id = c.brand_id')
-        .leftJoin('regions', 'area', 'area.id = inv.area_id')
-        .leftJoin('taro_v2_stores', 'store', 'store.id = inv.store_id')
+        .leftJoin('competitor_brands', 'brand', 'brand.id = li.brand_id')
         .select('inv.id', 'invoice_id')
-        .addSelect('store.name', 'store_name')
-        .addSelect('area.name', 'region_name')
-        .addSelect(`${this.EFF_DATE_STR}`, 'invoice_date')
-        .addSelect('sku.name', 'taco_sku_name')
-        .addSelect('CAST(li.unit_price AS numeric)', 'taco_unit_price')
-        .addSelect('brand.name', 'competitor_brand_name')
-        .addSelect('c.raw_text', 'competitor_sku_text')
-        .addSelect('CAST(c.unit_price AS numeric)', 'competitor_unit_price')
-        .addSelect(this.IMAGE_ID_SUBQUERY, 'image_id')
-        .where('li.matched_sku_id IS NOT NULL')
-        .andWhere('CAST(li.unit_price AS numeric) > 0')
-        .andWhere('CAST(c.unit_price AS numeric) > 0'),
-      range,
-      query.area,
-    ).getRawMany<RawGapPair>();
-
-    // Build + compute the gap per pair (small N — sort by |%| desc in JS, AC-20).
-    const allRows = raw
-      .map((r) => {
-        const tacoPrice = Math.round(this.num(r.taco_unit_price));
-        const compPrice = Math.round(this.num(r.competitor_unit_price));
-        const gapRp = tacoPrice - compPrice;
-        const gapPct =
-          compPrice > 0 ? Math.round((gapRp / compPrice) * 1000) / 10 : 0;
-        return {
-          invoice_id: r.invoice_id,
-          image_url: this.imageUrl(r.image_id),
-          store_name: r.store_name ?? null,
-          region_name: r.region_name ?? null,
-          invoice_date: r.invoice_date ?? null,
-          taco_sku_name: r.taco_sku_name ?? 'SKU Tidak Diketahui',
-          taco_unit_price: tacoPrice,
-          competitor_brand_name:
-            r.competitor_brand_name ?? 'Merek Tidak Diketahui',
-          competitor_sku_text: r.competitor_sku_text ?? null,
-          competitor_unit_price: compPrice,
-          gap_rp: gapRp,
-          gap_pct: gapPct,
-        };
-      })
-      .sort((a, b) => Math.abs(b.gap_pct) - Math.abs(a.gap_pct));
-
-    // Search (AC-21): TACO SKU / competitor brand / store name.
-    const filtered = allRows.filter((r) =>
-      this.matchesQ(
-        query.q,
-        r.taco_sku_name,
-        r.competitor_brand_name,
-        r.store_name,
-      ),
-    );
-    const total = filtered.length;
-    const rows = filtered.slice((page - 1) * pageSize, page * pageSize);
-
-    // AC-11 footer: unknown-brand competitor observations on TACO receipts.
-    const unknownRow = await this.applyScope(
-      this.lineItems
-        .createQueryBuilder('c')
-        .innerJoin('c.invoice', 'inv')
-        .select('COUNT(*)', 'cnt')
-        .where('c.is_competitor = true')
-        .andWhere('c.brand_id IS NULL')
-        .andWhere(
-          'EXISTS (SELECT 1 FROM taro_v2_invoice_line_items tt WHERE tt.invoice_id = inv.id AND tt.matched_sku_id IS NOT NULL)',
+        .addSelect('li.brand_id', 'brand_id')
+        .addSelect('brand.name', 'brand_name')
+        .addSelect('li.raw_text', 'raw_text')
+        .addSelect('CAST(li.quantity AS numeric)', 'qty')
+        .addSelect('CAST(li.unit_price AS numeric)', 'unit_price')
+        .where(
+          '(li.brand_id IS NOT NULL OR (li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false))',
         ),
       range,
       query.area,
-    ).getRawOne<{ cnt: string }>();
-    const unknownCompetitorCount = this.num(unknownRow?.cnt);
+    ).getRawMany<RawNonTacoLine>();
 
-    // AC-22 N: ALL same-receipt TACO+competitor pairs (resolved + unknown).
-    const totalPairRow = await this.applyScope(
+    interface Group {
+      key: string;
+      label: string;
+      bucket: 'kompetitor' | 'lain_lain';
+      brand_name: string | null;
+      invoices: Set<string>;
+      n_lines: number;
+      qtys: number[];
+      prices: number[];
+    }
+    const groups = new Map<string, Group>();
+    for (const r of raw) {
+      const isComp = r.brand_id !== null;
+      const label = isComp
+        ? (r.brand_name ?? 'Merek Kompetitor')
+        : (r.raw_text ?? 'Lain-lain').trim() || 'Lain-lain';
+      const key = isComp
+        ? `b:${r.brand_id}`
+        : `l:${label.toLowerCase().replace(/\s+/g, ' ')}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          label,
+          bucket: isComp ? 'kompetitor' : 'lain_lain',
+          brand_name: isComp ? (r.brand_name ?? label) : null,
+          invoices: new Set<string>(),
+          n_lines: 0,
+          qtys: [],
+          prices: [],
+        });
+      }
+      const g = groups.get(key)!;
+      g.invoices.add(r.invoice_id);
+      g.n_lines += 1;
+      const q = this.num(r.qty);
+      const p = this.num(r.unit_price);
+      if (q > 0) g.qtys.push(q);
+      if (p > 0) g.prices.push(p);
+    }
+
+    const allRows = Array.from(groups.values()).map((g) => {
+      const medianQty = this.median([...g.qtys].sort((a, b) => a - b));
+      const medianPrice = this.median([...g.prices].sort((a, b) => a - b));
+      return {
+        key: g.key,
+        label: g.label,
+        bucket: g.bucket,
+        brand_name: g.brand_name,
+        n_invoices: g.invoices.size,
+        n_lines: g.n_lines,
+        median_qty: this.qtyRound(medianQty),
+        median_price: Math.round(medianPrice),
+      };
+    });
+
+    allRows.sort((a, b) => {
+      const primary =
+        sort === 'price'
+          ? b.median_price - a.median_price
+          : b.median_qty - a.median_qty;
+      return primary || b.n_invoices - a.n_invoices;
+    });
+
+    return {
+      period: range.label,
+      sort,
+      rows: allRows.slice(0, topN),
+    };
+  }
+
+  // ---- 6. category-distribution (AC-32) ------------------------------------
+
+  /**
+   * Section 2 Komposisi kategori TACO pie. Per-category line-item counts of
+   * matched-TACO lines grouped by `taco_skus.catalog_category` (NULL → "Tidak
+   * terkategori"); each slice carries its absolute count + % OF TACO LINE ITEMS.
+   * Categories are returned as they appear in the catalog (not a fixed list) so
+   * any catalog value renders honestly.
+   */
+  async categoryDistribution(query: CategoryQueryDto) {
+    const range = this.resolveRange(query.period);
+
+    const raw = await this.applyScope(
       this.lineItems
         .createQueryBuilder('li')
         .innerJoin('li.invoice', 'inv')
-        .innerJoin(
-          'taro_v2_invoice_line_items',
-          'c',
-          'c.invoice_id = inv.id AND c.is_competitor = true',
+        .leftJoin('li.matched_sku', 'sku')
+        .select(
+          `COALESCE(sku.catalog_category, '${UNCATEGORIZED}')`,
+          'category',
         )
-        .select('COUNT(*)', 'cnt')
+        .addSelect('COUNT(*)', 'n_lines')
         .where('li.matched_sku_id IS NOT NULL'),
       range,
       query.area,
-    ).getRawOne<{ cnt: string }>();
-    const totalSameReceiptPairs = this.num(totalPairRow?.cnt);
+    )
+      .groupBy(`COALESCE(sku.catalog_category, '${UNCATEGORIZED}')`)
+      .getRawMany<{ category: string; n_lines: string }>();
 
-    // Coverage (AC-2): invoices that hold BOTH a TACO line and ANY competitor
-    // line — the same-receipt universe this panel is computed from. Renders even
-    // when resolved rows are 0 (the zero-pair state still shows the chip).
-    const covRows = await this.applyScope(
+    const total = raw.reduce((s, r) => s + this.num(r.n_lines), 0);
+    const categories = raw
+      .map((r) => {
+        const n = this.num(r.n_lines);
+        return {
+          category: r.category,
+          n_lines: n,
+          pct_of_taco_lines: this.pct(n, total),
+        };
+      })
+      .sort((a, b) => b.n_lines - a.n_lines);
+
+    return {
+      period: range.label,
+      coverage: await this.bucketCoverage(range, query.area, 'taco'),
+      total_taco_lines: total,
+      categories,
+    };
+  }
+
+  // ---- 7. category-monthly-trend (AC-33) -----------------------------------
+
+  /**
+   * Section 2 Tren unggahan kategori line. One row per (month, category):
+   * `invoice_count` = distinct uploaded invoices in that month containing ≥1
+   * TACO line of that category. Honest framing: this tracks upload cadence, not
+   * market dynamics (AC-33 sub-line is the FE's guardrail).
+   */
+  async categoryMonthlyTrend(query: CategoryQueryDto) {
+    const range = this.resolveRange(query.period);
+
+    const raw = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .leftJoin('li.matched_sku', 'sku')
+        .select(`to_char(${this.EFF_DATE}, 'YYYY-MM')`, 'month')
+        .addSelect(
+          `COALESCE(sku.catalog_category, '${UNCATEGORIZED}')`,
+          'category',
+        )
+        .addSelect('COUNT(DISTINCT inv.id)', 'invoice_count')
+        .where('li.matched_sku_id IS NOT NULL'),
+      range,
+      query.area,
+    )
+      .groupBy(`to_char(${this.EFF_DATE}, 'YYYY-MM')`)
+      .addGroupBy(`COALESCE(sku.catalog_category, '${UNCATEGORIZED}')`)
+      .getRawMany<{ month: string; category: string; invoice_count: string }>();
+
+    const rows = raw
+      .map((r) => ({
+        month: r.month,
+        category: r.category,
+        invoice_count: this.num(r.invoice_count),
+      }))
+      .sort(
+        (a, b) =>
+          a.month.localeCompare(b.month) ||
+          a.category.localeCompare(b.category),
+      );
+
+    const months = Array.from(new Set(rows.map((r) => r.month))).sort();
+    const categories = Array.from(new Set(rows.map((r) => r.category))).sort();
+
+    return {
+      period: range.label,
+      granularity: 'month' as const,
+      months,
+      categories,
+      rows,
+    };
+  }
+
+  // ---- 8. category-skus (AC-34) --------------------------------------------
+
+  /**
+   * Section 2 category drill — the matched TACO SKUs seen in `category` under
+   * the current scope (canonical name + code + the finer `taco_skus.category`
+   * enum for optional secondary grouping), sorted by N invoices desc (AC-34).
+   */
+  async categorySkus(query: CategorySkusQueryDto) {
+    const range = this.resolveRange(query.period);
+    const category = query.category ?? UNCATEGORIZED;
+    const isUncat = category === UNCATEGORIZED;
+
+    const qb = this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .leftJoin('li.matched_sku', 'sku')
+        .select('li.matched_sku_id', 'sku_id')
+        .addSelect('MAX(sku.name)', 'sku_name')
+        .addSelect('MAX(sku.code)', 'sku_code')
+        .addSelect('MAX(sku.category::text)', 'sub_category')
+        .addSelect('COUNT(DISTINCT inv.id)', 'n_invoices')
+        .where('li.matched_sku_id IS NOT NULL'),
+      range,
+      query.area,
+    );
+    if (isUncat) {
+      qb.andWhere('sku.catalog_category IS NULL');
+    } else {
+      qb.andWhere('sku.catalog_category = :category', { category });
+    }
+
+    const raw = await qb.groupBy('li.matched_sku_id').getRawMany<{
+      sku_id: string;
+      sku_name: string | null;
+      sku_code: string | null;
+      sub_category: string | null;
+      n_invoices: string;
+    }>();
+
+    const skus = raw
+      .map((r) => ({
+        sku_id: r.sku_id,
+        sku_name: r.sku_name ?? 'SKU Tidak Diketahui',
+        sku_code: r.sku_code ?? null,
+        sub_category: r.sub_category ?? null,
+        n_invoices: this.num(r.n_invoices),
+      }))
+      .sort(
+        (a, b) =>
+          b.n_invoices - a.n_invoices || a.sku_name.localeCompare(b.sku_name),
+      );
+
+    return { period: range.label, category, skus };
+  }
+
+  // ---- 9. sku-store-pricing (AC-37) ----------------------------------------
+
+  /**
+   * Section 3 per-store sub-section + store pricing history. Per `taro_v2_store`
+   * that contributed to the SKU under scope: N invoices + min/avg/max unit_price
+   * for that SKU at that store, plus a `history` time-series (one point per
+   * invoice) for the store-pricing-history line. One observation = one invoice
+   * (AVG unit_price across the SKU's lines on it).
+   */
+  async skuStorePricing(query: SkuStorePricingQueryDto) {
+    const range = this.resolveRange(query.period);
+
+    if (!query.sku_id) {
+      return {
+        period: range.label,
+        sku_id: null,
+        coverage: this.coverageOf([]),
+        stores: [],
+      };
+    }
+
+    const rows = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .leftJoin('regions', 'area', 'area.id = inv.area_id')
+        .leftJoin('taro_v2_stores', 'store', 'store.id = inv.store_id')
+        .select('inv.id', 'invoice_id')
+        .addSelect('inv.store_id', 'store_id')
+        .addSelect('inv.area_id', 'area_id')
+        .addSelect('MAX(store.name)', 'store_name')
+        .addSelect('MAX(area.name)', 'region_name')
+        .addSelect(
+          `to_char(MAX(${this.EFF_DATE}), 'YYYY-MM-DD')`,
+          'invoice_date',
+        )
+        .addSelect('AVG(CAST(li.unit_price AS numeric))', 'unit_price')
+        .where('li.matched_sku_id = :sku_id', { sku_id: query.sku_id })
+        .andWhere('CAST(li.unit_price AS numeric) > 0'),
+      range,
+      query.area,
+    )
+      .groupBy('inv.id')
+      .addGroupBy('inv.store_id')
+      .addGroupBy('inv.area_id')
+      .getRawMany<{
+        invoice_id: string;
+        store_id: string | null;
+        area_id: string | null;
+        store_name: string | null;
+        region_name: string | null;
+        invoice_date: string | null;
+        unit_price: string;
+      }>();
+
+    interface StoreAgg {
+      store_id: string | null;
+      store_name: string | null;
+      region_name: string | null;
+      prices: number[];
+      history: Array<{
+        invoice_date: string | null;
+        unit_price: number;
+        invoice_id: string;
+      }>;
+    }
+    const byStore = new Map<string, StoreAgg>();
+    for (const r of rows) {
+      const key = r.store_id ?? '__none__';
+      if (!byStore.has(key)) {
+        byStore.set(key, {
+          store_id: r.store_id,
+          store_name: r.store_name ?? 'Toko Tidak Diketahui',
+          region_name: r.region_name ?? null,
+          prices: [],
+          history: [],
+        });
+      }
+      const s = byStore.get(key)!;
+      const price = Math.round(this.num(r.unit_price));
+      s.prices.push(price);
+      s.history.push({
+        invoice_date: r.invoice_date,
+        unit_price: price,
+        invoice_id: r.invoice_id,
+      });
+    }
+
+    const stores = Array.from(byStore.values())
+      .map((s) => {
+        const sorted = [...s.prices].sort((a, b) => a - b);
+        const avg = sorted.length
+          ? Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length)
+          : 0;
+        return {
+          store_id: s.store_id,
+          store_name: s.store_name,
+          region_name: s.region_name,
+          n_invoices: s.history.length,
+          p_min: sorted.length ? sorted[0] : 0,
+          p_avg: avg,
+          p_max: sorted.length ? sorted[sorted.length - 1] : 0,
+          history: s.history.sort((a, b) =>
+            (a.invoice_date ?? '').localeCompare(b.invoice_date ?? ''),
+          ),
+        };
+      })
+      .sort((a, b) => b.n_invoices - a.n_invoices);
+
+    return {
+      period: range.label,
+      sku_id: query.sku_id,
+      coverage: this.coverageOf(
+        rows.map((r) => ({
+          invoice_id: r.invoice_id,
+          store_id: r.store_id,
+          area_id: r.area_id,
+          eff_date: r.invoice_date,
+        })),
+      ),
+      stores,
+    };
+  }
+
+  // ---- 10. brand-bucket-distribution (AC-38, AC-41) ------------------------
+
+  /**
+   * Section 4 Komposisi merek pie. Line-item counts in the three slices
+   * TACO / Kompetitor / Lain-lain, plus `unknown_competitor_count` for the
+   * AC-41 footer. % is of TOTAL line items in scope — so the three slices sum to
+   * <100% by exactly the unknown-competitor fraction (which sits in the footer,
+   * not in a slice). See the class header for the bucket SQL.
+   */
+  async brandBucketDistribution(query: BrandBucketDistributionQueryDto) {
+    const range = this.resolveRange(query.period);
+
+    const raw = await this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .select(
+          'SUM(CASE WHEN li.matched_sku_id IS NOT NULL THEN 1 ELSE 0 END)',
+          'taco',
+        )
+        .addSelect(
+          'SUM(CASE WHEN li.brand_id IS NOT NULL THEN 1 ELSE 0 END)',
+          'kompetitor',
+        )
+        .addSelect(
+          'SUM(CASE WHEN li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false THEN 1 ELSE 0 END)',
+          'lain_lain',
+        )
+        .addSelect(
+          'SUM(CASE WHEN li.is_competitor = true AND li.brand_id IS NULL THEN 1 ELSE 0 END)',
+          'unknown_comp',
+        )
+        .addSelect('COUNT(*)', 'total'),
+      range,
+      query.area,
+    ).getRawOne<{
+      taco: string;
+      kompetitor: string;
+      lain_lain: string;
+      unknown_comp: string;
+      total: string;
+    }>();
+
+    const total = this.num(raw?.total);
+    const mk = (bucket: string, n: number) => ({
+      bucket,
+      n_lines: n,
+      pct: this.pct(n, total),
+    });
+
+    return {
+      period: range.label,
+      coverage: await this.bucketCoverage(range, query.area, 'all'),
+      total_lines: total,
+      buckets: [
+        mk('taco', this.num(raw?.taco)),
+        mk('kompetitor', this.num(raw?.kompetitor)),
+        mk('lain_lain', this.num(raw?.lain_lain)),
+      ],
+      unknown_competitor_count: this.num(raw?.unknown_comp),
+    };
+  }
+
+  // ---- 11. brand-bucket-detail (AC-39, AC-40) ------------------------------
+
+  /**
+   * Section 4 brand-bucket drill — one endpoint, three levels (see the DTO):
+   *   level=brands    → the bucket's brand list (paginated) + unknown footer
+   *   level=skus      → per-brand SKU list with Min·Avg·Maks price stats (AC-40,
+   *                     absorbs the retired R3 value) + 3 sample invoice ids
+   *   level=invoices  → the invoice list for that SKU (AC-39)
+   * Price stats use one observation per invoice (AVG unit_price), matching the
+   * Section 3 band math. `q` filters brand names (brands level) or SKU labels
+   * (skus level). All paginated at page_size=10.
+   */
+  async brandBucketDetail(query: BrandBucketDetailQueryDto) {
+    const range = this.resolveRange(query.period);
+    const { page, pageSize } = this.resolvePage(query);
+
+    // Level is driven by which params are present (see the DTO docblock).
+    if (!query.brand_id) {
+      return this.bucketBrands(query, range, page, pageSize);
+    }
+    if (!query.sku) {
+      return this.bucketSkus(query, range, page, pageSize);
+    }
+    return this.bucketInvoices(query, range, page, pageSize);
+  }
+
+  /** brand-bucket-detail level 1 — the brand list for the bucket. */
+  private async bucketBrands(
+    query: BrandBucketDetailQueryDto,
+    range: DateScope,
+    page: number,
+    pageSize: number,
+  ) {
+    const { bucket } = query;
+    let rows: Array<{
+      id: string;
+      name: string;
+      n_lines: number;
+      n_invoices: number;
+    }> = [];
+
+    if (bucket === 'kompetitor') {
+      const raw = await this.applyScope(
+        this.lineItems
+          .createQueryBuilder('li')
+          .innerJoin('li.invoice', 'inv')
+          .leftJoin('competitor_brands', 'brand', 'brand.id = li.brand_id')
+          .select('li.brand_id', 'id')
+          .addSelect('MAX(brand.name)', 'name')
+          .addSelect('COUNT(*)', 'n_lines')
+          .addSelect('COUNT(DISTINCT inv.id)', 'n_invoices')
+          .where('li.brand_id IS NOT NULL'),
+        range,
+        query.area,
+      )
+        .groupBy('li.brand_id')
+        .getRawMany<{
+          id: string;
+          name: string | null;
+          n_lines: string;
+          n_invoices: string;
+        }>();
+      rows = raw.map((r) => ({
+        id: r.id,
+        name: r.name ?? 'Merek Kompetitor',
+        n_lines: this.num(r.n_lines),
+        n_invoices: this.num(r.n_invoices),
+      }));
+    } else {
+      // taco / lain_lain collapse to a single pseudo-brand row.
+      const where =
+        bucket === 'taco'
+          ? 'li.matched_sku_id IS NOT NULL'
+          : 'li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false';
+      const raw = await this.applyScope(
+        this.lineItems
+          .createQueryBuilder('li')
+          .innerJoin('li.invoice', 'inv')
+          .select('COUNT(*)', 'n_lines')
+          .addSelect('COUNT(DISTINCT inv.id)', 'n_invoices')
+          .where(where),
+        range,
+        query.area,
+      ).getRawOne<{ n_lines: string; n_invoices: string }>();
+      const n_lines = this.num(raw?.n_lines);
+      if (n_lines > 0) {
+        rows = [
+          {
+            id: bucket === 'taco' ? TACO_BRAND : LAIN_LAIN_BRAND,
+            name: bucket === 'taco' ? 'TACO' : 'Lain-lain',
+            n_lines,
+            n_invoices: this.num(raw?.n_invoices),
+          },
+        ];
+      }
+    }
+
+    const filtered = rows
+      .filter((r) => this.matchesQ(query.q, r.name))
+      .sort((a, b) => b.n_invoices - a.n_invoices || b.n_lines - a.n_lines);
+    const total = filtered.length;
+    const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+    return {
+      period: range.label,
+      level: 'brands' as const,
+      bucket,
+      coverage: await this.bucketCoverage(range, query.area, bucket),
+      unknown_competitor_count: await this.unknownCompetitorCount(
+        range,
+        query.area,
+      ),
+      rows: pageRows,
+      pagination: { page, page_size: pageSize, total },
+    };
+  }
+
+  /** brand-bucket-detail level 2 — the SKU list (with price stats) for a brand. */
+  private async bucketSkus(
+    query: BrandBucketDetailQueryDto,
+    range: DateScope,
+    page: number,
+    pageSize: number,
+  ) {
+    const { bucket, brand_id } = query;
+
+    // label/key are sku.name+sku_id for TACO; raw_text for competitor/lain-lain.
+    const qb = this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .leftJoin('li.matched_sku', 'sku')
+        .select('inv.id', 'invoice_id')
+        .addSelect('AVG(CAST(li.unit_price AS numeric))', 'unit_price'),
+      range,
+      query.area,
+    );
+
+    if (bucket === 'taco') {
+      qb.addSelect('li.matched_sku_id', 'key')
+        .addSelect('MAX(sku.name)', 'label')
+        .where('li.matched_sku_id IS NOT NULL')
+        .groupBy('li.matched_sku_id')
+        .addGroupBy('inv.id');
+    } else if (bucket === 'kompetitor') {
+      if (!this.isUuid(brand_id)) {
+        return this.emptySkus(query, range, page, pageSize);
+      }
+      qb.addSelect('li.raw_text', 'key')
+        .addSelect('li.raw_text', 'label')
+        .where('li.brand_id = :brand_id', { brand_id })
+        .groupBy('li.raw_text')
+        .addGroupBy('inv.id');
+    } else {
+      qb.addSelect('li.raw_text', 'key')
+        .addSelect('li.raw_text', 'label')
+        .where(
+          'li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false',
+        )
+        .groupBy('li.raw_text')
+        .addGroupBy('inv.id');
+    }
+
+    const raw = await qb.getRawMany<{
+      invoice_id: string;
+      key: string | null;
+      label: string | null;
+      unit_price: string;
+    }>();
+
+    interface SkuAgg {
+      key: string;
+      label: string;
+      invoices: Set<string>;
+      prices: number[];
+    }
+    const bySku = new Map<string, SkuAgg>();
+    for (const r of raw) {
+      const key = r.key ?? '∅';
+      if (!bySku.has(key)) {
+        bySku.set(key, {
+          key,
+          label: (r.label ?? key).trim() || key,
+          invoices: new Set<string>(),
+          prices: [],
+        });
+      }
+      const s = bySku.get(key)!;
+      s.invoices.add(r.invoice_id);
+      const p = this.num(r.unit_price);
+      if (p > 0) s.prices.push(p);
+    }
+
+    const allRows = Array.from(bySku.values())
+      .map((s) => {
+        const sorted = [...s.prices].sort((a, b) => a - b);
+        const avg = sorted.length
+          ? Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length)
+          : 0;
+        return {
+          key: s.key,
+          label: s.label,
+          n_invoices: s.invoices.size,
+          p_min: sorted.length ? Math.round(sorted[0]) : 0,
+          p_avg: avg,
+          p_max: sorted.length ? Math.round(sorted[sorted.length - 1]) : 0,
+          sample_invoice_ids: Array.from(s.invoices).slice(0, 3),
+        };
+      })
+      .filter((r) => this.matchesQ(query.q, r.label))
+      .sort(
+        (a, b) => b.n_invoices - a.n_invoices || a.label.localeCompare(b.label),
+      );
+
+    const total = allRows.length;
+    const pageRows = allRows.slice((page - 1) * pageSize, page * pageSize);
+
+    return {
+      period: range.label,
+      level: 'skus' as const,
+      bucket,
+      brand_id: brand_id ?? null,
+      coverage: await this.bucketCoverage(range, query.area, bucket),
+      rows: pageRows,
+      pagination: { page, page_size: pageSize, total },
+    };
+  }
+
+  private emptySkus(
+    query: BrandBucketDetailQueryDto,
+    range: DateScope,
+    page: number,
+    pageSize: number,
+  ) {
+    return {
+      period: range.label,
+      level: 'skus' as const,
+      bucket: query.bucket,
+      brand_id: query.brand_id ?? null,
+      coverage: this.coverageOf([]),
+      rows: [],
+      pagination: { page, page_size: pageSize, total: 0 },
+    };
+  }
+
+  /** brand-bucket-detail level 3 — the invoice list for one SKU. */
+  private async bucketInvoices(
+    query: BrandBucketDetailQueryDto,
+    range: DateScope,
+    page: number,
+    pageSize: number,
+  ) {
+    const { bucket, brand_id, sku } = query;
+
+    const qb = this.applyScope(
+      this.lineItems
+        .createQueryBuilder('li')
+        .innerJoin('li.invoice', 'inv')
+        .leftJoin('regions', 'area', 'area.id = inv.area_id')
+        .leftJoin('taro_v2_stores', 'store', 'store.id = inv.store_id')
+        .select('inv.id', 'invoice_id')
+        .addSelect('inv.store_id', 'store_id')
+        .addSelect('inv.area_id', 'area_id')
+        .addSelect('MAX(store.name)', 'store_name')
+        .addSelect('MAX(area.name)', 'region_name')
+        .addSelect('MAX(inv.supplier_name)', 'supplier_name')
+        .addSelect(
+          `to_char(MAX(${this.EFF_DATE}), 'YYYY-MM-DD')`,
+          'invoice_date',
+        )
+        .addSelect('AVG(CAST(li.unit_price AS numeric))', 'unit_price')
+        .addSelect(this.IMAGE_ID_SUBQUERY, 'image_id'),
+      range,
+      query.area,
+    )
+      .groupBy('inv.id')
+      .addGroupBy('inv.store_id')
+      .addGroupBy('inv.area_id');
+
+    if (bucket === 'taco') {
+      if (!this.isUuid(sku))
+        return this.emptyInvoices(query, range, page, pageSize);
+      qb.where('li.matched_sku_id = :sku', { sku });
+    } else if (bucket === 'kompetitor') {
+      if (!this.isUuid(brand_id)) {
+        return this.emptyInvoices(query, range, page, pageSize);
+      }
+      qb.where('li.brand_id = :brand_id', { brand_id }).andWhere(
+        'li.raw_text = :sku',
+        { sku },
+      );
+    } else {
+      qb.where(
+        'li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false',
+      ).andWhere('li.raw_text = :sku', { sku });
+    }
+
+    const raw = await qb.getRawMany<RawHistoryObs>();
+
+    const all = raw
+      .map((r) => ({
+        invoice_id: r.invoice_id,
+        store_id: r.store_id,
+        area_id: r.area_id,
+        store_name: r.store_name ?? null,
+        region_name: r.region_name ?? null,
+        supplier_name: r.supplier_name ?? null,
+        invoice_date: r.invoice_date ?? null,
+        unit_price: Math.round(this.num(r.unit_price)),
+        image_url: this.imageUrl(r.image_id),
+      }))
+      .sort((a, b) =>
+        (b.invoice_date ?? '').localeCompare(a.invoice_date ?? ''),
+      );
+
+    const total = all.length;
+    const pageRows = all.slice((page - 1) * pageSize, page * pageSize);
+
+    return {
+      period: range.label,
+      level: 'invoices' as const,
+      bucket,
+      brand_id: brand_id ?? null,
+      sku: sku ?? null,
+      coverage: this.coverageOf(
+        all.map((r) => ({
+          invoice_id: r.invoice_id,
+          store_id: r.store_id,
+          area_id: r.area_id,
+          eff_date: r.invoice_date,
+        })),
+      ),
+      rows: pageRows.map((r) => ({
+        invoice_id: r.invoice_id,
+        store_name: r.store_name,
+        region_name: r.region_name,
+        supplier_name: r.supplier_name,
+        invoice_date: r.invoice_date,
+        unit_price: r.unit_price,
+        image_url: r.image_url,
+      })),
+      pagination: { page, page_size: pageSize, total },
+    };
+  }
+
+  private emptyInvoices(
+    query: BrandBucketDetailQueryDto,
+    range: DateScope,
+    page: number,
+    pageSize: number,
+  ) {
+    return {
+      period: range.label,
+      level: 'invoices' as const,
+      bucket: query.bucket,
+      brand_id: query.brand_id ?? null,
+      sku: query.sku ?? null,
+      coverage: this.coverageOf([]),
+      rows: [],
+      pagination: { page, page_size: pageSize, total: 0 },
+    };
+  }
+
+  // ---- shared bucket helpers -----------------------------------------------
+
+  /** Coverage over the invoices contributing to a bucket ('all' = every line). */
+  private async bucketCoverage(
+    range: DateScope,
+    area: string | undefined,
+    bucket: 'all' | 'taco' | 'kompetitor' | 'lain_lain',
+  ): Promise<Coverage> {
+    const qb = this.applyScope(
       this.invoices
         .createQueryBuilder('inv')
         .select('inv.id', 'invoice_id')
         .addSelect('inv.store_id', 'store_id')
         .addSelect('inv.area_id', 'area_id')
-        .addSelect(`${this.EFF_DATE_STR}`, 'eff_date')
-        .where(
-          'EXISTS (SELECT 1 FROM taro_v2_invoice_line_items t WHERE t.invoice_id = inv.id AND t.matched_sku_id IS NOT NULL)',
-        )
-        .andWhere(
-          'EXISTS (SELECT 1 FROM taro_v2_invoice_line_items cc WHERE cc.invoice_id = inv.id AND cc.is_competitor = true)',
-        ),
+        .addSelect(`${this.EFF_DATE_STR}`, 'eff_date'),
       range,
-      query.area,
-    ).getRawMany<{
-      invoice_id: string;
-      store_id: string | null;
-      area_id: string | null;
-      eff_date: string | null;
-    }>();
+      area,
+    );
 
-    const pagination: Pagination = { page, page_size: pageSize, total };
-
-    return {
-      period: range.label,
-      coverage: this.coverageOf(covRows),
-      rows,
-      pagination,
-      unknown_competitor_count: unknownCompetitorCount,
-      total_same_receipt_pairs: totalSameReceiptPairs,
+    const pred: Record<typeof bucket, string | null> = {
+      all: null,
+      taco: 'li.matched_sku_id IS NOT NULL',
+      kompetitor: 'li.brand_id IS NOT NULL',
+      lain_lain:
+        'li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false',
     };
+    const linePred = pred[bucket];
+    if (linePred) {
+      qb.andWhere(
+        `EXISTS (SELECT 1 FROM taro_v2_invoice_line_items li WHERE li.invoice_id = inv.id AND ${linePred})`,
+      );
+    }
+
+    const rows = await qb.getRawMany<RawCovRow>();
+    return this.coverageOf(rows);
   }
 
-  // ---- 6. sku-whitespace (AC-23, AC-24) ------------------------------------
-
-  /**
-   * R4 — (taco_sku × region) combinations NOT yet observed in the sample under
-   * the current period/area filter (AC-23). A combo is white-space when ZERO
-   * done invoices in scope for that region carry a line matched to that SKU.
-   * Framed as a research lead, not a distribution claim (AC-24 sub-line, FE).
-   *
-   * The cross product is `active taco_skus × active area-regions` (single region
-   * when the area filter is set); searchable by SKU / region name (AC-24),
-   * paginated 10/page. Coverage reflects the sample the anti-join is taken
-   * against (all done invoices in scope).
-   */
-  async skuWhitespace(query: SkuWhitespaceQueryDto) {
-    const range = this.resolveRange(query.period);
-    const { page, pageSize } = this.resolvePage(query);
-
-    // Region universe: active leaf areas (single region when the filter is set).
-    const regionQb = this.regions
-      .createQueryBuilder('r')
-      .select(['r.id AS id', 'r.name AS name'])
-      .where('r.type = :type', { type: RegionType.AREA })
-      .andWhere('r.active = true');
-    if (query.area) regionQb.andWhere('r.id = :area', { area: query.area });
-    const regionRows = await regionQb
-      .orderBy('r.name', 'ASC')
-      .getRawMany<{ id: string; name: string }>();
-
-    // SKU universe: the active TACO catalog.
-    const skuRows = await this.skus
-      .createQueryBuilder('s')
-      .select(['s.id AS id', 's.name AS name'])
-      .where('s.is_active = true')
-      .orderBy('s.name', 'ASC')
-      .getRawMany<{ id: string; name: string }>();
-
-    // Seen set: (matched_sku_id, area_id) observed in done invoices in scope.
-    const seenRows = await this.applyScope(
+  /** Unknown-competitor line count in scope (AC-41 footer). */
+  private async unknownCompetitorCount(
+    range: DateScope,
+    area: string | undefined,
+  ): Promise<number> {
+    const raw = await this.applyScope(
       this.lineItems
         .createQueryBuilder('li')
         .innerJoin('li.invoice', 'inv')
-        .select('li.matched_sku_id', 'sku_id')
-        .addSelect('inv.area_id', 'area_id')
-        .where('li.matched_sku_id IS NOT NULL')
-        .groupBy('li.matched_sku_id')
-        .addGroupBy('inv.area_id'),
+        .select('COUNT(*)', 'cnt')
+        .where('li.is_competitor = true')
+        .andWhere('li.brand_id IS NULL'),
       range,
-      query.area,
-    ).getRawMany<RawSeenPair>();
-
-    const seen = new Set<string>();
-    for (const r of seenRows) {
-      if (r.sku_id && r.area_id) seen.add(`${r.sku_id}|${r.area_id}`);
-    }
-
-    // Anti-join: every (sku, region) NOT in the seen set, then search-filter.
-    const allRows: Array<{
-      sku_id: string;
-      sku_name: string;
-      region_id: string;
-      region_name: string;
-    }> = [];
-    for (const region of regionRows) {
-      for (const sku of skuRows) {
-        if (seen.has(`${sku.id}|${region.id}`)) continue;
-        if (!this.matchesQ(query.q, sku.name, region.name)) continue;
-        allRows.push({
-          sku_id: sku.id,
-          sku_name: sku.name,
-          region_id: region.id,
-          region_name: region.name,
-        });
-      }
-    }
-
-    const total = allRows.length;
-    const rows = allRows.slice((page - 1) * pageSize, page * pageSize);
-    const pagination: Pagination = { page, page_size: pageSize, total };
-
-    const page0 = await this.coverage(query);
-    const coverage: Coverage = {
-      n_invoices: page0.n_invoices,
-      m_stores: page0.m_stores,
-      k_areas: page0.k_areas,
-      last_invoice_date: page0.last_invoice_date,
-    };
-
-    return { period: range.label, coverage, rows, pagination };
+      area,
+    ).getRawOne<{ cnt: string }>();
+    return this.num(raw?.cnt);
   }
 }

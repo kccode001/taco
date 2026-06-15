@@ -39,13 +39,13 @@ export class PaginatedMarketIntelQueryDto extends MarketIntelQueryDto {
   page_size?: string;
 }
 
-/** Price-bands (R2 hero) — paginated + searchable by SKU name. */
+/** Price-bands (Section 3 Laporan SKU) — paginated + searchable by SKU name. */
 export class PriceBandsQueryDto extends PaginatedMarketIntelQueryDto {}
 
 /**
- * Per-SKU price history (R5 modal). `sku_id` is the clicked band; `area` +
- * `store_id` are the IN-MODAL filters (AC-25/AC-27) — they default to "Semua"
- * (omitted) on the FE and re-fire this endpoint on change. The modal is
+ * Per-SKU price history (Section 3 detail modal). `sku_id` is the clicked row;
+ * `area` + `store_id` are in-modal filters (AC-25/AC-27) — they default to
+ * "Semua" (omitted) on the FE and re-fire this endpoint on change. The modal is
  * self-contained: it does NOT inherit the page-level area filter.
  */
 export class SkuPriceHistoryQueryDto extends MarketIntelQueryDto {
@@ -58,15 +58,77 @@ export class SkuPriceHistoryQueryDto extends MarketIntelQueryDto {
   store_id?: string;
 }
 
-/** Top-SKUs-per-area (R1) — same scope + an optional top-N per area (default 5). */
+/** Top-SKUs-per-area (Section 1 Top-10 TACO) — scope + optional top-N (def 5). */
 export class TopSkusPerAreaQueryDto extends MarketIntelQueryDto {
   @IsOptional()
   @IsString()
   top_n?: string;
 }
 
-/** Adu Harga (R3) — paginated + searchable same-receipt price-gap pairs. */
-export class PriceGapPairsQueryDto extends PaginatedMarketIntelQueryDto {}
+/**
+ * Top non-TACO card (Section 1, AC-31). Combines the resolved-competitor and
+ * non-competitor ("Lain-lain") buckets, brand-labeled, sortable by the median
+ * observed qty or unit price. `top_n` defaults to 10.
+ */
+export class TopNonTacoQueryDto extends MarketIntelQueryDto {
+  @IsOptional()
+  @IsString()
+  top_n?: string;
 
-/** White-Space (R4) — paginated + searchable (taco_sku × region) anti-join. */
-export class SkuWhitespaceQueryDto extends PaginatedMarketIntelQueryDto {}
+  /** `qty` (median observed quantity) or `price` (median observed unit price). */
+  @IsOptional()
+  @IsIn(['qty', 'price'])
+  sort?: 'qty' | 'price';
+}
+
+/** Category distribution + monthly trend (Section 2, AC-32/AC-33). */
+export class CategoryQueryDto extends MarketIntelQueryDto {
+  /** Only `month` is supported today; reserved for finer buckets later. */
+  @IsOptional()
+  @IsIn(['month'])
+  granularity?: 'month';
+}
+
+/** Category → SKU drill (Section 2 modal, AC-34). `category` is the pie slice. */
+export class CategorySkusQueryDto extends MarketIntelQueryDto {
+  /** A `catalog_category` value, or `Tidak terkategori` for the NULL bucket. */
+  @IsOptional()
+  @IsString()
+  category?: string;
+}
+
+/** Brand-bucket distribution pie (Section 4, AC-38/AC-41). */
+export class BrandBucketDistributionQueryDto extends MarketIntelQueryDto {}
+
+/**
+ * Brand-bucket drill modal (Section 4, AC-39/AC-40). One endpoint, three levels
+ * driven by the params present:
+ *   - bucket only            → `level=brands` (paginated brand list)
+ *   - bucket + brand_id      → `level=skus`   (per-brand SKU list + price stats)
+ *   - bucket + brand_id + sku→ `level=invoices` (invoice list for that SKU)
+ *
+ * `bucket` ∈ {taco, kompetitor, lain_lain}. `brand_id` is a competitor brand
+ * UUID for the Kompetitor bucket, or the sentinel `__taco__` / `__lain_lain__`
+ * returned by the brands level for the single-brand buckets — so it is a plain
+ * string, not a UUID. `sku` is a TACO sku_id (taco) or the raw competitor SKU
+ * label text (kompetitor / lain_lain) — the `key` the SKU level handed back.
+ */
+export class BrandBucketDetailQueryDto extends PaginatedMarketIntelQueryDto {
+  @IsIn(['taco', 'kompetitor', 'lain_lain'])
+  bucket: 'taco' | 'kompetitor' | 'lain_lain';
+
+  @IsOptional()
+  @IsString()
+  brand_id?: string;
+
+  @IsOptional()
+  @IsString()
+  sku?: string;
+}
+
+/** Per-store pricing sub-section + store pricing history (Section 3, AC-37). */
+export class SkuStorePricingQueryDto extends MarketIntelQueryDto {
+  @IsOptional()
+  @IsUUID()
+  sku_id?: string;
+}
