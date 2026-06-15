@@ -862,7 +862,9 @@ function BrandBucketDrillModal({
     setData(LOADING);
     fetchBrandBucketDetail(bucket, scope, {
       brand: brand?.id,
-      sku: sku?.label,
+      // Send the BE drill `key` (matched_sku_id for TACO, raw_text otherwise),
+      // captured as sku.id; fall back to label for safety.
+      sku: sku?.id ?? sku?.label,
       q: qDeb || undefined,
       page,
     })

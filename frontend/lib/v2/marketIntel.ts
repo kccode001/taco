@@ -290,14 +290,23 @@ function adaptCategoryDist(be: any): CategoryDistributionV2 {
     coverage: be?.coverage ? adaptCoverage(be.coverage) : undefined,
     total_taco_lines: total,
     categories: cats.map((c) => {
-      // Mortar's live field is `pct_of_taco_lines` (percent scale). Accept `pct`
-      // too, and fall back to n_lines/total so the legend never reads 0%.
-      const rawPct = c.pct ?? c.pct_of_taco_lines;
+      // Mortar's live field is `pct_of_taco_lines` (percent scale). PREFER it
+      // explicitly — `c.pct` can arrive as 0 (not null), and `??` would keep
+      // that 0 over the real value, which is the AC-32 "every slice 0%" bug.
+      // Fall back to legacy `pct`, then n_lines/total so the legend never reads 0%.
       const n = num(c.n_lines);
+      const pct =
+        c.pct_of_taco_lines != null
+          ? pctToFrac(c.pct_of_taco_lines)
+          : c.pct != null
+            ? pctToFrac(c.pct)
+            : total
+              ? n / total
+              : 0;
       return {
         category: c.category ?? "Tidak terkategori",
         n_lines: n,
-        pct: rawPct != null ? pctToFrac(rawPct) : total ? n / total : 0,
+        pct,
       };
     }),
   };
@@ -370,48 +379,55 @@ function adaptBrandBucketDist(be: any): BrandBucketDistributionV2 {
 }
 
 function adaptBrandBucketDetail(be: any): BrandBucketDetailV2 {
-  const inv: any[] = be?.invoices ?? [];
-  return {
+  // Mortar's live shape: ONE list per call under `be.rows`, with a `be.level`
+  // discriminator ("brands" | "skus" | "invoices"). Row field names differ from
+  // the FE canonical (id/name/key/label), so map per level. (The old adapter read
+  // be.brands/be.skus/be.invoices — never present live → every level empty.)
+  const level: string = be?.level ?? "";
+  const rows: any[] = be?.rows ?? [];
+  const out: BrandBucketDetailV2 = {
     coverage: be?.coverage ? adaptCoverage(be.coverage) : undefined,
     bucket: (be?.bucket ?? "kompetitor") as BrandBucket,
     pagination: adaptPagination(be?.pagination),
     unknown_competitor_count:
       be?.unknown_competitor_count != null ? num(be.unknown_competitor_count) : undefined,
-    brands: be?.brands
-      ? be.brands.map((b: any) => ({
-          brand_id: b.brand_id ?? null,
-          brand_name: b.brand_name ?? "",
-          n_lines: num(b.n_lines),
-          n_invoices: num(b.n_invoices),
-        }))
-      : undefined,
-    skus: be?.skus
-      ? be.skus.map((s: any) => ({
-          sku_label: s.sku_label ?? s.sku_name ?? "",
-          sku_code: s.sku_code ?? null,
-          sku_id: s.sku_id != null ? String(s.sku_id) : null,
-          n_invoices: num(s.n_invoices),
-          p_min: num(s.p_min),
-          p_avg: num(s.p_avg),
-          p_max: num(s.p_max),
-        }))
-      : undefined,
-    invoices: be?.invoices
-      ? inv.map(
-          (e: any): SkuPriceInvoiceRow => ({
-            invoice_id: String(e.invoice_id),
-            store_name: e.store_name ?? "",
-            region_name: e.region_name ?? "",
-            supplier_name: e.supplier_name ?? "",
-            invoice_date: e.invoice_date,
-            unit_price: num(e.unit_price),
-            quantity: e.quantity != null ? num(e.quantity) : null,
-            image_url: e.image_url ?? e.raw_image_url ?? null,
-            outlier_direction: e.outlier_direction ?? null,
-          })
-        )
-      : undefined,
   };
+
+  if (level === "brands") {
+    out.brands = rows.map((b: any) => ({
+      brand_id: (b.id ?? b.brand_id) != null ? String(b.id ?? b.brand_id) : null,
+      brand_name: b.name ?? b.brand_name ?? "",
+      n_lines: num(b.n_lines),
+      n_invoices: num(b.n_invoices),
+    }));
+  } else if (level === "skus") {
+    out.skus = rows.map((s: any) => ({
+      sku_label: s.label ?? s.sku_label ?? s.sku_name ?? "",
+      sku_code: s.sku_code ?? null,
+      // `key` is the drill token BE expects back as the `sku` param next level
+      // (matched_sku_id for TACO, raw_text for kompetitor/lain-lain).
+      sku_id: (s.key ?? s.sku_id) != null ? String(s.key ?? s.sku_id) : null,
+      n_invoices: num(s.n_invoices),
+      p_min: num(s.p_min),
+      p_avg: num(s.p_avg),
+      p_max: num(s.p_max),
+    }));
+  } else if (level === "invoices") {
+    out.invoices = rows.map(
+      (e: any): SkuPriceInvoiceRow => ({
+        invoice_id: String(e.invoice_id),
+        store_name: e.store_name ?? "",
+        region_name: e.region_name ?? "",
+        supplier_name: e.supplier_name ?? "",
+        invoice_date: e.invoice_date,
+        unit_price: num(e.unit_price),
+        quantity: e.quantity != null ? num(e.quantity) : null,
+        image_url: e.image_url ?? e.raw_image_url ?? null,
+        outlier_direction: e.outlier_direction ?? null,
+      })
+    );
+  }
+  return out;
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -1087,7 +1103,9 @@ export async function fetchBrandBucketDetail(
               bucket,
               page: String(page),
               page_size: String(PAGE_SIZE),
-              ...(opts?.brand ? { brand: opts.brand } : {}),
+              // BE reads `brand_id` (DTO) — sending `brand` left the drill stuck
+              // at level 1 (AC-39/40). `sku` carries the BE `key` token.
+              ...(opts?.brand ? { brand_id: opts.brand } : {}),
               ...(opts?.sku ? { sku: opts.sku } : {}),
               ...(opts?.q ? { q: opts.q } : {}),
             }),
