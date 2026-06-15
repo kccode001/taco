@@ -285,14 +285,21 @@ function adaptTopNonTacoInvoices(be: any): TopNonTacoInvoicesV2 {
 
 function adaptCategoryDist(be: any): CategoryDistributionV2 {
   const cats: any[] = be?.categories ?? be?.rows ?? [];
+  const total = num(be?.total_taco_lines);
   return {
     coverage: be?.coverage ? adaptCoverage(be.coverage) : undefined,
-    total_taco_lines: num(be?.total_taco_lines),
-    categories: cats.map((c) => ({
-      category: c.category ?? "Tidak terkategori",
-      n_lines: num(c.n_lines),
-      pct: c.pct != null ? pctToFrac(c.pct) : 0,
-    })),
+    total_taco_lines: total,
+    categories: cats.map((c) => {
+      // Mortar's live field is `pct_of_taco_lines` (percent scale). Accept `pct`
+      // too, and fall back to n_lines/total so the legend never reads 0%.
+      const rawPct = c.pct ?? c.pct_of_taco_lines;
+      const n = num(c.n_lines);
+      return {
+        category: c.category ?? "Tidak terkategori",
+        n_lines: n,
+        pct: rawPct != null ? pctToFrac(rawPct) : total ? n / total : 0,
+      };
+    }),
   };
 }
 

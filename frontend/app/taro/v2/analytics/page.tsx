@@ -288,17 +288,6 @@ function SearchInput({ q, onQ, placeholder, width = "w-[230px]" }: { q: string; 
   );
 }
 
-function SectionLabel({ n, title }: { n: string; title: string }) {
-  return (
-    <div className="flex items-center gap-2 mb-2 mt-2">
-      <div className="text-[11px] font-semibold text-taco-muted uppercase tracking-widest">
-        § {n} · {title}
-      </div>
-      <div className="h-px flex-1 bg-taco-divider" />
-    </div>
-  );
-}
-
 /** Donut chart from concentric arc segments (matches design HTML). */
 function Donut({
   slices,
@@ -1214,8 +1203,6 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* ════════ §1 OVERVIEW ════════ */}
-        <SectionLabel n="1" title="Overview" />
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           {/* Card 1 — Total Invoice Terunggah (AC-29) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
@@ -1329,8 +1316,6 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* ════════ §2 TACO KATEGORI ════════ */}
-        <SectionLabel n="2" title="TACO Kategori" />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Komposisi kategori TACO (AC-32) */}
           <Panel title="Komposisi kategori TACO" sub={SUB_CAT_PIE} coverage={panelCov(catDist.data)} coverageError={catDist.error} coverageLoading={catDist.loading}>
@@ -1391,14 +1376,12 @@ export default function AnalyticsPage() {
                     <span key={c} className="inline-flex items-center gap-1"><span className="w-3 border-t-2" style={{ borderColor: CAT_LINE_COLORS[i % CAT_LINE_COLORS.length] }} /> {c}</span>
                   ))}
                 </div>
-                <p className="text-[10px] text-taco-warning mt-2 leading-snug">⚠ Garis naik = lebih banyak invoice diunggah, bukan pasar tumbuh.</p>
+                <p className="text-[10px] text-taco-muted mt-2 leading-snug">Garis naik = lebih banyak invoice diunggah, bukan pasar tumbuh.</p>
               </>
             )}
           </Panel>
         </div>
 
-        {/* ════════ §3 LAPORAN SKU ════════ */}
-        <SectionLabel n="3" title="Laporan SKU" />
         <Panel title="Laporan SKU" sub={SUB_LAPORAN} coverage={panelCov(bands.data)} coverageError={bands.error} coverageLoading={bands.loading}>
           <div className="flex items-center justify-between gap-3 my-3 flex-wrap">
             <SearchInput q={bandsQ} onQ={setBandsQ} placeholder="Cari SKU / kode…" />
@@ -1448,8 +1431,6 @@ export default function AnalyticsPage() {
           )}
         </Panel>
 
-        {/* ════════ §4 KOMPOSISI MEREK ════════ */}
-        <SectionLabel n="4" title="Komposisi merek" />
         <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
           {brandDist.loading ? (
             <div className="flex items-center gap-8"><Skeleton className="w-[140px] h-[140px] rounded-full" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /><Skeleton className="h-4 w-2/3" /></div></div>
