@@ -292,17 +292,39 @@ export interface PriceBandOutlier {
   invoice_date?: string;
 }
 
-/** One per-SKU real-price band row (AC-4). */
+/** One per-SKU real-price band row (AC-4 + v3 qty extension AC-35/36). */
 export interface PriceBandRow {
   sku_id: string;
   sku_name: string;
+  /** Catalog SKU code (e.g. "HPL-TH061") — v3 Laporan SKU 2nd line. */
+  sku_code?: string | null;
+  /** catalog_category for display context (Laminates / Flooring / …). */
+  catalog_category?: string | null;
   n_invoices: number;
   p_min: number;
   p_median: number;
+  /** Mean unit_price (v3 Laporan SKU shows min·avg·maks). Falls back to median. */
+  p_avg?: number;
   p_max: number;
+  /** Σ unit_price across contributing lines (Total tag, AC-36). */
+  price_sum_sample?: number;
   /** (max − min) / median, as a fraction (0.34 = 34%). */
   spread_pct: number;
   outliers: PriceBandOutlier[];
+  // ── v3 qty stats (AC-35/36) ──
+  /** Quantity unit label from taco_skus.unit (e.g. "lbr", "roll", "m²"). */
+  unit?: string;
+  qty_min?: number;
+  qty_avg?: number;
+  qty_max?: number;
+  /** Σ quantity across lines with qty>0 (Total tag, AC-36). */
+  qty_sum_sample?: number;
+  /** Fraction of contributing lines with quantity missing/zero (0.64 = 64%). */
+  qty_missing_pct?: number;
+  /** Lines with quantity>0 (X in "qty terbaca dari X dari Y baris"). */
+  n_qty_present?: number;
+  /** Total contributing lines (Y in "qty terbaca dari X dari Y baris"). */
+  n_lines?: number;
 }
 
 /** /market-intel/price-bands?q=&page=&page_size=10 response (AC-4). */
@@ -314,11 +336,13 @@ export interface PriceBandsV2 {
 
 // ── R5 · SKU detail modal (sku-price-history) — AC-7/25/26/27 ──────────────
 
-/** One point on the SKU price-trend chart (AC-26 — date × unit_price). */
+/** One point on the SKU price-trend chart (AC-26 — date × unit_price [× qty]). */
 export interface SkuPriceTrendPoint {
   invoice_id: string;
   invoice_date: string;
   unit_price: number;
+  /** Quantity on this line (v3 dual-line chart, AC-26). Null when OCR missed it. */
+  quantity?: number | null;
   store_id: string | null;
   store_name: string;
   region_id: string | null;
@@ -336,21 +360,38 @@ export interface SkuPriceInvoiceRow {
   supplier_name: string;
   invoice_date: string;
   unit_price: number;
+  /** Quantity on the contributing line (v3 invoice list "· qty 14 lbr", AC-7). */
+  quantity?: number | null;
   image_url: string | null;
   outlier_direction?: "above" | "below" | null;
 }
 
 /** /market-intel/sku-price-history?sku_id=&period=&area=&store_id= response.
- *  Single endpoint backs the entire R5 modal (AC-7, AC-25, AC-26, AC-27). */
+ *  Single endpoint backs the entire R5/S-7 modal (AC-7, AC-25, AC-26, AC-27)
+ *  plus the v3 qty card + dual-line chart (AC-26/35/36). */
 export interface SkuPriceHistoryV2 {
   coverage?: CoverageV2;
   sku_id: string;
   sku_name: string;
+  /** v3 sub-title context. */
+  sku_code?: string | null;
+  catalog_category?: string | null;
   p_min: number;
   p_avg: number;
   p_max: number;
+  /** Σ unit_price (Total tag, AC-36). */
+  price_sum_sample?: number;
   trend: SkuPriceTrendPoint[];
   invoices: SkuPriceInvoiceRow[];
+  // ── v3 qty card (AC-26/35/36) ──
+  unit?: string;
+  qty_min?: number;
+  qty_avg?: number;
+  qty_max?: number;
+  qty_sum_sample?: number;
+  qty_missing_pct?: number;
+  n_qty_present?: number;
+  n_lines?: number;
 }
 
 // ── R1 · SKU Teratas per Wilayah (top-skus-per-area) — AC-8/9/18/19 ────────
@@ -427,6 +468,151 @@ export interface SkuWhitespaceV2 {
   coverage?: CoverageV2;
   rows: WhitespaceRow[];
   pagination?: PaginationV2;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v3 4-SECTION RESTRUCTURE (analytics-v3, 2026-06-15) — KC's 4 sections.
+// Reuses CoverageV2 / PaginationV2 / SkuPriceInvoiceRow above. Retired R3/R4
+// types (PriceGapPair*, Whitespace*) stay exported above for back-compat but
+// are no longer consumed by the page.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── §1 · Top-10 non-TACO combined (top-non-taco) — AC-31 ───────────────────
+/** One non-TACO row: competitor (🚩 brand) OR non-competitor (· lain-lain). */
+export interface TopNonTacoRow {
+  bucket: "kompetitor" | "lain_lain";
+  /** Resolved competitor brand name (null for lain-lain rows). */
+  brand_name: string | null;
+  /** SKU label / OCR product text. */
+  label: string;
+  sku_code?: string | null;
+  /** Occurrence count across invoices ("19×"). */
+  n_invoices: number;
+  /** Median observed qty (sort=qty) and unit price (sort=price). */
+  median_qty: number;
+  median_price: number;
+}
+/** /market-intel/top-non-taco?period=&area=&top_n=&sort=qty|price response. */
+export interface TopNonTacoV2 {
+  coverage?: CoverageV2;
+  rows: TopNonTacoRow[];
+}
+
+// ── §2 · Komposisi kategori TACO (category-distribution) — AC-32 ───────────
+export interface CategoryDistRow {
+  category: string;
+  n_lines: number;
+  /** Fraction OF TACO line items (0.46 = 46%). */
+  pct: number;
+}
+export interface CategoryDistributionV2 {
+  coverage?: CoverageV2;
+  total_taco_lines: number;
+  categories: CategoryDistRow[];
+}
+
+// ── §2 · Tren unggahan kategori (category-monthly-trend) — AC-33 ───────────
+export interface CategoryTrendCell {
+  /** Month bucket label, e.g. "Feb", "Mar". */
+  month: string;
+  category: string;
+  /** Distinct uploaded invoices that month containing ≥1 TACO line of category. */
+  invoice_count: number;
+}
+export interface CategoryMonthlyTrendV2 {
+  coverage?: CoverageV2;
+  months: string[];
+  categories: string[];
+  rows: CategoryTrendCell[];
+}
+
+// ── §2 · Category drill SKU list (category-skus) — AC-34 ───────────────────
+export interface CategorySkuRow {
+  sku_id: string;
+  sku_name: string;
+  sku_code?: string | null;
+  /** Finer taco_skus.category enum (HPL / ECO_HPL / SHEET / …). */
+  sub_category?: string | null;
+  n_invoices: number;
+}
+export interface CategorySkusV2 {
+  coverage?: CoverageV2;
+  category: string;
+  skus: CategorySkuRow[];
+  /** Distinct sub-categories present, for the secondary-grouping dropdown. */
+  sub_categories?: string[];
+}
+
+// ── §3 · Per-store pricing + history (sku-store-pricing) — AC-37 ───────────
+export interface StorePricePoint {
+  invoice_date: string;
+  unit_price: number;
+}
+export interface StorePricingRow {
+  store_id: string;
+  store_name: string;
+  region_name: string;
+  n_invoices: number;
+  p_min: number;
+  p_avg: number;
+  p_max: number;
+  /** This store's unit_price for the SKU over time (AC-37 history line). */
+  history: StorePricePoint[];
+}
+export interface SkuStorePricingV2 {
+  coverage?: CoverageV2;
+  stores: StorePricingRow[];
+}
+
+// ── §4 · Komposisi merek di invoice terunggah (brand-bucket-distribution) ──
+export type BrandBucket = "taco" | "kompetitor" | "lain_lain";
+export interface BrandBucketSlice {
+  bucket: BrandBucket;
+  n_lines: number;
+  /** Fraction of (TACO + Kompetitor + Lain-lain) lines — sums to 1.0 (AC-38.1). */
+  pct: number;
+}
+export interface BrandBucketDistributionV2 {
+  coverage?: CoverageV2;
+  buckets: BrandBucketSlice[];
+  /** is_unknown competitor lines — EXCLUDED from buckets, footer only (AC-41). */
+  unknown_competitor_count: number;
+}
+
+// ── §4 · Brand-bucket drill (brand-bucket-detail) — AC-39/40 ───────────────
+/** Level 1 — a brand within the clicked bucket. */
+export interface BrandRow {
+  brand_id: string | null;
+  /** Resolved brand name (Kompetitor), "TACO" (TACO bucket), OCR text (Lain-lain). */
+  brand_name: string;
+  n_lines: number;
+  n_invoices: number;
+}
+/** Level 2 — a SKU under a brand, with price stats (AC-40, no Total here). */
+export interface BrandSkuRow {
+  /** Canonical name for TACO; OCR-resolved text for Kompetitor / Lain-lain. */
+  sku_label: string;
+  sku_code?: string | null;
+  /** TACO SKU id when resolvable (lets the row reuse sku-price-history). */
+  sku_id?: string | null;
+  n_invoices: number;
+  p_min: number;
+  p_avg: number;
+  p_max: number;
+}
+/** Hierarchical drill response — one level populated per call (lazy). */
+export interface BrandBucketDetailV2 {
+  coverage?: CoverageV2;
+  bucket: BrandBucket;
+  /** level=brands */
+  brands?: BrandRow[];
+  /** level=skus */
+  skus?: BrandSkuRow[];
+  /** level=invoices (reuses the invoice-row shape: store/region/supplier/date/price/qty/image). */
+  invoices?: SkuPriceInvoiceRow[];
+  pagination?: PaginationV2;
+  /** Footer chip count, echoed on every level for the Lain-lain note (AC-41). */
+  unknown_competitor_count?: number;
 }
 
 /** /dashboard/ai-insight?period= — single LLM-generated market-demand insight. */
