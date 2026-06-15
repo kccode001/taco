@@ -98,6 +98,7 @@ interface RawPriceObs {
   supplier_name: string | null;
   unit_price: string;
   qty_obs: string;
+  price_sum_obs: string;
   line_count: string;
   line_with_qty: string;
 }
@@ -499,6 +500,10 @@ export class MarketIntelService {
         .addSelect('MAX(inv.supplier_name)', 'supplier_name')
         .addSelect('AVG(CAST(li.unit_price AS numeric))', 'unit_price')
         .addSelect('SUM(CAST(li.quantity AS numeric))', 'qty_obs')
+        .addSelect(
+          'SUM(CASE WHEN CAST(li.quantity AS numeric) > 0 THEN CAST(li.unit_price AS numeric) * CAST(li.quantity AS numeric) ELSE 0 END)',
+          'price_sum_obs',
+        )
         .addSelect('COUNT(*)', 'line_count')
         .addSelect(
           'SUM(CASE WHEN CAST(li.quantity AS numeric) > 0 THEN 1 ELSE 0 END)',
@@ -526,6 +531,7 @@ export class MarketIntelService {
       supplier_name: string | null;
       unit_price: number;
       qty_obs: number;
+      price_sum_obs: number;
       line_count: number;
       line_with_qty: number;
     }
@@ -550,6 +556,7 @@ export class MarketIntelService {
         supplier_name: r.supplier_name,
         unit_price: this.num(r.unit_price),
         qty_obs: this.num(r.qty_obs),
+        price_sum_obs: this.num(r.price_sum_obs),
         line_count: this.num(r.line_count),
         line_with_qty: this.num(r.line_with_qty),
       });
@@ -607,6 +614,11 @@ export class MarketIntelService {
         p_median: Math.round(pMed),
         p_max: Math.round(pMax),
         spread_pct: spreadPct,
+        // AC-36 Total column: Σ(unit_price × qty) over sampled lines with qty
+        // present (qty-missing lines excluded, same honest-qty rule as qty_sum).
+        price_sum_sample: Math.round(
+          b.obs.reduce((s, o) => s + o.price_sum_obs, 0),
+        ),
         ...this.qtyStats(
           b.obs.map((o) => ({
             qty: o.qty_obs,
