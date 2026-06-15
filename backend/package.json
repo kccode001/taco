@@ -29,7 +29,8 @@
     "seed:taco-adhesive-skus": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-taco-adhesive-skus.ts",
     "seed:clear-taro-data": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/clear-taro-data.ts",
     "seed:v2-stores": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-v2-stores.ts",
-    "seed:v2-competitors": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-v2-competitors.ts"
+    "seed:v2-competitors": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-v2-competitors.ts",
+    "seed:v2-analytics-demo": "ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register src/database/seeds/seed-v2-analytics-demo.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
