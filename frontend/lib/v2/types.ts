@@ -498,6 +498,31 @@ export interface TopNonTacoV2 {
   rows: TopNonTacoRow[];
 }
 
+// ── §1 card 4 (REVISED 2026-06-15) · invoices most dominated by non-TACO value ─
+/** One uploaded invoice ranked by non-TACO share of invoice value (AC-31). */
+export interface TopNonTacoInvoiceRow {
+  invoice_id: string;
+  store_name: string;
+  region_name: string;
+  invoice_date: string;
+  /** Σ(unit_price × qty) over TACO lines. */
+  taco_value: number;
+  /** Σ(unit_price × qty) over Kompetitor + Lain-lain lines (unknown excluded). */
+  non_taco_value: number;
+  total_value: number;
+  /** Fractions 0..1 (taco_share + non_taco_share = 1 over the valued lines). */
+  taco_share: number;
+  non_taco_share: number;
+  /** Disclosed (not hidden): lines dropped from the value sums for missing qty. */
+  qty_missing_lines?: number;
+  unknown_competitor_count?: number;
+}
+/** /market-intel/top-non-taco-invoices?period=&area=&top_n= response (AC-31). */
+export interface TopNonTacoInvoicesV2 {
+  coverage?: CoverageV2;
+  rows: TopNonTacoInvoiceRow[];
+}
+
 // ── §2 · Komposisi kategori TACO (category-distribution) — AC-32 ───────────
 export interface CategoryDistRow {
   category: string;

@@ -14,7 +14,7 @@ import {
 import {
   fetchCoverage,
   fetchTopSkusPerArea,
-  fetchTopNonTaco,
+  fetchTopNonTacoInvoices,
   fetchCategoryDistribution,
   fetchCategoryMonthlyTrend,
   fetchCategorySkus,
@@ -43,7 +43,7 @@ import type {
   SkuStorePricingV2,
   StorePricingRow,
   TopSkusPerAreaV2,
-  TopNonTacoV2,
+  TopNonTacoInvoicesV2,
   CategoryDistributionV2,
   CategoryMonthlyTrendV2,
   CategorySkusV2,
@@ -102,7 +102,9 @@ const PERIODS = [
 
 // Locked AC-28 sub-lines (HONEST COPY LOCK, spec §3 — rendered verbatim).
 const SUB_FREQ = "Berdasarkan kemunculan di invoice terunggah — bukan volume penjualan.";
-const SUB_NONTACO = "Angka dari invoice yang diunggah, bukan total pasar.";
+// AC-31 (revised 2026-06-15) locked sub-line — a negated market-share
+// disclaimer, allowlisted alongside the §4 pie sub-line for the AC-15 guard.
+const SUB_NONTACO_INV = "Porsi nilai dalam tiap invoice terunggah — bukan pangsa pasar.";
 const SUB_CAT_PIE =
   "Porsi baris TACO per kategori — dari invoice terunggah, bukan pangsa kategori pasar.";
 const SUB_CAT_LINE = "Jumlah invoice terunggah per bulan.";
@@ -992,14 +994,14 @@ export default function AnalyticsPage() {
   // Scope-driven panels
   const [cov, setCov] = useState<Async<CoverageV2>>(LOADING);
   const [top, setTop] = useState<Async<TopSkusPerAreaV2>>(LOADING);
-  const [nonTaco, setNonTaco] = useState<Async<TopNonTacoV2>>(LOADING);
+  const [nonTacoInv, setNonTacoInv] = useState<Async<TopNonTacoInvoicesV2>>(LOADING);
   const [catDist, setCatDist] = useState<Async<CategoryDistributionV2>>(LOADING);
   const [catTrend, setCatTrend] = useState<Async<CategoryMonthlyTrendV2>>(LOADING);
   const [brandDist, setBrandDist] = useState<Async<BrandBucketDistributionV2>>(LOADING);
 
-  // §1 card 3 + card 4 controls
+  // §1 card 3 + card 4 local per-area filters (default Semua wilayah)
   const [card3Area, setCard3Area] = useState(""); // region_id within returned data; "" = Semua
-  const [nonTacoSort, setNonTacoSort] = useState<"qty" | "price">("qty");
+  const [card4Area, setCard4Area] = useState(""); // region_id; "" = inherit page scope
 
   // §3 Laporan SKU
   const [bands, setBands] = useState<Async<PriceBandsV2>>(LOADING);
@@ -1060,15 +1062,19 @@ export default function AnalyticsPage() {
   useEffect(() => {
     loadScope();
     setCard3Area("");
+    setCard4Area("");
   }, [loadScope]);
 
-  // card 4 — re-fetch on sort change (server sort=qty|price).
+  // card 4 — Top-10 invoices most dominated by non-TACO value (AC-31).
+  // Local per-area dropdown narrows further; "" inherits the page scope.
   useEffect(() => {
     let alive = true;
-    setNonTaco(LOADING);
-    fetchTopNonTaco(scope, nonTacoSort).then((d) => alive && setNonTaco({ loading: false, error: false, data: d })).catch(() => alive && setNonTaco({ loading: false, error: true, data: null }));
+    setNonTacoInv(LOADING);
+    fetchTopNonTacoInvoices({ period, area: card4Area || area || undefined })
+      .then((d) => alive && setNonTacoInv({ loading: false, error: false, data: d }))
+      .catch(() => alive && setNonTacoInv({ loading: false, error: true, data: null }));
     return () => { alive = false; };
-  }, [scope, nonTacoSort]);
+  }, [period, area, card4Area]);
 
   // §3 reset page on scope change
   useEffect(() => {
@@ -1272,42 +1278,54 @@ export default function AnalyticsPage() {
             <div className="mt-auto pt-2 text-[10px] text-taco-muted">Top 10 · gulir untuk selengkapnya</div>
           </div>
 
-          {/* Card 4 — Top 10 non-TACO combined (AC-31) */}
+          {/* Card 4 — Top 10 invoices most dominated by non-TACO value (AC-31, revised) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
-            <div className="text-[13px] font-semibold text-taco-text leading-snug">Top 10 paling sering muncul — Kompetitor + Lain-lain</div>
-            <div className="text-[10px] text-taco-sub mt-0.5 leading-snug">{SUB_NONTACO}</div>
-            <div className="flex items-center gap-1 mt-2 text-[11px]">
-              <span className="text-taco-muted">Urutkan:</span>
-              {(["qty", "price"] as const).map((s) => (
-                <button key={s} onClick={() => setNonTacoSort(s)} className={`px-2 h-6 rounded-md font-semibold ${nonTacoSort === s ? "bg-taco-accent text-white" : "bg-white border border-taco-border text-taco-sub"}`}>
-                  {s === "qty" ? "qty tercatat" : "harga tercatat"}
-                </button>
+            <div className="text-[13px] font-semibold text-taco-text leading-snug">Top 10 invoice paling dikuasai non-TACO (per nilai)</div>
+            <div className="text-[10px] text-taco-sub mt-0.5 leading-snug">{SUB_NONTACO_INV}</div>
+            <select value={card4Area} onChange={(e) => setCard4Area(e.target.value)} className="h-7 mt-2 px-2 rounded-lg text-[11px] bg-white border border-taco-border text-taco-text w-full outline-none">
+              <option value="">Semua wilayah</option>
+              {areaOptions.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
               ))}
-            </div>
-            {nonTaco.loading ? (
-              <div className="space-y-1.5 mt-2.5"><Skeleton className="h-3 w-full" /><Skeleton className="h-3 w-5/6" /><Skeleton className="h-3 w-2/3" /></div>
-            ) : nonTaco.error ? (
+            </select>
+            {nonTacoInv.loading ? (
+              <div className="space-y-1.5 mt-2.5"><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-5/6" /><Skeleton className="h-8 w-2/3" /></div>
+            ) : nonTacoInv.error ? (
               <div className="text-[12px] text-taco-muted py-4">Gagal memuat.</div>
-            ) : (nonTaco.data?.rows ?? []).length === 0 ? (
-              <div className="text-[12px] text-taco-muted py-4">Belum ada baris non-TACO pada filter ini.</div>
+            ) : (nonTacoInv.data?.rows ?? []).length === 0 ? (
+              <div className="text-[12px] text-taco-muted py-4">Belum ada invoice pada filter ini.</div>
             ) : (
-              <ol className="mt-2.5 space-y-1.5 text-[12px] max-h-[160px] overflow-y-auto">
-                {nonTaco.data!.rows.slice(0, 10).map((r, i) => (
-                  <li key={`${r.label}-${i}`} className="flex items-center gap-2">
-                    <span className="text-taco-muted tabular-nums w-3.5">{i + 1}</span>
-                    <span className="text-taco-text truncate flex-1">
-                      {r.bucket === "kompetitor" ? (
-                        <>🚩 {r.brand_name} {r.sku_code && <span className="text-taco-sub">{r.sku_code}</span>}</>
-                      ) : (
-                        <>{r.label} <span className="text-taco-muted">· lain-lain</span></>
-                      )}
-                    </span>
-                    <span className="text-taco-muted tabular-nums text-[11px]">{r.n_invoices}×</span>
-                  </li>
-                ))}
+              <ol className="mt-2.5 space-y-2 text-[12px] max-h-[200px] overflow-y-auto pr-1">
+                {nonTacoInv.data!.rows.slice(0, 10).map((r) => {
+                  const tacoPct = Math.round(r.taco_share * 100);
+                  const nonPct = Math.round(r.non_taco_share * 100);
+                  return (
+                    <li key={r.invoice_id}>
+                      <a href={`/taro/v2/invoices/${r.invoice_id}`} className="block rounded-lg border border-taco-divider hover:border-taco-accent px-2 py-1.5 cursor-pointer">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-taco-text font-medium truncate">{r.store_name} <span className="text-taco-sub font-normal">· {r.region_name}</span></span>
+                          <span className="text-taco-muted tabular-nums text-[10px] flex-shrink-0">{fmtDate(r.invoice_date)}</span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex-1 h-2.5 rounded-full overflow-hidden bg-taco-divider flex">
+                            <div className="h-full bg-taco-accent" style={{ width: `${tacoPct}%` }} />
+                            <div className="h-full bg-taco-text" style={{ width: `${nonPct}%` }} />
+                          </div>
+                          <span className="text-[10px] text-taco-sub tabular-nums whitespace-nowrap">TACO {tacoPct}% · non-TACO {nonPct}%</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1 text-[10px]">
+                          <span className="text-taco-muted tabular-nums">{compactRp(r.total_value)}</span>
+                          {(r.qty_missing_lines ?? 0) > 0 && (
+                            <span className="text-taco-warning">⚠ {r.qty_missing_lines} baris tanpa qty</span>
+                          )}
+                        </div>
+                      </a>
+                    </li>
+                  );
+                })}
               </ol>
             )}
-            <div className="mt-auto pt-2 text-[10px] text-taco-muted">🚩 = kompetitor terverifikasi · sisanya lain-lain</div>
+            <div className="mt-auto pt-2 text-[10px] text-taco-muted">Klik baris → detail invoice (per-baris + ember)</div>
           </div>
         </div>
 

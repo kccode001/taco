@@ -35,6 +35,8 @@ import type {
   TopSkusPerAreaV2,
   TopNonTacoV2,
   TopNonTacoRow,
+  TopNonTacoInvoicesV2,
+  TopNonTacoInvoiceRow,
   CategoryDistributionV2,
   CategoryMonthlyTrendV2,
   CategorySkusV2,
@@ -253,6 +255,31 @@ function adaptTopNonTaco(be: any): TopNonTacoV2 {
         median_price: num(r.median_price),
       })
     ),
+  };
+}
+
+function adaptTopNonTacoInvoices(be: any): TopNonTacoInvoicesV2 {
+  return {
+    coverage: be?.coverage ? adaptCoverage(be.coverage) : undefined,
+    rows: (be?.rows ?? []).map((r: any): TopNonTacoInvoiceRow => {
+      const ts = num(r.taco_share);
+      const ns = num(r.non_taco_share);
+      // Shares may arrive as fractions (0.9) or percents (90); normalise to 0..1.
+      const scale = ts > 1 || ns > 1 ? 100 : 1;
+      return {
+        invoice_id: String(r.invoice_id),
+        store_name: r.store_name ?? "",
+        region_name: r.region ?? r.region_name ?? "",
+        invoice_date: r.invoice_date,
+        taco_value: num(r.taco_value),
+        non_taco_value: num(r.non_taco_value),
+        total_value: num(r.total_value),
+        taco_share: ts / scale,
+        non_taco_share: ns / scale,
+        qty_missing_lines: r.qty_missing_lines != null ? num(r.qty_missing_lines) : undefined,
+        unknown_competitor_count: r.unknown_competitor_count != null ? num(r.unknown_competitor_count) : undefined,
+      };
+    }),
   };
 }
 
@@ -657,6 +684,22 @@ function buildMockTopNonTaco(sort: string): TopNonTacoV2 {
   return { coverage: fullCov, rows };
 }
 
+const MOCK_NONTACO_INVOICES: TopNonTacoInvoiceRow[] = [
+  { invoice_id: "3142", store_name: "Toko Maju Interior", region_name: "Jakarta", invoice_date: "2026-06-12", taco_value: 480000, non_taco_value: 4320000, total_value: 4800000, taco_share: 0.1, non_taco_share: 0.9, qty_missing_lines: 1, unknown_competitor_count: 2 },
+  { invoice_id: "3120", store_name: "Sumber Dekorasi", region_name: "Bandung", invoice_date: "2026-06-11", taco_value: 760000, non_taco_value: 3040000, total_value: 3800000, taco_share: 0.2, non_taco_share: 0.8, qty_missing_lines: 0, unknown_competitor_count: 0 },
+  { invoice_id: "3098", store_name: "Interior Jaya", region_name: "Surabaya", invoice_date: "2026-06-10", taco_value: 900000, non_taco_value: 2100000, total_value: 3000000, taco_share: 0.3, non_taco_share: 0.7, qty_missing_lines: 2, unknown_competitor_count: 1 },
+  { invoice_id: "3071", store_name: "Toko Karya Panel", region_name: "Jakarta", invoice_date: "2026-06-08", taco_value: 1320000, non_taco_value: 2080000, total_value: 3400000, taco_share: 0.39, non_taco_share: 0.61, qty_missing_lines: 0, unknown_competitor_count: 0 },
+  { invoice_id: "3055", store_name: "Mitra Laminate", region_name: "Medan", invoice_date: "2026-06-07", taco_value: 1100000, non_taco_value: 1650000, total_value: 2750000, taco_share: 0.4, non_taco_share: 0.6, qty_missing_lines: 1, unknown_competitor_count: 0 },
+  { invoice_id: "3030", store_name: "Sumber Panel", region_name: "Bandung", invoice_date: "2026-06-05", taco_value: 1500000, non_taco_value: 1500000, total_value: 3000000, taco_share: 0.5, non_taco_share: 0.5, qty_missing_lines: 0, unknown_competitor_count: 3 },
+];
+
+function buildMockTopNonTacoInvoices(): TopNonTacoInvoicesV2 {
+  const rows = [...MOCK_NONTACO_INVOICES].sort(
+    (a, b) => b.non_taco_share - a.non_taco_share || b.non_taco_value - a.non_taco_value
+  );
+  return { coverage: fullCov, rows };
+}
+
 const MOCK_CATEGORIES: { category: string; n_lines: number }[] = [
   { category: "Laminates", n_lines: 214 },
   { category: "Flooring", n_lines: 112 },
@@ -845,6 +888,25 @@ export async function fetchTopNonTaco(
     () => {
       if (miDebugState() === "thin") return { coverage: thinCoverage(), rows: [] };
       return buildMockTopNonTaco(sort);
+    }
+  );
+}
+
+export async function fetchTopNonTacoInvoices(
+  scope: MarketScope
+): Promise<TopNonTacoInvoicesV2> {
+  return liveOrMock<TopNonTacoInvoicesV2>(
+    async () =>
+      adaptTopNonTacoInvoices(
+        (
+          await api.get("/v2/market-intel/top-non-taco-invoices", {
+            params: miParams(scope, { top_n: "10" }),
+          })
+        ).data
+      ),
+    () => {
+      if (miDebugState() === "thin") return { coverage: thinCoverage(), rows: [] };
+      return buildMockTopNonTacoInvoices();
     }
   );
 }
