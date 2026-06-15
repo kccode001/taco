@@ -20,23 +20,53 @@ export class MarketIntelQueryDto {
   area?: string;
 }
 
-/** Price-bands — same scope + an optional top-N SKU cap (default 10). */
-export class PriceBandsQueryDto extends MarketIntelQueryDto {
+/**
+ * Server-side search + pagination (PRD §8): `q` is a case-insensitive substring
+ * filter (per-endpoint columns); `page` is 1-based; `page_size` defaults to 10.
+ * Both numeric params arrive as query strings and are clamped in the service.
+ */
+export class PaginatedMarketIntelQueryDto extends MarketIntelQueryDto {
   @IsOptional()
   @IsString()
-  limit?: string;
+  q?: string;
+
+  @IsOptional()
+  @IsString()
+  page?: string;
+
+  @IsOptional()
+  @IsString()
+  page_size?: string;
 }
 
-/** Per-SKU evidence drawer — requires the SKU id whose band was clicked. */
-export class SkuEvidenceQueryDto extends MarketIntelQueryDto {
+/** Price-bands (R2 hero) — paginated + searchable by SKU name. */
+export class PriceBandsQueryDto extends PaginatedMarketIntelQueryDto {}
+
+/**
+ * Per-SKU price history (R5 modal). `sku_id` is the clicked band; `area` +
+ * `store_id` are the IN-MODAL filters (AC-25/AC-27) — they default to "Semua"
+ * (omitted) on the FE and re-fire this endpoint on change. The modal is
+ * self-contained: it does NOT inherit the page-level area filter.
+ */
+export class SkuPriceHistoryQueryDto extends MarketIntelQueryDto {
   @IsOptional()
   @IsUUID()
   sku_id?: string;
+
+  @IsOptional()
+  @IsUUID()
+  store_id?: string;
 }
 
-/** Demand-mix — same scope + an optional top-N SKUs-per-area cap (default 5). */
-export class DemandMixQueryDto extends MarketIntelQueryDto {
+/** Top-SKUs-per-area (R1) — same scope + an optional top-N per area (default 5). */
+export class TopSkusPerAreaQueryDto extends MarketIntelQueryDto {
   @IsOptional()
   @IsString()
   top_n?: string;
 }
+
+/** Adu Harga (R3) — paginated + searchable same-receipt price-gap pairs. */
+export class PriceGapPairsQueryDto extends PaginatedMarketIntelQueryDto {}
+
+/** White-Space (R4) — paginated + searchable (taco_sku × region) anti-join. */
+export class SkuWhitespaceQueryDto extends PaginatedMarketIntelQueryDto {}

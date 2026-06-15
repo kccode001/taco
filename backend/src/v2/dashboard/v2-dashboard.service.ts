@@ -366,11 +366,11 @@ export class V2DashboardService {
 
   /**
    * Build the honest market-intel signal pack the brief is written from. These
-   * are the SAME six `/api/v2/market-intel/*` endpoints the revamped analytics
-   * page renders — real transacted price bands, per-SKU invoice evidence (each
-   * carrying its invoice id), per-area demand frequency, TACO+competitor basket
-   * co-occurrence, and distributor sampling — NOT the legacy share/qty rollups
-   * (those reintroduce the market-share/volume framing the revamp exists to kill).
+   * are the SAME `/api/v2/market-intel/*` endpoints the revamped analytics page
+   * renders — real transacted price bands, per-SKU invoice price history (each
+   * carrying its invoice id), per-area top SKUs by occurrence frequency, and
+   * same-receipt TACO-vs-competitor price gaps — NOT the legacy share/qty
+   * rollups (those reintroduce the market-share/volume framing the revamp kills).
    *
    * Crucially it surfaces the real contributing invoice IDs (short 8-char form)
    * so the brief can cite concrete evidence per bullet (AC-13).
@@ -380,13 +380,11 @@ export class V2DashboardService {
     const cite = (id: string) => id.slice(0, 8);
 
     const coverage = await this.marketIntel.coverage(scope);
-    const [priceBands, demandMix, competitorBasket, distributor] =
-      await Promise.all([
-        this.marketIntel.priceBands({ ...scope, limit: '6' }),
-        this.marketIntel.demandMix({ ...scope, top_n: '5' }),
-        this.marketIntel.competitorBasket(scope),
-        this.marketIntel.distributorPerformance(scope),
-      ]);
+    const [priceBands, topSkus, priceGaps] = await Promise.all([
+      this.marketIntel.priceBands({ ...scope, page_size: '6' }),
+      this.marketIntel.topSkusPerArea({ ...scope, top_n: '5' }),
+      this.marketIntel.priceGapPairs({ ...scope, page_size: '8' }),
+    ]);
 
     // Per-SKU invoice evidence for the top bands — the citable invoice IDs.
     const price_evidence: Array<{
@@ -413,7 +411,7 @@ export class V2DashboardService {
       }>;
     }> = [];
     for (const band of priceBands.price_bands.slice(0, 5)) {
-      const ev = await this.marketIntel.skuEvidence({
+      const ev = await this.marketIntel.skuPriceHistory({
         ...scope,
         sku_id: band.sku_id,
       });
@@ -431,7 +429,7 @@ export class V2DashboardService {
           unit_price: o.unit_price,
           direction: o.direction,
         })),
-        invoices: ev.evidence.slice(0, 6).map((e) => ({
+        invoices: ev.invoices.slice(0, 6).map((e) => ({
           cite: cite(e.invoice_id),
           store_name: e.store_name,
           region_name: e.region_name,
@@ -442,14 +440,29 @@ export class V2DashboardService {
       });
     }
 
+    // R3 head-to-head price gaps (same-receipt TACO vs resolved competitor) —
+    // the honest competitor signal that replaces the cut co-occurrence basket.
+    const price_gaps = priceGaps.rows.map((r) => ({
+      cite: cite(r.invoice_id),
+      store_name: r.store_name,
+      region_name: r.region_name,
+      taco_sku_name: r.taco_sku_name,
+      taco_unit_price: r.taco_unit_price,
+      competitor_brand_name: r.competitor_brand_name,
+      competitor_unit_price: r.competitor_unit_price,
+      gap_rp: r.gap_rp,
+      gap_pct: r.gap_pct,
+    }));
+
     // The pool of invoice IDs the brief is permitted to cite.
     const citable_invoice_ids = Array.from(
-      new Set(
-        price_evidence.flatMap((s) => [
+      new Set([
+        ...price_evidence.flatMap((s) => [
           ...s.invoices.map((i) => i.cite),
           ...s.outliers.map((o) => o.cite),
         ]),
-      ),
+        ...price_gaps.map((p) => p.cite),
+      ]),
     );
 
     return {
@@ -457,14 +470,12 @@ export class V2DashboardService {
       scope_area: query.area ?? null,
       coverage,
       price_evidence,
-      demand_mix: demandMix.regions,
-      competitor_basket: {
-        n_invoices: competitorBasket.n_invoices,
-        n_with_taco_and_competitor: competitorBasket.n_with_taco_and_competitor,
-        co_occurrence_pct: competitorBasket.co_occurrence_pct,
-        top_brands: competitorBasket.top_brands,
+      top_skus_per_area: topSkus.regions,
+      price_gaps: {
+        pairs: price_gaps,
+        unknown_competitor_count: priceGaps.unknown_competitor_count,
+        total_same_receipt_pairs: priceGaps.total_same_receipt_pairs,
       },
-      distributor_performance: distributor.distributors,
       citable_invoice_ids,
     };
   }
@@ -502,11 +513,10 @@ export class V2DashboardService {
       'Jangan pernah menyiratkan pangsa pasar, market share, persen pasar, total/volume penjualan, atau peringkat "area terkuat/terlemah". ' +
       'Anda menerima sinyal jujur dari invoice tersampel:\n' +
       '- price_evidence: band harga nyata per SKU (min/median/max + spread% + outlier) dengan bukti invoice (tiap baris punya kode invoice `cite`).\n' +
-      '- demand_mix: seberapa SERING SKU muncul di invoice per wilayah (occurrence, BUKAN volume terjual).\n' +
-      '- competitor_basket: berapa invoice memuat TACO + kompetitor bersamaan (ko-okurensi keranjang, bukan pangsa) + merek kompetitor yang sudah dikenali.\n' +
-      '- distributor_performance: per distributor — jumlah invoice yang KAMI sampel, rata-rata nilai invoice, terakhir terlihat.\n' +
+      '- top_skus_per_area: seberapa SERING SKU muncul di invoice per wilayah (occurrence, BUKAN volume terjual).\n' +
+      '- price_gaps: adu harga di NOTA YANG SAMA — baris TACO vs kompetitor yang dikenali pada satu invoice, dengan selisih Rupiah & % (gap_pct); plus unknown_competitor_count (observasi kompetitor tak dikenali).\n' +
       '- citable_invoice_ids: daftar kode invoice yang BOLEH Anda kutip.\n' +
-      'Tugas: tulis ringkasan manajemen Bahasa Indonesia, format MARKDOWN, berupa TEPAT 3 poin bullet — masing-masing satu sinyal paling penting (mis. anomali/sebaran harga nyata, tekanan kompetitor di satu wilayah, atau distributor yang paling sering muncul).\n' +
+      'Tugas: tulis ringkasan manajemen Bahasa Indonesia, format MARKDOWN, berupa TEPAT 3 poin bullet — masing-masing satu sinyal paling penting (mis. anomali/sebaran harga nyata, tekanan kompetitor di satu wilayah lewat adu harga nota-sama, atau SKU yang paling sering muncul).\n' +
       'ATURAN WAJIB:\n' +
       '1. SETIAP poin HARUS mengutip minimal satu kode invoice dari citable_invoice_ids, ditulis inline sebagai #kode (contoh: #1a2b3c4d). Jangan mengarang kode di luar daftar.\n' +
       '2. DILARANG memakai kata/konsep: "pangsa", "market share", "share", "% pasar", "total penjualan", "total volume", "volume terjual", "total qty", "unit terjual", "area terkuat", "area terlemah", "area tertinggi", "area terendah".\n' +
@@ -665,17 +675,28 @@ export class V2DashboardService {
       }>;
       invoices: Array<{ cite: string }>;
     }>;
-    competitor_basket: {
-      n_invoices: number;
-      n_with_taco_and_competitor: number;
-      top_brands: Array<{ brand_name: string }>;
-    };
-    distributor_performance: Array<{
-      supplier_name_normalized: string;
-      n_invoices: number;
-      avg_invoice_value: number;
-      last_invoice_date: string | null;
+    top_skus_per_area: Array<{
+      region_name: string;
+      skus: Array<{
+        sku_name: string;
+        occurrence_count: number;
+        occurrence_pct: number;
+      }>;
     }>;
+    price_gaps: {
+      pairs: Array<{
+        cite: string;
+        region_name: string | null;
+        taco_sku_name: string;
+        taco_unit_price: number;
+        competitor_brand_name: string;
+        competitor_unit_price: number;
+        gap_rp: number;
+        gap_pct: number;
+      }>;
+      unknown_competitor_count: number;
+      total_same_receipt_pairs: number;
+    };
     citable_invoice_ids: string[];
   }): string {
     const cov = signals.coverage;
@@ -702,20 +723,27 @@ export class V2DashboardService {
       );
     }
 
-    // Point 2 — competitor co-occurrence in the sampled basket.
-    const cb = signals.competitor_basket;
-    if (cb.n_with_taco_and_competitor > 0 && anyCite) {
-      const brand = cb.top_brands[0];
+    // Point 2 — head-to-head price gap (same-receipt TACO vs competitor, R3).
+    const topGap = signals.price_gaps.pairs[0];
+    if (topGap) {
+      const arah = topGap.gap_rp >= 0 ? 'di atas' : 'di bawah';
       lines.push(
-        `- ${cb.n_with_taco_and_competitor} dari ${cb.n_invoices} invoice tersampel memuat TACO bersama kompetitor${brand ? ` (mis. ${brand.brand_name})` : ''} — lihat invoice #${anyCite}.`,
+        `- Adu harga nota-sama: ${topGap.taco_sku_name} (Rp${topGap.taco_unit_price}) ${arah} ${topGap.competitor_brand_name} (Rp${topGap.competitor_unit_price}) — selisih ${Math.abs(topGap.gap_pct)}%${topGap.region_name ? ` di ${topGap.region_name}` : ''}, lihat invoice #${topGap.cite}.`,
+      );
+    } else if (signals.price_gaps.unknown_competitor_count > 0 && anyCite) {
+      lines.push(
+        `- Ada ${signals.price_gaps.unknown_competitor_count} observasi kompetitor pada nota yang memuat TACO, namun mereknya belum dikenali sehingga belum bisa diadu harga — lihat invoice #${anyCite}.`,
       );
     }
 
-    // Point 3 — most-frequently-sampled distributor.
-    const d = signals.distributor_performance[0];
-    if (d && anyCite) {
+    // Point 3 — most-frequently-seen SKU in a sampled area (R1, occurrence).
+    const areaWithSku = signals.top_skus_per_area.find(
+      (r) => r.skus.length > 0,
+    );
+    if (areaWithSku && anyCite) {
+      const top = areaWithSku.skus[0];
       lines.push(
-        `- Distributor paling sering tersampel: ${d.supplier_name_normalized} (${d.n_invoices} invoice tersampel, rata-rata nilai Rp${d.avg_invoice_value}${d.last_invoice_date ? `, terakhir ${d.last_invoice_date}` : ''}) — mis. invoice #${anyCite}.`,
+        `- Di ${areaWithSku.region_name}, ${top.sku_name} paling sering muncul (di ${top.occurrence_pct}% invoice tersampel wilayah itu) — mis. invoice #${anyCite}.`,
       );
     }
 
