@@ -17,7 +17,7 @@ import {
   PriceBandsQueryDto,
   SkuPriceHistoryQueryDto,
   SkuStorePricingQueryDto,
-  TopNonTacoQueryDto,
+  TopNonTacoInvoicesQueryDto,
   TopSkusPerAreaQueryDto,
 } from './dto/market-intel.dto';
 
@@ -130,13 +130,15 @@ interface RawDemandSku {
   occurrence_count: string;
 }
 
-interface RawNonTacoLine {
+interface RawTopNonTacoInvoice {
   invoice_id: string;
-  brand_id: string | null;
-  brand_name: string | null;
-  raw_text: string | null;
-  qty: string;
-  unit_price: string;
+  store_name: string | null;
+  region: string | null;
+  invoice_date: string | null;
+  taco_value: string;
+  non_taco_value: string;
+  qty_missing_lines: string;
+  unknown_competitor_count: string;
 }
 
 interface RawCovRow {
@@ -159,8 +161,9 @@ interface RawCovRow {
  * Window semantics: the period filters on the invoice's TRANSACTION date
  * (`invoice_date`, falling back to `created_at::date` when unparsed) per PRD §8.
  *
- * Endpoint map (PRD §8 v3): coverage · top-skus-per-area (S1) · top-non-taco
- * (S1) · category-distribution / category-monthly-trend / category-skus (S2) ·
+ * Endpoint map (PRD §8 v3): coverage · top-skus-per-area (S1) ·
+ * top-non-taco-invoices (S1, AC-31 value-dominance) · category-distribution /
+ * category-monthly-trend / category-skus (S2) ·
  * price-bands + sku-price-history (S3, qty-extended) · sku-store-pricing (S3) ·
  * brand-bucket-distribution + brand-bucket-detail (S4).
  *
@@ -877,111 +880,101 @@ export class MarketIntelService {
     return { period: range.label, regions };
   }
 
-  // ---- 5. top-non-taco (AC-31) ---------------------------------------------
+  // ---- 5. top-non-taco-invoices (AC-31, REVISED 2026-06-15) -----------------
 
   /**
-   * Section 1 Top non-TACO card — the resolved-competitor (`brand_id NOT NULL`)
-   * and non-competitor / Lain-lain (AC-41: `matched_sku_id IS NULL AND brand_id
-   * IS NULL AND is_competitor = false`) buckets COMBINED, brand-labeled. Each
-   * row is a product: a competitor brand, or a distinct Lain-lain raw text.
-   * Sortable by the median observed qty (`sort=qty`, default) or unit price
-   * (`sort=price`); `top_n` defaults to 10. Unknown-competitor lines are
-   * EXCLUDED (consistent with AC-41).
+   * Section 1 card 4 — "Top 10 invoice paling dikuasai non-TACO (per nilai)".
+   * Ranks uploaded invoices by the non-TACO share of their VALUE
+   * (Σ unit_price × qty), descending. Per invoice:
+   *   taco_value     = Σ over TACO lines (`matched_sku_id IS NOT NULL`)
+   *   non_taco_value = Σ over Kompetitor (`brand_id IS NOT NULL`) + Lain-lain
+   *                    (`matched_sku_id IS NULL AND brand_id IS NULL AND
+   *                     is_competitor = false`) lines
+   *   non_taco_share = non_taco_value / (taco_value + non_taco_value)
+   *
+   * Honest qty (AC-31): a value-relevant line whose quantity is missing (NULL or
+   * ≤ 0) is EXCLUDED from the value sums and counted in `qty_missing_lines` —
+   * never silently treated as qty=1. Unknown-competitor lines (`is_competitor =
+   * true AND brand_id IS NULL`) are excluded from `non_taco_value` and surfaced
+   * as `unknown_competitor_count` (AC-41 / AC-38.1). Invoices with no computable
+   * value (total = 0) are dropped — they can't be ranked by value-dominance.
+   * Sorted by `non_taco_share` desc, tiebreak `non_taco_value` desc; `top_n`
+   * defaults to 10. No "market share / sales / pangsa pasar" framing — this is
+   * per-invoice value composition only.
    */
-  async topNonTaco(query: TopNonTacoQueryDto) {
+  async topNonTacoInvoices(query: TopNonTacoInvoicesQueryDto) {
     const range = this.resolveRange(query.period);
     const topN = Math.min(
       Math.max(parseInt(query.top_n ?? '10', 10) || 10, 1),
       50,
     );
-    const sort = query.sort ?? 'qty';
+
+    const QTY = 'CAST(li.quantity AS numeric)';
+    const PRICE = 'COALESCE(CAST(li.unit_price AS numeric), 0)';
+    // Value-relevant = the three pie buckets (excludes unknown-competitor lines).
+    const VALUE_REL =
+      '(li.matched_sku_id IS NOT NULL OR li.brand_id IS NOT NULL OR (li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false))';
 
     const raw = await this.applyScope(
       this.lineItems
         .createQueryBuilder('li')
         .innerJoin('li.invoice', 'inv')
-        .leftJoin('competitor_brands', 'brand', 'brand.id = li.brand_id')
+        .leftJoin('taro_v2_stores', 'store', 'store.id = inv.store_id')
+        .leftJoin('regions', 'area', 'area.id = inv.area_id')
         .select('inv.id', 'invoice_id')
-        .addSelect('li.brand_id', 'brand_id')
-        .addSelect('brand.name', 'brand_name')
-        .addSelect('li.raw_text', 'raw_text')
-        .addSelect('CAST(li.quantity AS numeric)', 'qty')
-        .addSelect('CAST(li.unit_price AS numeric)', 'unit_price')
-        .where(
-          '(li.brand_id IS NOT NULL OR (li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false))',
+        .addSelect('MAX(store.name)', 'store_name')
+        .addSelect('MAX(area.name)', 'region')
+        .addSelect(`MAX(${this.EFF_DATE_STR})`, 'invoice_date')
+        .addSelect(
+          `SUM(CASE WHEN li.matched_sku_id IS NOT NULL AND ${QTY} > 0 THEN ${PRICE} * ${QTY} ELSE 0 END)`,
+          'taco_value',
+        )
+        .addSelect(
+          `SUM(CASE WHEN (li.brand_id IS NOT NULL OR (li.matched_sku_id IS NULL AND li.brand_id IS NULL AND li.is_competitor = false)) AND ${QTY} > 0 THEN ${PRICE} * ${QTY} ELSE 0 END)`,
+          'non_taco_value',
+        )
+        .addSelect(
+          `SUM(CASE WHEN ${VALUE_REL} AND (${QTY} IS NULL OR ${QTY} <= 0) THEN 1 ELSE 0 END)`,
+          'qty_missing_lines',
+        )
+        .addSelect(
+          'SUM(CASE WHEN li.is_competitor = true AND li.brand_id IS NULL THEN 1 ELSE 0 END)',
+          'unknown_competitor_count',
         ),
       range,
       query.area,
-    ).getRawMany<RawNonTacoLine>();
+    )
+      .groupBy('inv.id')
+      .getRawMany<RawTopNonTacoInvoice>();
 
-    interface Group {
-      key: string;
-      label: string;
-      bucket: 'kompetitor' | 'lain_lain';
-      brand_name: string | null;
-      invoices: Set<string>;
-      n_lines: number;
-      qtys: number[];
-      prices: number[];
-    }
-    const groups = new Map<string, Group>();
-    for (const r of raw) {
-      const isComp = r.brand_id !== null;
-      const label = isComp
-        ? (r.brand_name ?? 'Merek Kompetitor')
-        : (r.raw_text ?? 'Lain-lain').trim() || 'Lain-lain';
-      const key = isComp
-        ? `b:${r.brand_id}`
-        : `l:${label.toLowerCase().replace(/\s+/g, ' ')}`;
-      if (!groups.has(key)) {
-        groups.set(key, {
-          key,
-          label,
-          bucket: isComp ? 'kompetitor' : 'lain_lain',
-          brand_name: isComp ? (r.brand_name ?? label) : null,
-          invoices: new Set<string>(),
-          n_lines: 0,
-          qtys: [],
-          prices: [],
-        });
-      }
-      const g = groups.get(key)!;
-      g.invoices.add(r.invoice_id);
-      g.n_lines += 1;
-      const q = this.num(r.qty);
-      const p = this.num(r.unit_price);
-      if (q > 0) g.qtys.push(q);
-      if (p > 0) g.prices.push(p);
-    }
+    const rows = raw
+      .map((r) => {
+        const taco_value = Math.round(this.num(r.taco_value));
+        const non_taco_value = Math.round(this.num(r.non_taco_value));
+        const total_value = taco_value + non_taco_value;
+        return {
+          invoice_id: r.invoice_id,
+          store_name: r.store_name ?? null,
+          region: r.region ?? null,
+          invoice_date: r.invoice_date ?? null,
+          taco_value,
+          non_taco_value,
+          total_value,
+          taco_share: this.pct(taco_value, total_value),
+          non_taco_share: this.pct(non_taco_value, total_value),
+          qty_missing_lines: this.num(r.qty_missing_lines),
+          unknown_competitor_count: this.num(r.unknown_competitor_count),
+        };
+      })
+      .filter((r) => r.total_value > 0)
+      .sort(
+        (a, b) =>
+          b.non_taco_share - a.non_taco_share ||
+          b.non_taco_value - a.non_taco_value,
+      )
+      .slice(0, topN);
 
-    const allRows = Array.from(groups.values()).map((g) => {
-      const medianQty = this.median([...g.qtys].sort((a, b) => a - b));
-      const medianPrice = this.median([...g.prices].sort((a, b) => a - b));
-      return {
-        key: g.key,
-        label: g.label,
-        bucket: g.bucket,
-        brand_name: g.brand_name,
-        n_invoices: g.invoices.size,
-        n_lines: g.n_lines,
-        median_qty: this.qtyRound(medianQty),
-        median_price: Math.round(medianPrice),
-      };
-    });
-
-    allRows.sort((a, b) => {
-      const primary =
-        sort === 'price'
-          ? b.median_price - a.median_price
-          : b.median_qty - a.median_qty;
-      return primary || b.n_invoices - a.n_invoices;
-    });
-
-    return {
-      period: range.label,
-      sort,
-      rows: allRows.slice(0, topN),
-    };
+    return { period: range.label, rows };
   }
 
   // ---- 6. category-distribution (AC-32) ------------------------------------

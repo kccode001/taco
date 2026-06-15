@@ -66,19 +66,15 @@ export class TopSkusPerAreaQueryDto extends MarketIntelQueryDto {
 }
 
 /**
- * Top non-TACO card (Section 1, AC-31). Combines the resolved-competitor and
- * non-competitor ("Lain-lain") buckets, brand-labeled, sortable by the median
- * observed qty or unit price. `top_n` defaults to 10.
+ * Top non-TACO invoices card (Section 1, AC-31 — REVISED 2026-06-15 by KC). The
+ * card pivoted from "most-frequent non-TACO SKUs" to "invoices most dominated by
+ * non-TACO, by value": uploaded invoices ranked by non-TACO value share desc.
+ * `top_n` defaults to 10.
  */
-export class TopNonTacoQueryDto extends MarketIntelQueryDto {
+export class TopNonTacoInvoicesQueryDto extends MarketIntelQueryDto {
   @IsOptional()
   @IsString()
   top_n?: string;
-
-  /** `qty` (median observed quantity) or `price` (median observed unit price). */
-  @IsOptional()
-  @IsIn(['qty', 'price'])
-  sort?: 'qty' | 'price';
 }
 
 /** Category distribution + monthly trend (Section 2, AC-32/AC-33). */

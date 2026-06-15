@@ -14,7 +14,7 @@ import {
   PriceBandsQueryDto,
   SkuPriceHistoryQueryDto,
   SkuStorePricingQueryDto,
-  TopNonTacoQueryDto,
+  TopNonTacoInvoicesQueryDto,
   TopSkusPerAreaQueryDto,
 } from './dto/market-intel.dto';
 
@@ -23,7 +23,7 @@ import {
  * 4-section v3 layout). Routes:
  *   GET /api/v2/market-intel/coverage?period=&area=
  *   GET /api/v2/market-intel/top-skus-per-area?period=&area=&top_n=10        (S1)
- *   GET /api/v2/market-intel/top-non-taco?period=&area=&top_n=10&sort=       (S1)
+ *   GET /api/v2/market-intel/top-non-taco-invoices?period=&area=&top_n=10    (S1)
  *   GET /api/v2/market-intel/category-distribution?period=&area=             (S2)
  *   GET /api/v2/market-intel/category-monthly-trend?period=&area=            (S2)
  *   GET /api/v2/market-intel/category-skus?category=&period=&area=           (S2)
@@ -54,10 +54,10 @@ export class MarketIntelController {
     return this.service.topSkusPerArea(query);
   }
 
-  /** Section 1 — top non-TACO (competitor + lain-lain) combined card (AC-31). */
-  @Get('top-non-taco')
-  topNonTaco(@Query() query: TopNonTacoQueryDto) {
-    return this.service.topNonTaco(query);
+  /** Section 1 — invoices most dominated by non-TACO, by value (AC-31, REVISED). */
+  @Get('top-non-taco-invoices')
+  topNonTacoInvoices(@Query() query: TopNonTacoInvoicesQueryDto) {
+    return this.service.topNonTacoInvoices(query);
   }
 
   /** Section 2 — Komposisi kategori TACO pie (AC-32). */
