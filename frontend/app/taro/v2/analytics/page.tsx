@@ -1412,24 +1412,40 @@ export default function AnalyticsPage() {
               <div className="flex flex-col items-center justify-center text-center py-10"><div className="text-[24px] mb-2 opacity-60">🔎</div><p className="text-[13px] text-taco-text font-medium">Belum ada SKU dengan ≥3 invoice pada filter ini.</p></div>
             )
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-[12px] min-w-[760px]">
-                <thead>
-                  <tr className="text-[10px] text-taco-muted uppercase tracking-wide text-left border-b border-taco-divider">
-                    <th className="py-2 font-semibold">SKU</th>
-                    <th className="py-2 font-semibold text-right">N inv</th>
-                    <th className="py-2 font-semibold">Qty (min · avg · maks · Total*)</th>
-                    <th className="py-2 font-semibold">Harga (min · avg · maks · Total*)</th>
-                    <th className="py-2 font-semibold text-right">⚑</th>
-                  </tr>
-                </thead>
-                <tbody className="text-taco-text">
-                  {bandRows.map((row) => (
-                    <LaporanRow key={row.sku_id} row={row} q={bandsQDeb} onOpen={() => setSkuModal({ open: true, skuId: row.sku_id, skuName: row.sku_name })} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12px] min-w-[860px]">
+                  <thead>
+                    {/* tier 1 — group bands carry the honest "tercatat di sampel" qualifier once */}
+                    <tr className="text-[10px] text-taco-muted uppercase tracking-wide text-left">
+                      <th className="py-1" rowSpan={2}>SKU</th>
+                      <th className="py-1 text-right" rowSpan={2}>N inv</th>
+                      <th className="py-1 text-center border-b border-taco-divider" colSpan={4}>Qty / invoice — tercatat di sampel*</th>
+                      <th className="py-1 text-center" rowSpan={2}>Keterisian<br />qty</th>
+                      <th className="py-1 text-center border-b border-taco-divider" colSpan={4}>Harga / invoice (Rp) — tercatat di sampel*</th>
+                      <th className="py-1 text-right" rowSpan={2}>⚑</th>
+                    </tr>
+                    {/* tier 2 — one labelled column per stat */}
+                    <tr className="text-[10px] text-taco-muted uppercase tracking-wide border-b border-taco-divider">
+                      <th className="py-2 font-semibold text-right">Min</th>
+                      <th className="py-2 font-semibold text-right">Rata²</th>
+                      <th className="py-2 font-semibold text-right">Maks</th>
+                      <th className="py-2 font-semibold text-right">Total</th>
+                      <th className="py-2 font-semibold text-right">Min</th>
+                      <th className="py-2 font-semibold text-right">Rata²</th>
+                      <th className="py-2 font-semibold text-right">Maks</th>
+                      <th className="py-2 font-semibold text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-taco-text">
+                    {bandRows.map((row) => (
+                      <LaporanRow key={row.sku_id} row={row} q={bandsQDeb} onOpen={() => setSkuModal({ open: true, skuId: row.sku_id, skuName: row.sku_name })} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[10px] text-taco-muted mt-2">*Total = jumlah tercatat di sampel terunggah — bukan total penjualan.</p>
+            </>
           )}
         </Panel>
 
@@ -1507,31 +1523,57 @@ export default function AnalyticsPage() {
 // ── §3 Laporan SKU row (AC-4/5/35/36) ────────────────────────────────────────
 
 function LaporanRow({ row, q, onOpen }: { row: PriceBandRow; q: string; onOpen: () => void }) {
-  const hasUp = row.outliers.some((o) => o.direction === "above");
-  const hasDown = row.outliers.some((o) => o.direction === "below");
+  const up = row.outliers.find((o) => o.direction === "above");
+  const down = row.outliers.find((o) => o.direction === "below");
+  const outlier = up ?? down;
+  const outlierTip = outlier ? `Outlier ${up ? "▲" : "▼"} · ${outlier.supplier_name || "—"} · ${outlier.region_name || "—"}` : "";
   const avg = row.p_avg ?? row.p_median;
   const unit = row.unit ?? "";
+  // AC-35 qty coverage: X = lines with qty>0, Y = contributing lines (X ≤ Y).
+  const present = row.n_qty_present;
+  const lines = row.n_lines;
+  const missPct = row.qty_missing_pct ?? (present != null && lines ? Math.max(0, 1 - present / lines) : undefined);
+  const qtyMissing = missPct != null && missPct > 0.5;
   return (
     <tr className="border-b border-taco-divider cursor-pointer hover:bg-taco-page/60" onClick={onOpen}>
-      <td className="py-3 align-top">
+      <td className="py-3">
         <div className="font-semibold"><Highlight text={row.sku_name} q={q} /></div>
-        {row.sku_code && <div className="text-taco-muted text-[11px] tabular-nums"><Highlight text={row.sku_code} q={q} /></div>}
+        <div className="text-taco-muted text-[11px] tabular-nums">
+          {row.sku_code ? <Highlight text={row.sku_code} q={q} /> : null}
+          {row.sku_code && unit ? " · " : null}
+          {unit}
+        </div>
       </td>
-      <td className="py-3 align-top text-right tabular-nums text-taco-sub">{row.n_invoices}</td>
-      <td className="py-3 align-top">
-        <div className="tabular-nums">{idID.format(row.qty_min ?? 0)} · {idID.format(row.qty_avg ?? 0)} · {idID.format(row.qty_max ?? 0)} {unit}</div>
-        <div className="text-[11px] text-taco-muted">{TOTAL_TAG}: <span className="tabular-nums">{idID.format(row.qty_sum_sample ?? 0)} {unit}</span></div>
-        <QtyMissingChip present={row.n_qty_present} lines={row.n_lines} missingPct={row.qty_missing_pct} />
+      <td className="py-3 text-right tabular-nums text-taco-sub">{row.n_invoices}</td>
+      {/* Qty group — one labelled column per stat (unit lives in SKU cell) */}
+      <td className="py-3 text-right tabular-nums">{idID.format(row.qty_min ?? 0)}</td>
+      <td className="py-3 text-right tabular-nums">{idID.format(row.qty_avg ?? 0)}</td>
+      <td className="py-3 text-right tabular-nums">{idID.format(row.qty_max ?? 0)}</td>
+      <td className="py-3 text-right tabular-nums font-medium">{idID.format(row.qty_sum_sample ?? 0)}</td>
+      {/* Keterisian qty lane (AC-35) — pulled out of the metric cell */}
+      <td className="py-3 text-center">
+        {present == null || lines == null ? (
+          <span className="text-taco-muted">—</span>
+        ) : qtyMissing ? (
+          <span className="inline-flex flex-col items-center text-[10px] text-taco-warning bg-[#FCEFD9] border border-[#F3D9B5] rounded px-1.5 py-0.5 font-semibold whitespace-nowrap" title={`⚠ qty hilang di ${Math.round((missPct ?? 0) * 100)}% baris — angka indikatif`}>
+            <span className="tabular-nums">⚠ {present}/{lines}</span>
+            <span>{Math.round((missPct ?? 0) * 100)}% hilang</span>
+          </span>
+        ) : (
+          <span className="text-[11px] text-taco-success tabular-nums" title={`qty terbaca dari ${present} dari ${lines} baris`}>{present}/{lines}</span>
+        )}
       </td>
-      <td className="py-3 align-top">
-        <div className="tabular-nums">Rp {compact(row.p_min)} · {compact(avg)} · {compact(row.p_max)}</div>
-        <div className="text-[11px] text-taco-muted">{TOTAL_TAG}: <span className="tabular-nums">{compactRp(row.price_sum_sample ?? 0)}</span></div>
-      </td>
-      <td className="py-3 align-top text-right">
-        {hasUp ? (
-          <span className="text-[10px] text-taco-error bg-[#FBE9E7] rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap">Outlier ▲</span>
-        ) : hasDown ? (
-          <span className="text-[10px] text-taco-success bg-[#E5F4EE] rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap">Outlier ▼</span>
+      {/* Harga group — Rp prefix is carried by the group band; Total keeps explicit Rp */}
+      <td className="py-3 text-right tabular-nums">{compact(row.p_min)}</td>
+      <td className="py-3 text-right tabular-nums">{compact(avg)}</td>
+      <td className="py-3 text-right tabular-nums">{compact(row.p_max)}</td>
+      <td className="py-3 text-right tabular-nums font-medium">{compactRp(row.price_sum_sample ?? 0)}</td>
+      {/* Outlier ⚑ — unchanged logic, tooltip = distributor + area (AC-5) */}
+      <td className="py-3 text-right">
+        {up ? (
+          <span className="text-[10px] text-taco-error bg-[#FBE9E7] rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap" title={outlierTip}>Outlier ▲</span>
+        ) : down ? (
+          <span className="text-[10px] text-taco-success bg-[#E5F4EE] rounded-full px-1.5 py-0.5 font-semibold whitespace-nowrap" title={outlierTip}>Outlier ▼</span>
         ) : (
           <span className="text-taco-muted">—</span>
         )}
