@@ -256,10 +256,11 @@ export interface AreaStoresDrillV2 {
 }
 
 // ── Market Intelligence (Intelijen Pasar — /v2/market-intel/*) ─────────────
-// Honest-sample surface. Every panel response carries its OWN coverage object
-// (computed from the rows that fed THAT panel) so the AC-2 chip is truthful per
-// panel, not page-level. When a panel endpoint omits `coverage`, the FE falls
-// back to the scope-level /coverage so the chip always renders (AC-2.1).
+// Honest-sample surface (SKU × Area pivot, 2026-06-15 revamp). Every panel
+// response carries its OWN coverage object (computed from the rows that fed
+// THAT panel) so the AC-2 chip is truthful per panel, not page-level. When a
+// panel endpoint omits `coverage`, the FE falls back to the scope-level
+// /coverage so the chip always renders (AC-2.1).
 
 /** Coverage = sample size for a scope or a single panel's contributing rows. */
 export interface CoverageV2 {
@@ -270,6 +271,15 @@ export interface CoverageV2 {
   last_invoice_date: string | null;
 }
 
+/** Server-side pagination envelope (R2/R3/R4, page_size=10 — PRD §8). */
+export interface PaginationV2 {
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+// ── R2 · Peta Harga Nyata (hero price bands) — AC-4/5/6 ────────────────────
+
 /** One flagged invoice on a price band (AC-5). */
 export interface PriceBandOutlier {
   invoice_id: string;
@@ -278,7 +288,7 @@ export interface PriceBandOutlier {
   unit_price: number;
   /** "above" = pricier (▲ error); "below" = cheaper (▼ success). */
   direction: "above" | "below";
-  /** Invoice date — surfaced in the AC-5.1 marker tooltip when present. */
+  /** Invoice date — surfaced in the AC-5 marker tooltip when present. */
   invoice_date?: string;
 }
 
@@ -295,39 +305,58 @@ export interface PriceBandRow {
   outliers: PriceBandOutlier[];
 }
 
-/** /market-intel/price-bands response. */
+/** /market-intel/price-bands?q=&page=&page_size=10 response (AC-4). */
 export interface PriceBandsV2 {
   coverage?: CoverageV2;
   skus: PriceBandRow[];
+  pagination?: PaginationV2;
 }
 
-/** One contributing invoice in the per-SKU evidence drawer (AC-7). */
-export interface SkuEvidenceRow {
+// ── R5 · SKU detail modal (sku-price-history) — AC-7/25/26/27 ──────────────
+
+/** One point on the SKU price-trend chart (AC-26 — date × unit_price). */
+export interface SkuPriceTrendPoint {
+  invoice_id: string;
+  invoice_date: string;
+  unit_price: number;
+  store_id: string | null;
+  store_name: string;
+  region_id: string | null;
+  region_name: string;
+  /** Set when this point is an outlier (▲ above / ▼ below). */
+  outlier_direction?: "above" | "below" | null;
+}
+
+/** One contributing invoice in the modal's invoice list (AC-7). */
+export interface SkuPriceInvoiceRow {
   invoice_id: string;
   store_name: string;
   region_name: string;
-  /** RAW supplier_name (drawer shows the un-normalized form). */
+  /** RAW supplier_name (shown un-normalized). */
   supplier_name: string;
   invoice_date: string;
   unit_price: number;
   image_url: string | null;
-  /** Set when this invoice is an outlier on the band. */
   outlier_direction?: "above" | "below" | null;
 }
 
-/** /market-intel/sku-evidence response. */
-export interface SkuEvidenceV2 {
+/** /market-intel/sku-price-history?sku_id=&period=&area=&store_id= response.
+ *  Single endpoint backs the entire R5 modal (AC-7, AC-25, AC-26, AC-27). */
+export interface SkuPriceHistoryV2 {
   coverage?: CoverageV2;
   sku_id: string;
   sku_name: string;
   p_min: number;
-  p_median: number;
+  p_avg: number;
   p_max: number;
-  invoices: SkuEvidenceRow[];
+  trend: SkuPriceTrendPoint[];
+  invoices: SkuPriceInvoiceRow[];
 }
 
-/** One SKU's occurrence frequency within a region (AC-8). */
-export interface DemandSku {
+// ── R1 · SKU Teratas per Wilayah (top-skus-per-area) — AC-8/9/18/19 ────────
+
+/** One SKU's line-occurrence frequency within a region (AC-8). */
+export interface TopSkuOccurrence {
   sku_id: string;
   sku_name: string;
   occurrence_count: number;
@@ -335,52 +364,64 @@ export interface DemandSku {
   occurrence_pct: number;
 }
 
-/** One region column of the demand-mix panel (AC-9). */
-export interface DemandRegion {
+/** One region column of the top-SKUs panel (AC-9). */
+export interface TopSkusAreaColumn {
   region_id: string | null;
   region_name: string;
   n_invoices: number;
-  skus: DemandSku[];
+  skus: TopSkuOccurrence[];
 }
 
-/** /market-intel/demand-mix response. */
-export interface DemandMixV2 {
+/** /market-intel/top-skus-per-area?period=&area=&top_n= response. */
+export interface TopSkusPerAreaV2 {
   coverage?: CoverageV2;
-  regions: DemandRegion[];
+  regions: TopSkusAreaColumn[];
 }
 
-/** One co-occurring competitor brand (AC-10, AC-11 — resolved brands only). */
-export interface CompetitorCoBrand {
-  brand_id: string;
-  brand_name: string;
-  n_invoices: number;
+// ── R3 · Adu Harga TACO vs Kompetitor (price-gap-pairs) — AC-10/11/20/21/22 ─
+
+/** One same-receipt TACO-vs-competitor price-gap row (AC-20). The Rupiah and %
+ *  gap are derived on the FE from the two unit prices (gap = TACO − competitor;
+ *  positive = TACO pricier) to stay convention-safe. */
+export interface PriceGapPairRow {
+  invoice_id: string;
+  /** Link target for the Invoice cell (raw_image_url). */
+  image_url: string | null;
+  store_name: string;
+  region_name: string;
+  invoice_date: string;
+  taco_sku_name: string;
+  taco_unit_price: number;
+  competitor_brand_name: string;
+  /** Raw OCR text of the competitor line. */
+  competitor_ocr_text: string | null;
+  competitor_unit_price: number;
 }
 
-/** /market-intel/competitor-basket response. */
-export interface CompetitorBasketV2 {
+/** /market-intel/price-gap-pairs?q=&page=&page_size= response (AC-11 footer). */
+export interface PriceGapPairsV2 {
   coverage?: CoverageV2;
-  n_invoices: number;
-  n_with_taco_and_competitor: number;
-  /** Fraction of sample invoices with TACO + a competitor (0.39 = 39%). */
-  co_occurrence_pct: number;
-  top_brands: CompetitorCoBrand[];
-  /** Invoices with an UNKNOWN competitor — counted, never named (AC-11). */
-  n_unknown_competitor: number;
+  rows: PriceGapPairRow[];
+  pagination?: PaginationV2;
+  /** is_unknown competitor lines — excluded from rows, counted in footer. */
+  unknown_competitor_count: number;
 }
 
-/** One normalized distributor row (AC-16, AC-17). */
-export interface DistributorPerfRow {
-  supplier_name_normalized: string;
-  supplier_name_raw_sample: string;
-  n_invoices: number;
-  avg_invoice_value: number;
-  last_invoice_date: string;
+// ── R4 · White-Space SKU per Wilayah (sku-whitespace) — AC-23/24 ───────────
+
+/** One (taco_sku × region) combo not yet observed in the sample (AC-23). */
+export interface WhitespaceRow {
+  sku_id: string;
+  sku_name: string;
+  region_id: string | null;
+  region_name: string;
 }
 
-/** /market-intel/distributor-performance response. */
-export interface DistributorPerfV2 {
+/** /market-intel/sku-whitespace?q=&page=&page_size= response. */
+export interface SkuWhitespaceV2 {
   coverage?: CoverageV2;
-  distributors: DistributorPerfRow[];
+  rows: WhitespaceRow[];
+  pagination?: PaginationV2;
 }
 
 /** /dashboard/ai-insight?period= — single LLM-generated market-demand insight. */
