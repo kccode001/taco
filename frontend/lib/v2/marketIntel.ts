@@ -155,14 +155,50 @@ function adaptPriceBands(be: any): PriceBandsV2 {
         qty_max: b.qty_max != null ? num(b.qty_max) : undefined,
         qty_sum_sample: b.qty_sum_sample != null ? num(b.qty_sum_sample) : undefined,
         qty_missing_pct: b.qty_missing_pct != null ? pctToFrac(b.qty_missing_pct) : undefined,
-        n_qty_present: b.n_qty_present != null ? num(b.n_qty_present) : undefined,
-        n_lines: b.n_lines != null ? num(b.n_lines) : undefined,
+        // Mortar's live names: qty_lines_with / qty_lines_total (AC-35 chip).
+        n_qty_present: (b.n_qty_present ?? b.qty_lines_with) != null ? num(b.n_qty_present ?? b.qty_lines_with) : undefined,
+        n_lines: (b.n_lines ?? b.qty_lines_total) != null ? num(b.n_lines ?? b.qty_lines_total) : undefined,
       })
     ),
   };
 }
 
 function adaptHistory(be: any): SkuPriceHistoryV2 {
+  const invoices: SkuPriceInvoiceRow[] = (be?.invoices ?? []).map((e: any) => ({
+    invoice_id: String(e.invoice_id),
+    store_name: e.store_name ?? "",
+    region_name: e.region_name ?? "",
+    supplier_name: e.supplier_name ?? "",
+    invoice_date: e.invoice_date,
+    unit_price: num(e.unit_price),
+    quantity: e.quantity != null ? num(e.quantity) : null,
+    image_url: e.image_url ?? e.raw_image_url ?? null,
+    outlier_direction: e.outlier_direction ?? null,
+  }));
+  // Per-invoice qty is authoritative on `invoices`; the trend rows omit it
+  // (Mortar ships a parallel `qty_trend` array). Zip qty onto trend points by
+  // invoice_id (fallback to the qty_trend array position) for the dual-line chart.
+  const qtyByInv = new Map<string, number>();
+  for (const inv of invoices) if (inv.quantity != null) qtyByInv.set(inv.invoice_id, inv.quantity);
+  const qtyTrend: any[] = be?.qty_trend ?? [];
+  const trend = (be?.trend ?? []).map((t: any, i: number) => {
+    const id = String(t.invoice_id);
+    const q = t.quantity != null ? num(t.quantity) : qtyByInv.has(id) ? qtyByInv.get(id)! : qtyTrend[i]?.quantity != null ? num(qtyTrend[i].quantity) : null;
+    return {
+      invoice_id: id,
+      invoice_date: t.invoice_date,
+      unit_price: num(t.unit_price),
+      quantity: q,
+      store_id: t.store_id ?? null,
+      store_name: t.store_name ?? "",
+      region_id: t.region_id ?? null,
+      region_name: t.region_name ?? "",
+      outlier_direction: t.outlier_direction ?? null,
+    };
+  });
+  // price_sum_sample: prefer BE; else Σ observed unit_prices in scope (honest
+  // "tercatat di sampel" total) so AC-36 shows a real number, not Rp 0.
+  const priceSum = be?.price_sum_sample != null ? num(be.price_sum_sample) : trend.reduce((a: number, t: any) => a + t.unit_price, 0);
   return {
     coverage: be?.coverage ? adaptCoverage(be.coverage) : undefined,
     sku_id: String(be?.sku_id ?? ""),
@@ -172,37 +208,17 @@ function adaptHistory(be: any): SkuPriceHistoryV2 {
     p_min: num(be?.p_min),
     p_avg: num(be?.p_avg ?? be?.p_average ?? be?.p_mean),
     p_max: num(be?.p_max),
-    price_sum_sample: be?.price_sum_sample != null ? num(be.price_sum_sample) : undefined,
+    price_sum_sample: priceSum,
     unit: be?.unit ?? undefined,
     qty_min: be?.qty_min != null ? num(be.qty_min) : undefined,
     qty_avg: be?.qty_avg != null ? num(be.qty_avg) : undefined,
     qty_max: be?.qty_max != null ? num(be.qty_max) : undefined,
     qty_sum_sample: be?.qty_sum_sample != null ? num(be.qty_sum_sample) : undefined,
     qty_missing_pct: be?.qty_missing_pct != null ? pctToFrac(be.qty_missing_pct) : undefined,
-    n_qty_present: be?.n_qty_present != null ? num(be.n_qty_present) : undefined,
-    n_lines: be?.n_lines != null ? num(be.n_lines) : undefined,
-    trend: (be?.trend ?? []).map((t: any) => ({
-      invoice_id: String(t.invoice_id),
-      invoice_date: t.invoice_date,
-      unit_price: num(t.unit_price),
-      quantity: t.quantity != null ? num(t.quantity) : null,
-      store_id: t.store_id ?? null,
-      store_name: t.store_name ?? "",
-      region_id: t.region_id ?? null,
-      region_name: t.region_name ?? "",
-      outlier_direction: t.outlier_direction ?? null,
-    })),
-    invoices: (be?.invoices ?? []).map((e: any) => ({
-      invoice_id: String(e.invoice_id),
-      store_name: e.store_name ?? "",
-      region_name: e.region_name ?? "",
-      supplier_name: e.supplier_name ?? "",
-      invoice_date: e.invoice_date,
-      unit_price: num(e.unit_price),
-      quantity: e.quantity != null ? num(e.quantity) : null,
-      image_url: e.image_url ?? e.raw_image_url ?? null,
-      outlier_direction: e.outlier_direction ?? null,
-    })),
+    n_qty_present: (be?.n_qty_present ?? be?.qty_lines_with) != null ? num(be?.n_qty_present ?? be?.qty_lines_with) : undefined,
+    n_lines: (be?.n_lines ?? be?.qty_lines_total) != null ? num(be?.n_lines ?? be?.qty_lines_total) : undefined,
+    trend,
+    invoices,
   };
 }
 
