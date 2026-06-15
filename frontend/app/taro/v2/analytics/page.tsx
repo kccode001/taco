@@ -932,6 +932,15 @@ export default function AnalyticsPage() {
     })
     .sort((a, b) => Math.abs(b.gapPct) - Math.abs(a.gapPct));
 
+  // AC-22 driver: same-receipt pairs (resolved + unknown) per Mortar's R3
+  // contract. <3 → thin-data; ≥3 with 0 resolved (pagination.total) → zero-pair.
+  // Fall back to resolved-total + unknown if a response omits the field.
+  const gapTotalPairs =
+    gap.data?.total_same_receipt_pairs ??
+    (gap.data
+      ? (gap.data.pagination?.total ?? 0) + (gap.data.unknown_competitor_count ?? 0)
+      : 0);
+
   return (
     <>
       <div className="space-y-4">
@@ -1174,7 +1183,8 @@ export default function AnalyticsPage() {
             <SkeletonRails rows={4} />
           ) : gap.error ? (
             <PanelError onRetry={() => setGapReload((n) => n + 1)} />
-          ) : isThin(panelCov(gap.data)) ? (
+          ) : gapTotalPairs < 3 ? (
+            // AC-22 1st clause: <3 same-receipt pairs in scope → thin-data.
             <ThinData n={panelCov(gap.data)?.n_invoices ?? 0} />
           ) : gapRows.length === 0 ? (
             <>

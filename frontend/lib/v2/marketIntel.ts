@@ -191,6 +191,7 @@ function adaptGapPairs(be: any): PriceGapPairsV2 {
     coverage: be?.coverage ? adaptCoverage(be.coverage) : undefined,
     pagination: adaptPagination(be?.pagination),
     unknown_competitor_count: num(be?.unknown_competitor_count),
+    total_same_receipt_pairs: num(be?.total_same_receipt_pairs),
     rows: (be?.rows ?? []).map(
       (r: any): PriceGapPairRow => ({
         invoice_id: String(r.invoice_id),
@@ -571,6 +572,7 @@ function buildMockGapPairs(scope: MarketScope, q?: string, page = 1): PriceGapPa
     rows,
     pagination,
     unknown_competitor_count: 6,
+    total_same_receipt_pairs: MOCK_GAP_ROWS.length + 6,
   };
 }
 
@@ -719,14 +721,18 @@ export async function fetchPriceGapPairs(
           rows: [],
           pagination: { page: 1, page_size: PAGE_SIZE, total: 0 },
           unknown_competitor_count: 0,
+          // <3 same-receipt pairs → thin-data (AC-22 1st clause).
+          total_same_receipt_pairs: 2,
         };
-      // zero-pair: N≥3 invoices but no resolved-brand pair (AC-22 2nd clause).
+      // zero-pair: ≥3 same-receipt pairs but none with a resolved brand
+      // (AC-22 2nd clause) — distinct copy + AC-11 unknown footer.
       if (dbg === "zero")
         return {
           coverage: { n_invoices: 6, m_stores: 5, k_areas: 2, last_invoice_date: "2026-06-12" },
           rows: [],
           pagination: { page: 1, page_size: PAGE_SIZE, total: 0 },
           unknown_competitor_count: 4,
+          total_same_receipt_pairs: 4,
         };
       return buildMockGapPairs(scope, q, page);
     }

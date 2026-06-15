@@ -405,6 +405,11 @@ export interface PriceGapPairsV2 {
   pagination?: PaginationV2;
   /** is_unknown competitor lines — excluded from rows, counted in footer. */
   unknown_competitor_count: number;
+  /**
+   * Same-receipt TACO+competitor pairs in scope, resolved + unknown (AC-22):
+   * total<3 → thin-data; total≥3 && pagination.total==0 → zero-pair copy.
+   */
+  total_same_receipt_pairs: number;
 }
 
 // ── R4 · White-Space SKU per Wilayah (sku-whitespace) — AC-23/24 ───────────
