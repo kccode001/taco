@@ -88,7 +88,10 @@ const PERIODS = [
   { value: "7d", label: "7 hari" },
   { value: "30d", label: "30 hari" },
   { value: "90d", label: "90 hari" },
-  { value: "this_month", label: "Bulan Ini" },
+  // "Bulan Ini" (this_month) cut per KC decision 2026-06-15: its saved AI brief
+  // served stale pre-seed copy with banned framing (Total Qty / Share TACO /
+  // Area Terlemah). Removing the option makes the view unreachable (period state
+  // is local, default "30d"); brief plumbing left intact (shared with other periods).
   { value: "last_month", label: "Bln Lalu" },
   { value: "ytd", label: "YTD" },
   { value: "all", label: "Semua" },
