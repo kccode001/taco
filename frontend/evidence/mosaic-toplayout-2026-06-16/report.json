@@ -1,139 +1,134 @@
 {
-  "pass": 27,
-  "total": 27,
+  "pass": 26,
+  "total": 26,
   "results": [
     {
-      "n": "AC-C donut appears exactly once (no dup)",
+      "n": "AC-A(1536) all 4 top panels present",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-A donut above Komposisi kategori",
+      "n": "AC-A(1536) 4 panels in ONE horizontal row (y-band ≤ 80px)",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-A donut above Laporan SKU",
+      "n": "AC-A(1536) panel order donut<stats<freq<nonTACO (x)",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-A donut above Top-10 lists",
+      "n": "AC-A(1536) top row above Komposisi kategori",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-A donut-left / stats-right (x order)",
+      "n": "AC-C(1536) donut appears exactly once",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-A stat cards stacked (Total above Wilayah)",
+      "n": "AC-C(1536) legend TACO 140 baris · 95%",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-A stat cards same column",
+      "n": "AC-C(1536) legend Kompetitor 7 baris · 5%",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-B stat cards in top section (above kategori)",
+      "n": "AC-C(1536) unknown-competitor footnote",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-B Total Invoice Terunggah present",
+      "n": "AC-B(1536) Total = 36 (live)",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-B Wilayah Tercakup present",
+      "n": "AC-B(1536) Wilayah = 5 / 18 (live)",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-B Total = 36 (live)",
+      "n": "AC-D(1536) 0 console errors",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-B Wilayah = 5 / 18 (live)",
+      "n": "AC-D(1280) donut-left / stats-right",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-C legend TACO 140 baris · 95%",
+      "n": "AC-D(1280) donut & stats same band (2-up)",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-C legend Kompetitor 7 baris · 5%",
+      "n": "AC-A(1280) stat cards stacked (Total above Wilayah)",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-C legend Lain-lain 0 baris · 0%",
+      "n": "AC-D(1280) Top-10s wrap below the top band",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-C unknown-competitor footnote",
+      "n": "AC-A(1280) top section above kategori",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-E Top 10 TACO list present",
+      "n": "AC-D(1280) no horizontal scroll",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-E Top 10 non-TACO invoices present",
+      "n": "AC-C(1280) donut once + live 95%",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-E Komposisi kategori TACO present",
+      "n": "AC-E(1280) all sections present",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-E Tren unggahan kategori present",
+      "n": "AC-D(1280) 0 console errors",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-E Laporan SKU present",
+      "n": "AC-D(390) single column (donut & stats ~same x)",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-E truth banner present",
+      "n": "AC-D(390) donut above stats",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-D 0 console errors @1280",
+      "n": "AC-D(390) all 4 panels stacked same column",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-D 390 stacks (donut & stats ~same x)",
+      "n": "AC-D(390) no horizontal scroll",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-D 390 donut still above stats",
+      "n": "AC-D(390) renders all sections",
       "pass": true,
       "extra": ""
     },
     {
-      "n": "AC-D 390 renders all sections",
-      "pass": true,
-      "extra": ""
-    },
-    {
-      "n": "AC-D 0 console errors @390",
+      "n": "AC-D(390) 0 console errors",
       "pass": true,
       "extra": ""
     }

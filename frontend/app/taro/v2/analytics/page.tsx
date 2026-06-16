@@ -173,8 +173,8 @@ function Panel({
 }) {
   return (
     <section className="bg-taco-card border border-taco-border rounded-2xl p-5">
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 mb-3">
+        <div className="min-w-0">
           <h2 className="text-[15px] font-semibold text-taco-text">{title}</h2>
           {sub && <p className="text-[11px] text-taco-sub mt-0.5 max-w-[460px]">{sub}</p>}
         </div>
@@ -1205,9 +1205,10 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* ── ③ TOP SECTION (KC 2026-06-16) — Komposisi merek donut-left / two stat cards stacked-right ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Komposisi merek di invoice terunggah — relocated to the top per KC mockup 2026-06-16 */}
+        {/* ── ③ TOP SECTION (KC 2026-06-16, 1-row revision) — 4 panels in DOM order: donut · stats(stacked) · Top-10 freq · Top-10 non-TACO.
+             1-col @mobile → 2-up @lg → single horizontal row @2xl (1536px, where 4 panels fit cleanly w/o squishing the non-TACO cards). ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-4 gap-4 items-stretch">
+          {/* Panel 1 — Komposisi merek di invoice terunggah — relocated to the top per KC mockup 2026-06-16 */}
           <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
             {brandDist.loading ? (
               <div className="flex items-center gap-8"><Skeleton className="w-[140px] h-[140px] rounded-full" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /><Skeleton className="h-4 w-2/3" /></div></div>
@@ -1249,7 +1250,7 @@ export default function AnalyticsPage() {
             )}
           </Panel>
 
-          {/* Right column — two stat cards stacked vertically (relocated from the old 4-col grid) */}
+          {/* Panel 2 — two stat cards stacked vertically (Total Invoice + Wilayah Tercakup) */}
           <div className="flex flex-col gap-4">
           {/* Card 1 — Total Invoice Terunggah (AC-29) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col flex-1">
@@ -1277,11 +1278,8 @@ export default function AnalyticsPage() {
             <div className="text-[11px] text-taco-sub mt-1">wilayah aktif tersampel</div>
           </div>
           </div>
-        </div>
 
-        {/* ── Top-10 lists (Card 3 + Card 4) — relocated below the new top section ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Card 3 — Top 10 TACO (AC-30 / AC-19) */}
+          {/* Panel 3 — Top 10 TACO (AC-30 / AC-19) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -1316,7 +1314,7 @@ export default function AnalyticsPage() {
             <div className="mt-auto pt-2 text-[10px] text-taco-muted">Top 10 · gulir untuk selengkapnya</div>
           </div>
 
-          {/* Card 4 — Top 10 invoices most dominated by non-TACO value (AC-31, revised) */}
+          {/* Panel 4 — Top 10 invoices most dominated by non-TACO value (AC-31, revised) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
             <div className="text-[13px] font-semibold text-taco-text leading-snug">Top 10 invoice paling dikuasai non-TACO (per nilai)</div>
             <div className="text-[10px] text-taco-sub mt-0.5 leading-snug">{SUB_NONTACO_INV}</div>
