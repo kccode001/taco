@@ -154,6 +154,13 @@ function formatDateTime(iso?: string | null) {
   return d.toLocaleString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function formatDateOnly(iso?: string | null) {
+  if (!iso) return "—";
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 function extractErrorMessage(err: unknown): string {
   if (err instanceof AxiosError) {
     const data = err.response?.data as { message?: string | string[]; error?: string } | undefined;
@@ -265,8 +272,12 @@ export default function AdminV2InvoiceDetailPage() {
           {error && (
             <span className="text-[12px] text-taco-error">{error}</span>
           )}
-          <div className="text-[12px] text-taco-sub">
-            Diunggah {formatDateTime(invoice.created_at)}
+          <div className="text-[12px] text-taco-sub text-right">
+            <div>
+              Tanggal invoice <span className="font-medium text-taco-text">{formatDateOnly(invoice.invoice_date)}</span>
+              {invoice.invoice_date && <span className="ml-1 tabular-nums">({invoice.invoice_date})</span>}
+            </div>
+            <div>Diunggah {formatDateTime(invoice.created_at)}</div>
           </div>
         </div>
       </div>
@@ -333,6 +344,18 @@ export default function AdminV2InvoiceDetailPage() {
 
               <div className="text-taco-sub">Toko</div>
               <div className="text-taco-text truncate">{storeName ?? <span className="text-taco-muted italic">Tanpa Toko</span>}</div>
+
+              <div className="text-taco-sub">Tanggal invoice</div>
+              <div className="text-taco-text truncate">
+                {invoice.invoice_date ? (
+                  <>
+                    {formatDateOnly(invoice.invoice_date)}
+                    <span className="text-taco-muted tabular-nums ml-1">({invoice.invoice_date})</span>
+                  </>
+                ) : (
+                  <span className="text-taco-muted italic">Tidak terbaca</span>
+                )}
+              </div>
 
               {invoice.uploaded_by_name && (
                 <>
