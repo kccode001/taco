@@ -1205,9 +1205,54 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        {/* ── ③ TOP SECTION (KC 2026-06-16) — Komposisi merek donut-left / two stat cards stacked-right ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Komposisi merek di invoice terunggah — relocated to the top per KC mockup 2026-06-16 */}
+          <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
+            {brandDist.loading ? (
+              <div className="flex items-center gap-8"><Skeleton className="w-[140px] h-[140px] rounded-full" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /><Skeleton className="h-4 w-2/3" /></div></div>
+            ) : brandDist.error ? (
+              <PanelError onRetry={loadScope} />
+            ) : isThin(panelCov(brandDist.data)) ? (
+              <ThinData n={panelCov(brandDist.data)?.n_invoices ?? 0} />
+            ) : (
+              <>
+                {brandSlices.length <= 1 ? (
+                  <div className="flex flex-col items-center justify-center text-center py-8">
+                    <div className="text-[22px] mb-2 opacity-50">🥧</div>
+                    <p className="text-[13px] text-taco-text font-medium max-w-[340px]">Baru baris TACO yang terlihat pada filter ini — belum ada kompetitor atau lain-lain.</p>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-8 mt-1 flex-wrap">
+                    <Donut slices={brandSlices} size={140} width={20} onSlice={(label) => {
+                      const bucket = (Object.keys(BUCKET_META) as BrandBucket[]).find((k) => BUCKET_META[k].label === label);
+                      if (bucket) setBucketModal({ open: true, bucket });
+                    }} />
+                    <div className="space-y-2 text-[13px] min-w-[240px]">
+                      {brandDist.data!.buckets.map((b) => (
+                        <div key={b.bucket} onClick={() => setBucketModal({ open: true, bucket: b.bucket })} className="flex items-center gap-2.5 cursor-pointer hover:bg-taco-page rounded-lg px-2 py-1.5 -mx-2 border border-transparent hover:border-taco-border">
+                          <span className="w-3.5 h-3.5 rounded-sm flex-shrink-0" style={{ background: BUCKET_META[b.bucket].color }} />
+                          <span className="text-taco-text font-medium flex-1">{BUCKET_META[b.bucket].label}</span>
+                          <span className="text-taco-sub tabular-nums">{b.n_lines} baris <span className="text-taco-muted">· {brandTotal ? Math.round((b.n_lines / brandTotal) * 100) : 0}%</span></span>
+                          <span className="text-taco-muted">→</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(brandDist.data?.unknown_competitor_count ?? 0) > 0 && (
+                  <div className="mt-4 pt-2 border-t border-taco-divider text-[11px] text-taco-muted italic">
+                    + {brandDist.data!.unknown_competitor_count} observasi kompetitor tak dikenali — tidak masuk ember Lain-lain.
+                  </div>
+                )}
+              </>
+            )}
+          </Panel>
+
+          {/* Right column — two stat cards stacked vertically (relocated from the old 4-col grid) */}
+          <div className="flex flex-col gap-4">
           {/* Card 1 — Total Invoice Terunggah (AC-29) */}
-          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
+          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col flex-1">
             <div className="text-[13px] font-semibold text-taco-text">Total Invoice Terunggah</div>
             <div className="text-[10px] text-taco-sub mt-0.5 leading-snug">{SUB_FREQ}</div>
             {cov.loading ? (
@@ -1219,7 +1264,7 @@ export default function AnalyticsPage() {
           </div>
 
           {/* Card 2 — Wilayah Tercakup X/Y (AC-29) */}
-          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
+          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col flex-1">
             <div className="text-[13px] font-semibold text-taco-text">Wilayah Tercakup</div>
             <div className="text-[10px] text-taco-sub mt-0.5 leading-snug">{SUB_FREQ}</div>
             {cov.loading ? (
@@ -1231,7 +1276,11 @@ export default function AnalyticsPage() {
             )}
             <div className="text-[11px] text-taco-sub mt-1">wilayah aktif tersampel</div>
           </div>
+          </div>
+        </div>
 
+        {/* ── Top-10 lists (Card 3 + Card 4) — relocated below the new top section ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Card 3 — Top 10 TACO (AC-30 / AC-19) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
             <div className="flex items-start justify-between gap-2">
@@ -1445,47 +1494,6 @@ export default function AnalyticsPage() {
                 </table>
               </div>
               <p className="text-[10px] text-taco-muted mt-2">*Total = jumlah tercatat di sampel terunggah — bukan total penjualan.</p>
-            </>
-          )}
-        </Panel>
-
-        <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
-          {brandDist.loading ? (
-            <div className="flex items-center gap-8"><Skeleton className="w-[140px] h-[140px] rounded-full" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /><Skeleton className="h-4 w-2/3" /></div></div>
-          ) : brandDist.error ? (
-            <PanelError onRetry={loadScope} />
-          ) : isThin(panelCov(brandDist.data)) ? (
-            <ThinData n={panelCov(brandDist.data)?.n_invoices ?? 0} />
-          ) : (
-            <>
-              {brandSlices.length <= 1 ? (
-                <div className="flex flex-col items-center justify-center text-center py-8">
-                  <div className="text-[22px] mb-2 opacity-50">🥧</div>
-                  <p className="text-[13px] text-taco-text font-medium max-w-[340px]">Baru baris TACO yang terlihat pada filter ini — belum ada kompetitor atau lain-lain.</p>
-                </div>
-              ) : (
-                <div className="flex items-center gap-8 mt-1 flex-wrap">
-                  <Donut slices={brandSlices} size={140} width={20} onSlice={(label) => {
-                    const bucket = (Object.keys(BUCKET_META) as BrandBucket[]).find((k) => BUCKET_META[k].label === label);
-                    if (bucket) setBucketModal({ open: true, bucket });
-                  }} />
-                  <div className="space-y-2 text-[13px] min-w-[240px]">
-                    {brandDist.data!.buckets.map((b) => (
-                      <div key={b.bucket} onClick={() => setBucketModal({ open: true, bucket: b.bucket })} className="flex items-center gap-2.5 cursor-pointer hover:bg-taco-page rounded-lg px-2 py-1.5 -mx-2 border border-transparent hover:border-taco-border">
-                        <span className="w-3.5 h-3.5 rounded-sm flex-shrink-0" style={{ background: BUCKET_META[b.bucket].color }} />
-                        <span className="text-taco-text font-medium flex-1">{BUCKET_META[b.bucket].label}</span>
-                        <span className="text-taco-sub tabular-nums">{b.n_lines} baris <span className="text-taco-muted">· {brandTotal ? Math.round((b.n_lines / brandTotal) * 100) : 0}%</span></span>
-                        <span className="text-taco-muted">→</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {(brandDist.data?.unknown_competitor_count ?? 0) > 0 && (
-                <div className="mt-4 pt-2 border-t border-taco-divider text-[11px] text-taco-muted italic">
-                  + {brandDist.data!.unknown_competitor_count} observasi kompetitor tak dikenali — tidak masuk ember Lain-lain.
-                </div>
-              )}
             </>
           )}
         </Panel>

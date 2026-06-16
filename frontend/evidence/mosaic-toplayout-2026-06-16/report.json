@@ -1,0 +1,141 @@
+{
+  "pass": 27,
+  "total": 27,
+  "results": [
+    {
+      "n": "AC-C donut appears exactly once (no dup)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-A donut above Komposisi kategori",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-A donut above Laporan SKU",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-A donut above Top-10 lists",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-A donut-left / stats-right (x order)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-A stat cards stacked (Total above Wilayah)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-A stat cards same column",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-B stat cards in top section (above kategori)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-B Total Invoice Terunggah present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-B Wilayah Tercakup present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-B Total = 36 (live)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-B Wilayah = 5 / 18 (live)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-C legend TACO 140 baris · 95%",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-C legend Kompetitor 7 baris · 5%",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-C legend Lain-lain 0 baris · 0%",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-C unknown-competitor footnote",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-E Top 10 TACO list present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-E Top 10 non-TACO invoices present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-E Komposisi kategori TACO present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-E Tren unggahan kategori present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-E Laporan SKU present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-E truth banner present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-D 0 console errors @1280",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-D 390 stacks (donut & stats ~same x)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-D 390 donut still above stats",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-D 390 renders all sections",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-D 0 console errors @390",
+      "pass": true,
+      "extra": ""
+    }
+  ]
+}
