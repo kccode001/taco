@@ -549,106 +549,6 @@ function buildMockBands(scope: MarketScope, q?: string, page = 1): PriceBandsV2 
   return { coverage: scope.area ? areaCov : fullCov, skus: rows, pagination };
 }
 
-function buildMockHistory(
-  skuId: string,
-  area?: string,
-  storeId?: string
-): SkuPriceHistoryV2 {
-  const sku = MOCK_SKUS.find((s) => s.sku_id === skuId) ?? MOCK_SKUS[0];
-  // Full (Semua/Semua) contributing set — 6 invoices, last = outlier when planted.
-  const stores = [
-    { store_id: "st-maju", store_name: "Toko Maju Interior", region_id: "r-jkt", region_name: "Jakarta", supplier_name: "PT Karya Panel" },
-    { store_id: "st-sumber", store_name: "Sumber Dekorasi", region_id: "r-bdg", region_name: "Bandung", supplier_name: "UD Mitra Laminate" },
-    { store_id: "st-interior", store_name: "Interior Jaya", region_id: "r-sby", region_name: "Surabaya", supplier_name: "PT Sumber Panel" },
-  ];
-  const base = sku.p_avg;
-  const planted = sku.outlier === "above" ? sku.p_max : sku.outlier === "below" ? sku.p_min : base;
-  const full = [
-    { ...stores[1], invoice_id: `${sku.sku_code}-1`, invoice_date: "2026-06-02", unit_price: base - 10000, quantity: sku.qty_min, image_url: null as string | null, outlier_direction: null as "above" | "below" | null },
-    { ...stores[0], invoice_id: `${sku.sku_code}-2`, invoice_date: "2026-06-04", unit_price: base - 4000, quantity: sku.qty_avg, image_url: "https://placehold.co/600x800/png?text=INV2", outlier_direction: null },
-    { ...stores[2], invoice_id: `${sku.sku_code}-3`, invoice_date: "2026-06-06", unit_price: base, quantity: sku.qty_avg, image_url: "https://placehold.co/600x800/png?text=INV3", outlier_direction: null },
-    { ...stores[1], invoice_id: `${sku.sku_code}-4`, invoice_date: "2026-06-08", unit_price: base + 2000, quantity: sku.qty_max, image_url: null, outlier_direction: null },
-    { ...stores[2], invoice_id: `${sku.sku_code}-5`, invoice_date: "2026-06-10", unit_price: base - 2000, quantity: sku.qty_avg, image_url: "https://placehold.co/600x800/png?text=INV5", outlier_direction: null },
-    { ...stores[0], invoice_id: `${sku.sku_code}-6`, invoice_date: "2026-06-12", unit_price: planted, quantity: sku.qty_min, image_url: "https://placehold.co/600x800/png?text=INV6", outlier_direction: sku.outlier },
-  ];
-  let rows = full;
-  if (storeId) rows = full.filter((r) => r.store_id === storeId).slice(0, 2);
-  else if (area) rows = full.filter((r) => r.region_id === area);
-  const prices = rows.map((r) => r.unit_price);
-  const qtys = rows.map((r) => r.quantity).filter((q): q is number => q != null && q > 0);
-  const p_min = prices.length ? Math.min(...prices) : 0;
-  const p_max = prices.length ? Math.max(...prices) : 0;
-  const p_avg = prices.length ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length) : 0;
-  const storeSet = new Set(rows.map((r) => r.store_id));
-  const areaSet = new Set(rows.map((r) => r.region_name));
-  return {
-    coverage: {
-      n_invoices: rows.length,
-      m_stores: storeSet.size,
-      k_areas: areaSet.size,
-      last_invoice_date: rows.length ? rows[rows.length - 1].invoice_date : null,
-    },
-    sku_id: sku.sku_id,
-    sku_name: sku.sku_name,
-    sku_code: sku.sku_code,
-    catalog_category: sku.catalog_category || null,
-    p_min,
-    p_avg,
-    p_max,
-    price_sum_sample: prices.reduce((a, b) => a + b, 0),
-    unit: sku.unit,
-    qty_min: qtys.length ? Math.min(...qtys) : 0,
-    qty_avg: qtys.length ? Math.round(qtys.reduce((a, b) => a + b, 0) / qtys.length) : 0,
-    qty_max: qtys.length ? Math.max(...qtys) : 0,
-    qty_sum_sample: qtys.reduce((a, b) => a + b, 0),
-    qty_missing_pct: rows.length ? 1 - qtys.length / rows.length : 0,
-    n_qty_present: qtys.length,
-    n_lines: rows.length,
-    trend: rows.map((r) => ({
-      invoice_id: r.invoice_id,
-      invoice_date: r.invoice_date,
-      unit_price: r.unit_price,
-      quantity: r.quantity,
-      store_id: r.store_id,
-      store_name: r.store_name,
-      region_id: r.region_id,
-      region_name: r.region_name,
-      outlier_direction: r.outlier_direction,
-    })),
-    invoices: [...rows].reverse().map((r) => ({
-      invoice_id: r.invoice_id,
-      store_name: r.store_name,
-      region_name: r.region_name,
-      supplier_name: r.supplier_name,
-      invoice_date: r.invoice_date,
-      unit_price: r.unit_price,
-      quantity: r.quantity,
-      image_url: r.image_url,
-      outlier_direction: r.outlier_direction,
-    })),
-  };
-}
-
-function buildMockStorePricing(skuId: string): SkuStorePricingV2 {
-  const sku = MOCK_SKUS.find((s) => s.sku_id === skuId) ?? MOCK_SKUS[0];
-  const base = sku.p_avg;
-  const maxp = sku.outlier === "above" ? sku.p_max : base + 12000;
-  return {
-    coverage: { n_invoices: sku.n_invoices, m_stores: 3, k_areas: 3, last_invoice_date: MOCK_DATE },
-    stores: [
-      { store_id: "st-maju", store_name: "Toko Maju Interior", region_name: "Jakarta", n_invoices: 9, p_min: base - 10000, p_avg: base + 2000, p_max: maxp, history: [
-        { invoice_date: "2026-05-28", unit_price: base - 8000 }, { invoice_date: "2026-06-02", unit_price: base - 4000 }, { invoice_date: "2026-06-06", unit_price: base - 2000 }, { invoice_date: "2026-06-09", unit_price: base }, { invoice_date: "2026-06-12", unit_price: maxp },
-      ] },
-      { store_id: "st-sumber", store_name: "Sumber Dekorasi", region_name: "Bandung", n_invoices: 7, p_min: sku.p_min, p_avg: base - 8000, p_max: base, history: [
-        { invoice_date: "2026-05-30", unit_price: sku.p_min }, { invoice_date: "2026-06-05", unit_price: base - 10000 }, { invoice_date: "2026-06-10", unit_price: base },
-      ] },
-      { store_id: "st-interior", store_name: "Interior Jaya", region_name: "Surabaya", n_invoices: 6, p_min: base - 6000, p_avg: base, p_max: base + 8000, history: [
-        { invoice_date: "2026-06-01", unit_price: base - 6000 }, { invoice_date: "2026-06-08", unit_price: base + 8000 },
-      ] },
-    ],
-  };
-}
-
 const MOCK_TOPSKU_NAMES: [string, string, number][] = [
   ["sku-hpl-th061", "TACO HPL TH-061 AA Doff", 31],
   ["sku-sheet-s2101", "TACO Sheet S2-101 Putih", 27],
@@ -1026,21 +926,17 @@ export async function fetchSkuPriceHistory(
   skuId: string,
   opts: { period: string; area?: string; storeId?: string }
 ): Promise<SkuPriceHistoryV2> {
-  return liveOrMock<SkuPriceHistoryV2>(
-    async () =>
-      adaptHistory(
-        (
-          await api.get("/v2/market-intel/sku-price-history", {
-            params: {
-              sku_id: skuId,
-              period: opts.period,
-              ...(opts.area ? { area: opts.area } : {}),
-              ...(opts.storeId ? { store_id: opts.storeId } : {}),
-            },
-          })
-        ).data
-      ),
-    () => buildMockHistory(skuId, opts.area, opts.storeId)
+  return adaptHistory(
+    (
+      await api.get("/v2/market-intel/sku-price-history", {
+        params: {
+          sku_id: skuId,
+          period: opts.period,
+          ...(opts.area ? { area: opts.area } : {}),
+          ...(opts.storeId ? { store_id: opts.storeId } : {}),
+        },
+      })
+    ).data
   );
 }
 
@@ -1048,20 +944,16 @@ export async function fetchSkuStorePricing(
   skuId: string,
   opts: { period: string; area?: string }
 ): Promise<SkuStorePricingV2> {
-  return liveOrMock<SkuStorePricingV2>(
-    async () =>
-      adaptStorePricing(
-        (
-          await api.get("/v2/market-intel/sku-store-pricing", {
-            params: {
-              sku_id: skuId,
-              period: opts.period,
-              ...(opts.area ? { area: opts.area } : {}),
-            },
-          })
-        ).data
-      ),
-    () => buildMockStorePricing(skuId)
+  return adaptStorePricing(
+    (
+      await api.get("/v2/market-intel/sku-store-pricing", {
+        params: {
+          sku_id: skuId,
+          period: opts.period,
+          ...(opts.area ? { area: opts.area } : {}),
+        },
+      })
+    ).data
   );
 }
 

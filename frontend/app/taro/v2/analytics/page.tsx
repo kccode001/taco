@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   LineChart,
   Line,
@@ -369,11 +370,23 @@ function InvoiceCard({
   inv: { invoice_id: string; store_name: string; region_name: string; supplier_name: string; invoice_date: string; unit_price: number; quantity?: number | null; image_url: string | null; outlier_direction?: "above" | "below" | null };
   unit?: string;
 }) {
+  const router = useRouter();
   const up = inv.outlier_direction === "above";
   const down = inv.outlier_direction === "below";
+  const detailHref = `/taro/v2/invoices/${inv.invoice_id}`;
   return (
     <div
-      className={`rounded-xl p-3 ${up ? "border-2 border-taco-error/40 bg-[#FCEEEC]" : down ? "border-2 border-taco-success/40 bg-[#ECF7F2]" : "border border-taco-divider"}`}
+      role="link"
+      tabIndex={0}
+      onClick={() => router.push(detailHref)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          router.push(detailHref);
+        }
+      }}
+      className={`rounded-xl p-3 cursor-pointer transition-colors hover:border-taco-accent ${up ? "border-2 border-taco-error/40 bg-[#FCEEEC]" : down ? "border-2 border-taco-success/40 bg-[#ECF7F2]" : "border border-taco-divider bg-white"}`}
+      aria-label={`Buka detail invoice ${inv.invoice_id.slice(0, 8)}`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-[12px] font-semibold text-taco-text">
@@ -391,12 +404,24 @@ function InvoiceCard({
         </span>
         <span className="tabular-nums">{fmtDate(inv.invoice_date)}</span>
       </div>
+      <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] text-taco-accent font-medium inline-flex items-center gap-1">
+          Buka detail invoice →
+        </span>
+        <span className="text-[10px] text-taco-muted font-mono">{inv.invoice_id.slice(0, 8)}</span>
+      </div>
       {inv.image_url ? (
-        <a href={inv.image_url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-taco-accent font-medium mt-1.5 inline-flex items-center gap-1">
-          📎 Lihat invoice ↗
+        <a
+          href={inv.image_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="text-[11px] text-taco-sub hover:text-taco-text font-medium mt-1 inline-flex items-center gap-1"
+        >
+          Lihat gambar ↗
         </a>
       ) : (
-        <span className="text-[11px] text-taco-muted mt-1.5 inline-block">Tanpa lampiran gambar</span>
+        <span className="text-[11px] text-taco-muted mt-1 inline-block">Tanpa lampiran gambar</span>
       )}
     </div>
   );
