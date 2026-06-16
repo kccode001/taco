@@ -1,0 +1,146 @@
+{
+  "pass": 28,
+  "total": 28,
+  "results": [
+    {
+      "n": "AC-4 'Sinyal pasar dari…' banner removed",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 donut panel present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 donut panel is full-width (> 700px @1280)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 donut wider than a Top-10 half-column (≥1.7×)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "KPI Total & Wilayah side-by-side (2-up)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "KPI row below the full-width donut",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2 Top-10 freq list not inner-scrolled (full height)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2 Top-10 freq shows its rows",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3 Top-10 non-TACO list not inner-scrolled (full height)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3 Top-10 non-TACO shows its rows",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "live data (not mock): 27 toko · 5 wilayah present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "live data (not mock): mock signature 24 toko/4 wilayah ABSENT",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "no horizontal scroll @1280",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-D 0 console errors @1280",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-5 /taro/v2/dashboard HTTP 200",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-5 dashboard renders the analytics surface",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-5 real data: Total Invoice = 36 (live, not mock 42)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-5 real data: coverage 27 toko · 5 wilayah",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-5 real data: donut TACO 140 baris · 95%",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-5 no banner on dashboard either",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-5 0 console errors on /dashboard",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-4(390) banner removed",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1(390) donut spans full content column (≈ KPI card width)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2(390) freq list full height (no inner scroll)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3(390) non-TACO list full height (no inner scroll)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC(390) KPI cards stack (single column)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "no horizontal scroll @390",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-D 0 console errors @390",
+      "pass": true,
+      "extra": ""
+    }
+  ]
+}

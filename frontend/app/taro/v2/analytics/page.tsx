@@ -1183,8 +1183,7 @@ export default function AnalyticsPage() {
           }
         />
 
-        {/* ── ① TRUTH BANNER (AC-1) ───────────────────────────────────── */}
-        <TruthBanner cov={scopeCov} loading={cov.loading} error={cov.error} onRetry={loadScope} />
+        {/* ── ① TRUTH BANNER removed per KC 2026-06-16 (AC-4) ──────────────── */}
 
         {/* ── ② FILTER BAR (AC-12) — sticky ─────────────────────────────── */}
         <div className="sticky top-0 z-20 -mx-6 px-6 py-2 bg-taco-page/95 backdrop-blur-sm border-b border-taco-divider flex items-center gap-2 flex-wrap">
@@ -1205,11 +1204,11 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* ── ③ TOP SECTION (KC 2026-06-16, 1-row revision) — 4 panels in DOM order: donut · stats(stacked) · Top-10 freq · Top-10 non-TACO.
-             1-col @mobile → 2-up @lg → single horizontal row @2xl (1536px, where 4 panels fit cleanly w/o squishing the non-TACO cards). ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-4 gap-4 items-stretch">
-          {/* Panel 1 — Komposisi merek di invoice terunggah — relocated to the top per KC mockup 2026-06-16 */}
-          <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
+        {/* ── ③ TOP SECTION (KC 2026-06-16, full-width reflow) ──────────────────────
+             AC-1: Komposisi merek spans the FULL width (donut + legend across the row);
+             KPI cards drop below as their own 2-up row; Top-10 lists render full height. ── */}
+        {/* AC-1 — Komposisi merek di invoice terunggah — FULL-WIDTH row */}
+        <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
             {brandDist.loading ? (
               <div className="flex items-center gap-8"><Skeleton className="w-[140px] h-[140px] rounded-full" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /><Skeleton className="h-4 w-2/3" /></div></div>
             ) : brandDist.error ? (
@@ -1229,7 +1228,7 @@ export default function AnalyticsPage() {
                       const bucket = (Object.keys(BUCKET_META) as BrandBucket[]).find((k) => BUCKET_META[k].label === label);
                       if (bucket) setBucketModal({ open: true, bucket });
                     }} />
-                    <div className="space-y-2 text-[13px] min-w-[240px]">
+                    <div className="flex-1 space-y-2 text-[13px] min-w-[240px] max-w-[680px]">
                       {brandDist.data!.buckets.map((b) => (
                         <div key={b.bucket} onClick={() => setBucketModal({ open: true, bucket: b.bucket })} className="flex items-center gap-2.5 cursor-pointer hover:bg-taco-page rounded-lg px-2 py-1.5 -mx-2 border border-transparent hover:border-taco-border">
                           <span className="w-3.5 h-3.5 rounded-sm flex-shrink-0" style={{ background: BUCKET_META[b.bucket].color }} />
@@ -1250,8 +1249,8 @@ export default function AnalyticsPage() {
             )}
           </Panel>
 
-          {/* Panel 2 — two stat cards stacked vertically (Total Invoice + Wilayah Tercakup) */}
-          <div className="flex flex-col gap-4">
+        {/* Total Invoice + Wilayah Tercakup — KPI row, 2-up (dropped from beside the donut per AC-1) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {/* Card 1 — Total Invoice Terunggah (AC-29) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col flex-1">
             <div className="text-[13px] font-semibold text-taco-text">Total Invoice Terunggah</div>
@@ -1277,9 +1276,11 @@ export default function AnalyticsPage() {
             )}
             <div className="text-[11px] text-taco-sub mt-1">wilayah aktif tersampel</div>
           </div>
-          </div>
+        </div>
 
-          {/* Panel 3 — Top 10 TACO (AC-30 / AC-19) */}
+        {/* AC-2 / AC-3 — Top-10 lists, 2-up, FULL HEIGHT (no inner scroll/clip) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+          {/* Top 10 TACO — full height (AC-2 / AC-30 / AC-19) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -1301,7 +1302,7 @@ export default function AnalyticsPage() {
             ) : card3Skus.length === 0 ? (
               <div className="text-[12px] text-taco-muted py-4">Belum ada SKU TACO pada filter ini.</div>
             ) : (
-              <ol className="mt-2.5 space-y-1.5 text-[12px] max-h-[160px] overflow-y-auto">
+              <ol className="mt-2.5 space-y-1.5 text-[12px]">
                 {card3Skus.map((s, i) => (
                   <li key={s.sku_id} className="flex items-center gap-2">
                     <span className="text-taco-muted tabular-nums w-3.5">{i + 1}</span>
@@ -1311,7 +1312,7 @@ export default function AnalyticsPage() {
                 ))}
               </ol>
             )}
-            <div className="mt-auto pt-2 text-[10px] text-taco-muted">Top 10 · gulir untuk selengkapnya</div>
+            <div className="mt-auto pt-2 text-[10px] text-taco-muted">10 SKU teratas berdasarkan frekuensi kemunculan</div>
           </div>
 
           {/* Panel 4 — Top 10 invoices most dominated by non-TACO value (AC-31, revised) */}
@@ -1331,7 +1332,7 @@ export default function AnalyticsPage() {
             ) : (nonTacoInv.data?.rows ?? []).length === 0 ? (
               <div className="text-[12px] text-taco-muted py-4">Belum ada invoice pada filter ini.</div>
             ) : (
-              <ol className="mt-2.5 space-y-2 text-[12px] max-h-[200px] overflow-y-auto pr-1">
+              <ol className="mt-2.5 space-y-2 text-[12px]">
                 {nonTacoInv.data!.rows.slice(0, 10).map((r) => {
                   const tacoPct = Math.round(r.taco_share * 100);
                   const nonPct = Math.round(r.non_taco_share * 100);
@@ -1590,22 +1591,4 @@ function LaporanRow({ row, q, onOpen }: { row: PriceBandRow; q: string; onOpen: 
 
 // ── ① Truth banner ───────────────────────────────────────────────────────────
 
-function TruthBanner({ cov, loading, error, onRetry }: { cov: CoverageV2 | null; loading: boolean; error: boolean; onRetry: () => void }) {
-  const shimmer = <span className="inline-block align-middle h-3 w-5 bg-[#E6D3B5] rounded animate-pulse" />;
-  const N = error ? "—" : loading ? shimmer : cov?.n_invoices ?? 0;
-  const M = error ? "—" : loading ? shimmer : cov?.m_stores ?? 0;
-  const K = error ? "—" : loading ? shimmer : cov?.k_areas ?? 0;
-  return (
-    <div className="rounded-xl bg-[#FEF6EC] border border-[#F3D9B5] flex items-start gap-3 px-4 py-3">
-      <div className="w-1 self-stretch rounded-full bg-taco-warning flex-shrink-0" />
-      <span className="text-taco-warning text-[16px] leading-none mt-0.5">⚖️</span>
-      <p className="text-[13px] text-taco-text leading-relaxed">
-        Sinyal pasar dari <b className="tabular-nums">{N}</b> invoice yang diambil sampel di <b className="tabular-nums">{M}</b> toko,{" "}
-        <b className="tabular-nums">{K}</b> wilayah — <b>bukan total penjualan TACO.</b>
-        {error && (
-          <button onClick={onRetry} className="ml-2 text-[12px] text-taco-warning font-semibold underline">Coba lagi</button>
-        )}
-      </p>
-    </div>
-  );
-}
+// TruthBanner component removed per KC 2026-06-16 (AC-4 — "Sinyal pasar dari…" alert dropped).
