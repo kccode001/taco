@@ -1,0 +1,136 @@
+{
+  "pass": 26,
+  "total": 26,
+  "results": [
+    {
+      "n": "AC-4 title 'Dashboard' present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-4 'Intelijen Pasar' gone",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 donut + both stat cards present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 donut LEFT of stats (x)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 donut & stats same band (top y ≈)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 Total ON TOP of Wilayah (stacked, same x)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 stats to the RIGHT, roughly half-width band",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 Total Invoice = 36 (live)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1 Wilayah = 5 / 18 (live)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2 both Top-10 cards present",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2 cards EQUAL height (±6px)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2 cards bounded height (360–445)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2 non-TACO list body scrolls when content exceeds",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "no horizontal scroll @1280",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3 SKU detail modal opens",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3 detail shows live coverage (14 invoice)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3 detail shows a REAL DB store (not synthetic)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3 detail shows real price band (75.500 / 85.000)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-3 0 console errors after detail open",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-X 0 console errors @1280",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-4(390) title Dashboard",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-1(390) donut & stats stack (same x, donut above)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-2(390) Top-10 cards bounded + equal height",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "no horizontal scroll @390",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC(390) all sections present (no regression)",
+      "pass": true,
+      "extra": ""
+    },
+    {
+      "n": "AC-X 0 console errors @390",
+      "pass": true,
+      "extra": ""
+    }
+  ]
+}

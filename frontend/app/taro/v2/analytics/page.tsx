@@ -1174,7 +1174,7 @@ export default function AnalyticsPage() {
       <div className="space-y-3">
         {/* ── Header + AI trigger ───────────────────────────────────────── */}
         <V2PageHeader
-          title="Intelijen Pasar"
+          title="Dashboard"
           actions={
             <button onClick={() => setInsightOpen(true)} className="h-[34px] px-3.5 inline-flex items-center gap-1.5 bg-taco-accent text-white rounded-lg text-[12px] font-semibold hover:bg-taco-accent-dark transition-colors">
               <SparkleIcon size={13} />
@@ -1204,11 +1204,11 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* ── ③ TOP SECTION (KC 2026-06-16, full-width reflow) ──────────────────────
-             AC-1: Komposisi merek spans the FULL width (donut + legend across the row);
-             KPI cards drop below as their own 2-up row; Top-10 lists render full height. ── */}
-        {/* AC-1 — Komposisi merek di invoice terunggah — FULL-WIDTH row */}
-        <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
+        {/* ── ③ TOP SECTION (KC 2026-06-16, section-row per mockup) ─────────────────
+             AC-1: donut LEFT, two stat cards STACKED on the RIGHT — same band. ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+          {/* AC-1 — Komposisi merek di invoice terunggah (donut, left) */}
+          <Panel title="Komposisi merek di invoice terunggah" sub={SUB_MEREK} coverage={panelCov(brandDist.data)} coverageError={brandDist.error} coverageLoading={brandDist.loading}>
             {brandDist.loading ? (
               <div className="flex items-center gap-8"><Skeleton className="w-[140px] h-[140px] rounded-full" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /><Skeleton className="h-4 w-2/3" /></div></div>
             ) : brandDist.error ? (
@@ -1249,8 +1249,8 @@ export default function AnalyticsPage() {
             )}
           </Panel>
 
-        {/* Total Invoice + Wilayah Tercakup — KPI row, 2-up (dropped from beside the donut per AC-1) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* AC-1 — Total Invoice + Wilayah Tercakup, STACKED in the right column */}
+          <div className="flex flex-col gap-4">
           {/* Card 1 — Total Invoice Terunggah (AC-29) */}
           <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col flex-1">
             <div className="text-[13px] font-semibold text-taco-text">Total Invoice Terunggah</div>
@@ -1276,12 +1276,13 @@ export default function AnalyticsPage() {
             )}
             <div className="text-[11px] text-taco-sub mt-1">wilayah aktif tersampel</div>
           </div>
-        </div>
+          </div>{/* /right stacked column */}
+        </div>{/* /AC-1 section-row band */}
 
-        {/* AC-2 / AC-3 — Top-10 lists, 2-up, FULL HEIGHT (no inner scroll/clip) */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-          {/* Top 10 TACO — full height (AC-2 / AC-30 / AC-19) */}
-          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
+        {/* AC-2 — Top-10 lists: EQUAL height (shared min+max), body scrolls when content exceeds */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+          {/* Top 10 TACO (AC-2 / AC-30 / AC-19) */}
+          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col min-h-[360px] max-h-[440px]">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="text-[13px] font-semibold text-taco-text">Top 10 paling sering muncul</div>
@@ -1302,7 +1303,7 @@ export default function AnalyticsPage() {
             ) : card3Skus.length === 0 ? (
               <div className="text-[12px] text-taco-muted py-4">Belum ada SKU TACO pada filter ini.</div>
             ) : (
-              <ol className="mt-2.5 space-y-1.5 text-[12px]">
+              <ol className="mt-2.5 space-y-1.5 text-[12px] flex-1 min-h-0 overflow-y-auto">
                 {card3Skus.map((s, i) => (
                   <li key={s.sku_id} className="flex items-center gap-2">
                     <span className="text-taco-muted tabular-nums w-3.5">{i + 1}</span>
@@ -1315,8 +1316,8 @@ export default function AnalyticsPage() {
             <div className="mt-auto pt-2 text-[10px] text-taco-muted">10 SKU teratas berdasarkan frekuensi kemunculan</div>
           </div>
 
-          {/* Panel 4 — Top 10 invoices most dominated by non-TACO value (AC-31, revised) */}
-          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col">
+          {/* Top 10 invoices most dominated by non-TACO value (AC-2 / AC-31) — same height band, body scrolls */}
+          <div className="bg-taco-card border border-taco-border rounded-2xl p-4 flex flex-col min-h-[360px] max-h-[440px]">
             <div className="text-[13px] font-semibold text-taco-text leading-snug">Top 10 invoice paling dikuasai non-TACO (per nilai)</div>
             <div className="text-[10px] text-taco-sub mt-0.5 leading-snug">{SUB_NONTACO_INV}</div>
             <select value={card4Area} onChange={(e) => setCard4Area(e.target.value)} className="h-7 mt-2 px-2 rounded-lg text-[11px] bg-white border border-taco-border text-taco-text w-full outline-none">
@@ -1332,7 +1333,7 @@ export default function AnalyticsPage() {
             ) : (nonTacoInv.data?.rows ?? []).length === 0 ? (
               <div className="text-[12px] text-taco-muted py-4">Belum ada invoice pada filter ini.</div>
             ) : (
-              <ol className="mt-2.5 space-y-2 text-[12px]">
+              <ol className="mt-2.5 space-y-2 text-[12px] flex-1 min-h-0 overflow-y-auto pr-1">
                 {nonTacoInv.data!.rows.slice(0, 10).map((r) => {
                   const tacoPct = Math.round(r.taco_share * 100);
                   const nonPct = Math.round(r.non_taco_share * 100);
